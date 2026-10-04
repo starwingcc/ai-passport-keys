@@ -17,6 +17,36 @@ Store reusable font files and generated font sources in `fonts/`.
 - Check Flash and internal-RAM impact before adding a font; the ESP32-C3 has no PSRAM.
 - Do not commit fonts whose license does not permit redistribution.
 
+### Passport Keys fonts
+
+The Chinese console embeds `passport_font_16.c` and `passport_font_20.c`,
+16/20 px, 4 bpp, uncompressed, read-only LVGL assets explicitly selected by
+all application labels. `passport-codepoints.txt` lists 195 glyphs: printable
+ASCII and the fixed device UI text. No runtime font file loading is needed.
+
+Source: [Noto Sans CJK SC Regular](https://github.com/notofonts/noto-cjk/blob/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf),
+SHA-256 `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`.
+The SIL Open Font License is retained in [fonts/OFL.txt](fonts/OFL.txt).
+The subset's internal family name is changed to `PassportKeysSubset`;
+[fonts/passport-keys-subset.otf](fonts/passport-keys-subset.otf) preserves the
+actual outlines used for conversion.
+
+Generate with FontTools 4.61.1, lv_font_conv 1.5.3 and Node.js:
+
+```sh
+python3 tools/generate_keypad_fonts.py \
+  --source /path/to/NotoSansCJKsc-Regular.otf \
+  --converter /path/to/lv_font_conv/lv_font_conv.js --node /path/to/node
+python3 tests/test_keypad_fonts.py
+```
+
+Run from the repository root. The generator verifies the source cmap, extracts
+fixed device text from `main/main.c` and `main/keyboard/*.c` (excluding web-only
+text), and records the subset. Regenerate after adding device text. The static
+test parses both generated cmaps; the application's LVGL host preview also
+checks real glyph lookup and a known missing glyph. Real-screen acceptance
+remains necessary. See the [application guide](../docs/assets/passport-keys.md).
+
 ## Images
 
 Store reusable source images and generated display assets in `images/`.

@@ -1,242 +1,174 @@
-// main/main.c —— FoloToy AI Passport BSP 驱动参考示例:初始化 + 菜单 + 按键分发。
-//
-// 按键语义(全局统一):
-//   上/下 短按   菜单中=移动选中项;演示页中=该页自定义
-//   确定  短按   菜单中=进入选中项;演示页中=该页自定义
-//   确定  长按   演示页中=返回菜单(由本文件统一拦截)
-#include "bsp_i2c.h"
 #include "bsp_display.h"
 #include "bsp_button.h"
-#include "bsp_audio.h"
 #include "bsp_battery.h"
-#include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
-#include "demo.h"
-#include "demo_navigation.h"
-#include "ui_pixel.h"
-#include "lvgl.h"
+#include "keypad_model.h"
+#include "keypad_ble.h"
+#include "keypad_store.h"
+#include "keypad_web.h"
+#include "keypad_ui.h"
+#include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_sleep.h"
+#include "esp_netif.h"
+#include "esp_timer.h"
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include <stdatomic.h>
+#include <stdio.h>
+#include <string.h>
 
-static const char *TAG = "main";
-
-static const demo_entry_t DEMOS[] = {
-    { .name = "Display", .enter = demo_display_enter, .exit = demo_display_exit,
-      .key = demo_display_key },
-    { .name = "Button", .enter = demo_button_enter, .exit = demo_button_exit,
-      .key = demo_button_key },
-    { .name = "Audio", .enter = demo_audio_enter, .exit = demo_audio_exit,
-      .key = demo_audio_key, .start = demo_audio_start, .stop = demo_audio_stop },
-    { .name = "Battery", .enter = demo_battery_enter, .exit = demo_battery_exit,
-      .key = demo_battery_key },
-    { .name = "Wi-Fi", .enter = demo_wifi_enter, .exit = demo_wifi_exit,
-      .key = demo_wifi_key, .start = demo_wifi_start, .stop = demo_wifi_stop },
-    { .name = "BLE", .enter = demo_ble_enter, .exit = demo_ble_exit,
-      .key = demo_ble_key, .start = demo_ble_start, .stop = demo_ble_stop },
-    { .name = "Low Power", .enter = demo_low_power_enter, .exit = demo_low_power_exit,
-      .key = demo_low_power_key, .start = demo_low_power_start, .stop = demo_low_power_stop },
-};
-#define DEMO_COUNT (sizeof(DEMOS) / sizeof(DEMOS[0]))
-#define INPUT_QUEUE_DEPTH 8
-
-typedef struct {
-    bsp_btn_t btn;
-    bsp_btn_ev_t event;
-} input_event_t;
-
-// 各外设初始化结果:失败的项在菜单里标 [FAIL] 且不允许进入。
-static bool s_ok[DEMO_COUNT];
-
-static lv_obj_t *s_menu_scr;
-static lv_obj_t *s_cards[DEMO_COUNT];
-static lv_obj_t *s_rows[DEMO_COUNT];
-static lv_obj_t *s_mascot;
-static demo_navigation_t s_navigation;
-static QueueHandle_t s_input_queue;
-static TaskHandle_t s_input_task;
-static volatile bool s_input_ready;
-
-static void menu_refresh(void) {
-    for (size_t i = 0; i < DEMO_COUNT; i++) {
-        lv_label_set_text_fmt(s_rows[i], "%s%s",
-                              DEMOS[i].name,
-                              s_ok[i] ? "" : "  [FAIL]");
-        ui_pixel_set_selected(s_cards[i], i == s_navigation.selected, s_ok[i]);
-        lv_obj_set_style_text_color(s_rows[i],
-            s_ok[i] ? lv_color_hex(UI_INK) : lv_color_hex(0x7A2020), 0);
+typedef struct { unsigned key; bool down; uint32_t at; } input_t;
+static QueueHandle_t s_queue;
+static atomic_uint s_physical, s_requests;
+static atomic_bool s_overflow;
+static kp_model_t s_model;
+static char s_message[96] = "准备连接 Passport Keys";
+static bool s_pulse, s_ap_start, s_ap_stop, s_forget, s_ap_active;
+static uint32_t s_pulse_until;
+static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+static void message(const char *text) { snprintf(s_message, sizeof(s_message), "%s", text); }
+static void release(void) {
+    s_pulse = false;
+    if (kp_ble_status().ready && kp_ble_send(NULL) != ESP_OK) {
+        kp_ble_recover(); message("发送异常，正在重连");
     }
 }
-
-static void menu_build(void) {
-    s_menu_scr = ui_pixel_screen_create("FoloToy");
-
-    for (size_t i = 0; i < DEMO_COUNT; i++) {
-        int x = 11 + (int)(i % 2) * 112;
-        int y = 52 + (int)(i / 2) * 47;
-        s_cards[i] = ui_pixel_panel_create(s_menu_scr, x, y, 102, 40, UI_PAPER);
-        s_rows[i] = lv_label_create(s_cards[i]);
-        lv_obj_set_style_text_font(s_rows[i], &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_align(s_rows[i], LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_center(s_rows[i]);
-    }
-
-    s_mascot = ui_pixel_mascot_create(s_menu_scr, 101, 242);
-
-    menu_refresh();
-    lv_screen_load(s_menu_scr);
-}
-
-static void enter_menu(void) {
-    menu_build();
-}
-
-static demo_nav_input_t navigation_input(bsp_btn_t btn, bsp_btn_ev_t event) {
-    if (event == BSP_BTN_LONG && btn == BSP_BTN_OK) return DEMO_NAV_INPUT_OK_LONG;
-    if (event != BSP_BTN_CLICK) return DEMO_NAV_INPUT_OTHER;
-    if (btn == BSP_BTN_UP) return DEMO_NAV_INPUT_UP_CLICK;
-    if (btn == BSP_BTN_DOWN) return DEMO_NAV_INPUT_DOWN_CLICK;
-    if (btn == BSP_BTN_OK) return DEMO_NAV_INPUT_OK_CLICK;
-    return DEMO_NAV_INPUT_OTHER;
-}
-
-static void process_input(const input_event_t *input) {
-    demo_nav_input_t nav_input = navigation_input(input->btn, input->event);
-
-    if (s_navigation.active >= 0) {
-        demo_nav_result_t result = demo_navigation_handle(&s_navigation, nav_input, true);
-        const demo_entry_t *demo = &DEMOS[result.index];
-        if (result.action == DEMO_NAV_ACTION_EXIT) {
-            esp_err_t e = demo->stop ? demo->stop() : ESP_OK;
-            if (e != ESP_OK) {
-                ESP_LOGE(TAG, "%s 页面停止失败: %s", demo->name, esp_err_to_name(e));
-                return;
-            }
-            if (!bsp_lvgl_lock(500)) return;
-            demo->exit();
-            demo_navigation_complete_exit(&s_navigation);
-            enter_menu();
-            bsp_lvgl_unlock();
-        } else if (result.action == DEMO_NAV_ACTION_FORWARD) {
-            demo->key(input->btn, input->event);
-        }
-        return;
-    }
-
-    if (nav_input == DEMO_NAV_INPUT_OTHER || nav_input == DEMO_NAV_INPUT_OK_LONG) return;
-    if (!bsp_lvgl_lock(500)) return;
-    demo_nav_result_t result = demo_navigation_handle(
-        &s_navigation, nav_input, s_ok[s_navigation.selected]);
-    if (result.action == DEMO_NAV_ACTION_REFRESH) {
-        menu_refresh();
-        ui_pixel_mascot_jump(s_mascot);
-    } else if (result.action == DEMO_NAV_ACTION_ENTER) {
-        const demo_entry_t *demo = &DEMOS[result.index];
-        ui_pixel_mascot_jump(s_mascot);
-        lv_obj_delete(s_menu_scr);
-        s_menu_scr = NULL;
-        s_mascot = NULL;
-        demo->enter();
-        bsp_lvgl_unlock();
-
-        esp_err_t e = demo->start ? demo->start() : ESP_OK;
-        if (e != ESP_OK) {
-            ESP_LOGE(TAG, "%s 页面启动失败: %s", demo->name, esp_err_to_name(e));
-        }
-        return;
-    }
-    bsp_lvgl_unlock();
-}
-
-static void input_task(void *arg) {
-    (void)arg;
-    input_event_t input;
-    for (;;) {
-        if (xQueueReceive(s_input_queue, &input, portMAX_DELAY) == pdTRUE) {
-            process_input(&input);
-        }
-    }
-}
-
-static esp_err_t input_dispatch_init(void) {
-    s_input_queue = xQueueCreate(INPUT_QUEUE_DEPTH, sizeof(input_event_t));
-    if (!s_input_queue) return ESP_ERR_NO_MEM;
-    if (xTaskCreate(input_task, "demo_input", 4096, NULL, 5, &s_input_task) != pdPASS) {
-        vQueueDelete(s_input_queue);
-        s_input_queue = NULL;
-        return ESP_ERR_NO_MEM;
-    }
-    return ESP_OK;
-}
-
-static void input_dispatch_deinit(void) {
-    s_input_ready = false;
-    if (s_input_task) {
-        vTaskDelete(s_input_task);
-        s_input_task = NULL;
-    }
-    if (s_input_queue) {
-        vQueueDelete(s_input_queue);
-        s_input_queue = NULL;
-    }
-}
-
-// button callbacks run on the shared esp_timer task; enqueue only and return immediately.
-static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
+static void effect(void *user, kp_effect_t event, const kp_action_t *action) {
     (void)user;
-    if (!s_input_ready || !s_input_queue) return;
-    const input_event_t input = { .btn = btn, .event = ev };
-    (void)xQueueSend(s_input_queue, &input, 0);
+    switch (event) {
+    case KP_TAP: case KP_HOLD:
+        kp_ble_status_t status = kp_ble_status();
+        if (!status.ready) {
+            message(!status.connected ? "尚未连接，指令已忽略" :
+                    !status.handles_ready ? "键盘服务未就绪" :
+                    !status.secure ? "等待配对完成" : "等待电脑启用键盘");
+            ESP_LOGW("keypad", "Input skipped: connected=%d secure=%d handles=%d keyboard_notify=%d paused=%d",
+                     status.connected, status.secure, status.handles_ready,
+                     status.keyboard_subscribed, status.paused);
+            break;
+        }
+        release();
+        esp_err_t sent = kp_ble_send(action);
+        if (sent == ESP_ERR_NOT_SUPPORTED) { message("电脑未启用媒体按键"); break; }
+        if (sent != ESP_OK) { kp_ble_recover(); message("发送异常，正在重连"); break; }
+        kp_action_label(action, s_message, sizeof(s_message));
+        s_pulse = event == KP_TAP;
+        s_pulse_until = now_ms() + 40;
+        break;
+    case KP_RELEASE: release(); break;
+    case KP_AP_START: s_ap_start = true; break;
+    case KP_AP_STOP: s_ap_stop = true; break;
+    case KP_CLEAR_BOND: s_forget = true; break;
+    }
 }
-
+static void on_key(bsp_btn_t key, bsp_btn_ev_t ev, void *user) {
+    (void)user;
+    if (ev != BSP_BTN_PRESS && ev != BSP_BTN_RELEASE) return;
+    bool down = ev == BSP_BTN_PRESS;
+    if (down) atomic_fetch_or(&s_physical, 1U << key);
+    else atomic_fetch_and(&s_physical, ~(1U << key));
+    input_t input = {.key = key, .down = down, .at = now_ms()};
+    if (xQueueSend(s_queue, &input, 0) != pdTRUE) atomic_store(&s_overflow, true);
+}
+static void web_request(bool forget) { atomic_fetch_or(&s_requests, forget ? 2U : 1U); }
+static void resync_input(void) {
+    // Drop all queued events on mode/link transitions. Synchronize the physical
+    // state as well, including a release that could have been lost on overflow.
+    xQueueReset(s_queue);
+    s_model.down_mask = atomic_load(&s_physical);
+    kp_cancel(&s_model);
+}
+static void memory_log(const char *phase) {
+    ESP_LOGI("keypad", "%s free=%u largest=%u min=%u stack=%u", phase,
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+             (unsigned)esp_get_minimum_free_heap_size(),
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
+}
 void app_main(void) {
-    ESP_LOGI(TAG, "FoloToy AI Passport BSP demo 启动");
-    esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
-    if (wakeup != ESP_SLEEP_WAKEUP_UNDEFINED) {
-        ESP_LOGI(TAG, "休眠唤醒原因: %d", wakeup);
+    esp_err_t rc = nvs_flash_init();
+    if (rc != ESP_OK) { ESP_LOGE("keypad", "NVS unavailable: %s; not erasing user data", esp_err_to_name(rc)); return; }
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(kp_store_init());
+    kp_config_t config; kp_store_get(&config);
+    kp_init(&s_model, &config, effect, NULL);
+    if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) { ESP_LOGE("keypad", "Display unavailable"); return; }
+    bsp_display_backlight(80);
+    bool battery_ok = bsp_battery_init() == ESP_OK;
+    kp_ui_init();
+    s_queue = xQueueCreate(24, sizeof(input_t));
+    if (!s_queue) { ESP_LOGE("keypad", "Input queue allocation failed"); return; }
+    ESP_ERROR_CHECK(bsp_button_init(on_key, NULL));
+    rc = kp_ble_init();
+    if (rc != ESP_OK) message("蓝牙启动失败，请重启");
+    memory_log("startup");
+    uint32_t last_ui = 0, last_battery = 0, last_activity = now_ms(), generation = 0;
+    bool dimmed = false;
+    int battery = -1;
+    for (;;) {
+        uint32_t now = now_ms();
+        kp_ble_status_t ble = kp_ble_status();
+        if (ble.generation != generation) {
+            generation = ble.generation; resync_input();
+        }
+        if (atomic_exchange(&s_overflow, false)) { resync_input(); message("输入已恢复，请重新按键"); }
+        input_t input;
+        if (xQueueReceive(s_queue, &input, pdMS_TO_TICKS(10)) == pdTRUE) {
+            // Consume timestamped releases before advancing the hold timer to
+            // wall time, so a delayed worker cannot invent a long press.
+            do {
+                last_activity = now_ms();
+                if ((uint32_t)(last_activity - input.at) > 250) { resync_input(); break; }
+                kp_input(&s_model, input.key, input.down, input.at);
+            } while (xQueueReceive(s_queue, &input, 0) == pdTRUE);
+        }
+        now = now_ms();
+        kp_tick(&s_model, now);
+        if (s_pulse && (int32_t)(now - s_pulse_until) >= 0) release();
+        unsigned request = atomic_exchange(&s_requests, 0);
+        if (request && s_model.page == KP_HOTSPOT) kp_hotspot_exit(&s_model);
+        if (s_ap_stop) {
+            s_ap_stop = false;
+            rc = kp_web_stop();
+            if (rc == ESP_OK) {
+                s_ap_active = false; kp_store_get(&s_model.config);
+                kp_ble_pause(false); message("热点已关闭");
+                if (request & 2U) { s_model.page = KP_FORGET; s_model.selected = 0; }
+            } else { s_model.page = KP_HOTSPOT; message("关闭失败，长按 OK 重试"); }
+            resync_input(); memory_log("AP stop");
+        }
+        if (s_ap_start) {
+            s_ap_start = false; resync_input();
+            message("正在开启热点");
+            kp_ui_update(&s_model, kp_ble_status(), battery, s_message, "...", "...");
+            rc = kp_ble_pause(true);
+            if (rc == ESP_OK) rc = kp_web_start(web_request);
+            s_ap_active = rc == ESP_OK;
+            if (!s_ap_active) {
+                if (kp_web_stop() == ESP_OK) kp_ble_pause(false);
+                message("热点启动失败，长按返回");
+            }
+            else message("配置完成后长按 OK 返回");
+            resync_input(); memory_log("AP start");
+        }
+        if (s_forget) {
+            s_forget = false; resync_input();
+            message(kp_ble_forget() == ESP_OK ? "配对已清除，请重新连接" : "清除失败，请重试");
+            resync_input();
+        }
+        bool dim = (uint32_t)(now - last_activity) >= 60000;
+        if (dim != dimmed) { dimmed = dim; bsp_display_backlight(dim ? 12 : 80); }
+        if (battery_ok && (!last_battery || (uint32_t)(now - last_battery) >= 30000)) {
+            battery = bsp_battery_soc(); last_battery = now;
+        }
+        if ((uint32_t)(now - last_ui) >= 100) {
+            kp_ble_poll();
+            kp_ui_update(&s_model, kp_ble_status(), battery, s_message,
+                         s_ap_active ? kp_web_ssid() : "未开启", s_ap_active ? kp_web_password() : "--");
+            last_ui = now;
+        }
     }
-
-    bsp_i2c_init();
-    bsp_i2c_scan();
-
-    // 屏幕是本 demo 的 UI 载体,失败就没有菜单可言 —— 打清楚日志后退出,
-    // 不做"串口菜单"降级(那会让本文件复杂一倍,违背参考示例的初衷)。
-    if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
-        ESP_LOGE(TAG, "显示/LVGL 初始化失败,demo 无法继续。"
-                      "检查 SPI 接线(MOSI=%d SCLK=%d CS=%d DC=%d BL=%d)",
-                 BSP_LCD_MOSI, BSP_LCD_SCLK, BSP_LCD_CS, BSP_LCD_DC, BSP_LCD_BL);
-        return;
-    }
-    bsp_display_backlight(100);
-
-    demo_navigation_init(&s_navigation, DEMO_COUNT);
-
-    // 其余外设单项失败不阻塞:菜单里标 [FAIL],其他项照常可测。
-    s_ok[0] = true;                                   // Display 已确认可用
-    esp_err_t input_err = input_dispatch_init();
-    esp_err_t button_err = input_err == ESP_OK
-                         ? bsp_button_init(on_key, NULL)
-                         : ESP_ERR_INVALID_STATE;
-    s_ok[1] = input_err == ESP_OK && button_err == ESP_OK;
-    if (input_err != ESP_OK) {
-        ESP_LOGE(TAG, "按键事件任务创建失败: %s", esp_err_to_name(input_err));
-    } else if (button_err != ESP_OK) {
-        ESP_LOGE(TAG, "按键初始化失败: %s", esp_err_to_name(button_err));
-        input_dispatch_deinit();
-    }
-    s_ok[2] = (bsp_audio_init() == ESP_OK);
-    s_ok[3] = (bsp_battery_init() == ESP_OK);
-    s_ok[4] = true;                                    // 页面内按需初始化并显示错误
-    s_ok[5] = true;
-    s_ok[6] = true;
-
-    if (bsp_lvgl_lock(1000)) {
-        enter_menu();
-        bsp_lvgl_unlock();
-        s_input_ready = true;
-    }
-
-    ESP_LOGI(TAG, "就绪:Display=%d Button=%d Audio=%d Battery=%d",
-             s_ok[0], s_ok[1], s_ok[2], s_ok[3]);
 }

@@ -15,16 +15,43 @@
 - 添加字库前评估 Flash 与内部 RAM 影响；ESP32-C3 无 PSRAM。
 - 不提交许可不允许分发的字库。
 
+### Passport Keys 字库
+
+中文控制台嵌入 `passport_font_16.c`、`passport_font_20.c`，分别为 16/20px、
+4bpp、未压缩只读 LVGL 资源，所有应用文本控件显式绑定。
+`passport-codepoints.txt` 列出 195 个字形：可打印 ASCII 和固定设备界面文字。
+运行时不读取字体文件。
+
+来源：[Noto Sans CJK SC Regular](https://github.com/notofonts/noto-cjk/blob/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf)，
+SHA-256 为 `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`。
+SIL Open Font License 保存在 [fonts/OFL.txt](fonts/OFL.txt)。
+子集内部字族更名为 `PassportKeysSubset`；
+[fonts/passport-keys-subset.otf](fonts/passport-keys-subset.otf) 保留转换所用轮廓。
+
+使用 FontTools 4.61.1、lv_font_conv 1.5.3 和 Node.js 生成：
+
+```sh
+python3 tools/generate_keypad_fonts.py \
+  --source /path/to/NotoSansCJKsc-Regular.otf \
+  --converter /path/to/lv_font_conv/lv_font_conv.js --node /path/to/node
+python3 tests/test_keypad_fonts.py
+```
+
+从仓库根目录执行。生成器检查源 cmap，从 `main/main.c` 和 `main/keyboard/*.c`
+提取固定设备文字（排除仅网页使用的文字），记录子集。添加设备文字后须重新生成。
+静态测试解析两份生成字库的 cmap；应用的 LVGL 主机预览还检查实际字形查找和已知
+缺字情形。仍须实屏验收。参见[应用指南](../docs/assets/passport-keys.zh_CN.md)。
+
 ## 图片（images）
 
 可复用的源图与生成的显示资产放在 `images/`。
 
-| 文件 | 尺寸与格式 | 用途与来源 |
-| --- | --- | --- |
-| [`images/home.jpg`](images/home.jpg) | 3840 × 2160，JPEG | 嵌入中英文项目 README 的产品主图，突出 AI Passport 产品形象与开放、人人可创作的理念。 |
+| 文件                                                                   | 尺寸与格式           | 用途与来源                                                                                                                                     |
+| ---------------------------------------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`images/home.jpg`](images/home.jpg)                                   | 3840 × 2160，JPEG    | 嵌入中英文项目 README 的产品主图，突出 AI Passport 产品形象与开放、人人可创作的理念。                                                          |
 | [`images/readme-hardware-specs.png`](images/readme-hardware-specs.png) | 2172 × 724，PNG RGBA | 保留为可选技术参考图，不再用于首页主视觉。于 2026-09-17 使用内置图像生成工具为本仓库生成；已根据文档中的硬件能力契约核对图中的六项标签与参数。 |
-| [`images/logo-wordmark.png`](images/logo-wordmark.png) | 1648 × 336，PNG RGBA | 从仓库原始 `images/logo.png` 中精确裁切并去除背景的黑色字标；用于中英文项目 README 的浅色主题。 |
-| [`images/logo-wordmark-dark.png`](images/logo-wordmark-dark.png) | 1648 × 336，PNG RGBA | 提取字标的白色版本；README 使用 `<picture>` 在 GitHub 深色主题下显示。 |
+| [`images/logo-wordmark.png`](images/logo-wordmark.png)                 | 1648 × 336，PNG RGBA | 从仓库原始 `images/logo.png` 中精确裁切并去除背景的黑色字标；用于中英文项目 README 的浅色主题。                                                |
+| [`images/logo-wordmark-dark.png`](images/logo-wordmark-dark.png)       | 1648 × 336，PNG RGBA | 提取字标的白色版本；README 使用 `<picture>` 在 GitHub 深色主题下显示。                                                                         |
 
 - 使用描述性命名，并记录尺寸、像素格式、转换步骤与目标路径。
 - 优先采用适合 240 × 320 RGB565 显示的格式，并纳入 Flash 与内部 RAM 考量。

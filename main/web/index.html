@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Passport · 按键工作台</title><link rel="stylesheet" href="/app.css"><script defer src="/app.js"></script></head>
+<body><main>
+<header><div class="brand">PASSPORT <span>KEYS / 01</span></div><div class="connection"><i></i> 本地配置模式</div></header>
+<section class="intro"><div><p class="eyebrow">把常用操作，放在手边。</p><h1>三个按键，<br>你的工作节奏。</h1></div><p class="intro-note">选一个动作，按下你想使用的组合键。<br>配置保存在 Passport，断电也会记住。<br><strong>当前蓝牙键盘已暂停。</strong></p></section>
+<div class="toolbar"><div class="tabs" role="tablist" aria-label="实体按键"><button class="tab active" data-key="0" role="tab" aria-selected="true">↑ 上键</button><button class="tab" data-key="1" role="tab" aria-selected="false">↓ 下键</button><button class="tab" data-key="2" role="tab" aria-selected="false">OK 确定键</button></div><span id="dirty">正在读取设备…</span></div>
+<section id="actions" aria-label="按键映射"></section>
+<section class="notes"><p><b>01 / 手势</b> 单击等待约 180ms；长按 500ms 后持续按住映射，松手释放。双击只执行一次组合键。</p><p><b>02 / 兼容</b> Fn / 🌐 不支持。系统快捷键可能无法录制，请手动选键。字符由 Mac 当前键盘布局和输入法决定。</p></section>
+<footer><button id="defaults" class="quiet">恢复默认映射</button><div><button id="exit" class="secondary">退出热点</button><button id="save" class="primary">保存到 Passport <span>↗</span></button></div></footer>
+<p id="status" role="status" aria-live="polite"></p>
+<details><summary>蓝牙连接管理</summary><p>配对出现问题时，可清除设备上的配对记录。之后也请在 Mac 蓝牙设置中忽略 Passport Keys，再重新配对。</p><button id="forget" class="secondary">清除蓝牙配对</button></details>
+</main></body></html>

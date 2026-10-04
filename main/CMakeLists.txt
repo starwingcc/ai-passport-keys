@@ -1,16 +1,11 @@
 idf_component_register(
     SRCS "main.c"
-         "demo_navigation.c"
-         "ui_pixel.c"
-         "ui_pixel_math.c"
-         "demo_display.c"
-         "demo_button.c"
-         "demo_audio.c"
-         "demo_battery.c"
-         "demo_radio.c"
-         "demo_wifi.c"
-         "demo_ble.c"
-         "demo_low_power.c"
-    INCLUDE_DIRS "."
-    REQUIRES bsp bt esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
+         "keyboard/keypad_model.c" "keyboard/keypad_config.c"
+         "keyboard/keypad_store.c" "keyboard/keypad_ble.c"
+         "keyboard/keypad_web.c" "keyboard/keypad_ui.c"
+         "../assets/fonts/passport_font_16.c" "../assets/fonts/passport_font_20.c"
+    INCLUDE_DIRS "." "keyboard"
+    REQUIRES bsp bt esp_hid esp_event esp_netif esp_timer esp_wifi nvs_flash
+             esp_http_server json esp_hw_support
+    EMBED_TXTFILES "web/index.html" "web/app.js" "web/app.css"
 )

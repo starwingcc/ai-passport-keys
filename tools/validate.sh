@@ -32,6 +32,22 @@ run_static_checks() {
         tests/test_demo_navigation.c main/demo_navigation.c \
         -o "${test_dir}/test_demo_navigation"
     "${test_dir}/test_demo_navigation"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain/keyboard \
+        tests/test_keypad_model.c main/keyboard/keypad_model.c \
+        -o "${test_dir}/test_keypad_model"
+    "${test_dir}/test_keypad_model"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain/keyboard -Itests/third_party/cjson \
+        tests/test_keypad_config.c main/keyboard/keypad_config.c main/keyboard/keypad_model.c \
+        tests/third_party/cjson/cJSON.c -o "${test_dir}/test_keypad_config"
+    "${test_dir}/test_keypad_config"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/keypad_store_stubs -Imain/keyboard \
+        tests/test_keypad_store.c main/keyboard/keypad_model.c -o "${test_dir}/test_keypad_store"
+    "${test_dir}/test_keypad_store"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/keypad_ble_stubs -Imain/keyboard \
+        tests/test_keypad_ble.c main/keyboard/keypad_model.c -o "${test_dir}/test_keypad_ble"
+    "${test_dir}/test_keypad_ble"
+    "${NODE:-node}" tests/test_keypad_web.js
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_keypad_fonts.py
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_display_rounding"
@@ -54,10 +70,14 @@ run_static_checks() {
         tests/test_bsp_audio_recovery.c components/bsp/src/bsp_es8311_sleep_check.c \
         -o "${test_dir}/test_bsp_audio_recovery"
     "${test_dir}/test_bsp_audio_recovery"
+    local dead_strip_flag="-Wl,--gc-sections"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        dead_strip_flag="-Wl,-dead_strip"
+    fi
     for demo in audio low_power ble wifi; do
         "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
             -ffunction-sections -fdata-sections -Itests/demo_stubs -Imain \
-            "tests/test_demo_${demo}_runtime.c" -Wl,--gc-sections \
+            "tests/test_demo_${demo}_runtime.c" "${dead_strip_flag}" \
             -o "${test_dir}/test_demo_${demo}_runtime"
         "${test_dir}/test_demo_${demo}_runtime"
     done

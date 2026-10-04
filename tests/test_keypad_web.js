@@ -1,0 +1,18 @@
+const assert=require('node:assert/strict');
+require('../main/web/app.js');
+const {capture,defaults,keys}=globalThis.Keypad;
+assert.equal(defaults().bindings.length,8);
+assert.deepEqual(capture([{code:'KeyC',key:'c',metaKey:true}]),{type:1,modifiers:8,keys:[6],consumer:0});
+assert.equal(capture([{code:'MetaRight',key:'Meta',metaKey:true}]).modifiers,128);
+assert.deepEqual(capture([{code:'ShiftLeft',key:'Shift',shiftKey:true},{code:'Digit1',key:'!',shiftKey:true}]).keys,[30]);
+assert.deepEqual(capture([{code:'NumpadEnter',key:'Enter'}]).keys,[88]);
+assert.deepEqual(capture([{code:'KeyA',key:'a'},{code:'KeyA',key:'a',repeat:true}]).keys,[4]);
+assert.throws(()=>capture([{code:'Fn',key:'Fn'}]));
+assert.throws(()=>capture([{code:'KeyA',key:'Process',isComposing:true}]));
+assert.throws(()=>capture(Array.from('ABCDEFG').map(c=>({code:'Key'+c,key:c}))));
+assert.throws(()=>capture([]));
+assert.equal(new Set(keys.map(x=>x.usage)).size,keys.length);
+assert.equal(new Set(keys.map(x=>x.code)).size,keys.length);
+assert.equal(globalThis.Keypad.media.find(x=>x[0]===181)[1],'下一首');
+assert.equal(globalThis.Keypad.media.find(x=>x[0]===182)[1],'上一首');
+console.log('Browser capture helpers: PASS');
