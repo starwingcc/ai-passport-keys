@@ -6,38 +6,129 @@ static const uint16_t media[] = {0xe9, 0xea, 0xe2, 0xcd, 0xb5, 0xb6};
 bool kp_key_valid(unsigned key) {
     return (key >= 4 && key <= 0x73) && key != 0x66;
 }
-void kp_defaults(kp_config_t *c) {
-    memset(c, 0, sizeof(*c));
-    c->version = KP_VERSION;
-    c->bindings[0] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x29}}; // UP: Esc
-    c->bindings[2] = (kp_action_t){.type = KP_KEYBOARD, .modifiers = 0x04}; // UP hold: left Option
-    c->bindings[3] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x2a}}; // DOWN: Backspace
-    c->bindings[4] = (kp_action_t){.type = KP_KEYBOARD, .modifiers = 0x08, .keys = {0x04}}; // DOWN double: Command+A
-    c->bindings[5] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x51}}; // DOWN hold: Down arrow
-    c->bindings[6] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x28}}; // OK: Enter
+void kp_config_empty(kp_config_t *c) {
+    memset(c, 0, sizeof(*c)); c->version = KP_VERSION; c->used = 1;
+}
+size_t kp_config_size(const kp_config_t *c) { return offsetof(kp_config_t, data) + c->used; }
+const char *kp_text(const kp_config_t *c, unsigned offset) {
+    return offset < c->used ? (const char *)c->data + offset : "";
+}
+static bool put_text(kp_config_t *c, const char *text, uint16_t *offset) {
+    if (!*text) { *offset = 0; return true; }
+    size_t size = strlen(text) + 1;
+    if (size > sizeof(c->data) - c->used) return false;
+    *offset = c->used; memcpy(c->data + c->used, text, size); c->used += size;
+    return true;
+}
+bool kp_profile_add(kp_config_t *c, const char *name) {
+    if (c->profile_count >= KP_MAX_PROFILES || !name || !*name || !kp_text_valid(name, KP_NAME_CHARS, false)) return false;
+    for (unsigned i = 0; i < c->profile_count; ++i)
+        if (!strcmp(name, kp_text(c, c->profiles[i].name))) return false;
+    if (!put_text(c, name, &c->profiles[c->profile_count].name)) return false;
+    ++c->profile_count; return true;
+}
+bool kp_profile_name_set(kp_config_t *c, unsigned profile, const char *name) {
+    return profile < c->profile_count && name && *name && kp_text_valid(name, KP_NAME_CHARS, false) &&
+           put_text(c, name, &c->profiles[profile].name);
+}
+bool kp_action_valid(const kp_action_t *a, bool allow_none) {
+    if (!a || a->type > KP_MEDIA) return false;
+    bool any = a->modifiers != 0;
+    for (unsigned i = 0; i < 6; ++i) {
+        if (!a->keys[i]) continue;
+        if (a->type != KP_KEYBOARD || !kp_key_valid(a->keys[i])) return false;
+        any = true;
+        for (unsigned j = 0; j < i; ++j) if (a->keys[j] == a->keys[i]) return false;
+    }
+    if (a->type == KP_KEYBOARD) return any && !a->consumer;
+    if (a->type == KP_MEDIA) {
+        for (unsigned i = 0; i < sizeof(media) / sizeof(media[0]); ++i)
+            if (a->consumer == media[i]) return !any;
+        return false;
+    }
+    return allow_none && !any && !a->consumer;
+}
+bool kp_binding_set(kp_config_t *c, unsigned profile, unsigned slot,
+                    const char *title, const char *description, const kp_step_t *steps, unsigned count) {
+    if (profile >= c->profile_count || slot >= KP_BINDINGS || count > KP_MAX_STEPS ||
+        (count && !steps) || !kp_text_valid(title, KP_NAME_CHARS, false) ||
+        !kp_text_valid(description, KP_DESCRIPTION_CHARS, true)) return false;
+    for (unsigned i = 0; i < count; ++i)
+        if (!kp_action_valid(&steps[i].action, false) || steps[i].delay_ms > KP_MAX_DELAY_MS ||
+            (i + 1 == count && steps[i].delay_ms)) return false;
+    uint16_t before = c->used; kp_binding_t b = {0};
+    if (!put_text(c, title, &b.title) || !put_text(c, description, &b.description)) goto fail;
+    if (count) {
+        unsigned offset = (c->used + 1U) & ~1U;
+        if (offset + count * sizeof(*steps) > sizeof(c->data)) goto fail;
+        b.steps = offset; b.count = count;
+        memcpy(c->data + offset, steps, count * sizeof(*steps)); c->used = offset + count * sizeof(*steps);
+    }
+    c->profiles[profile].bindings[slot] = b; return true;
+fail:
+    memset(c->data + before, 0, c->used - before); c->used = before; return false;
+}
+const kp_binding_t *kp_binding(const kp_config_t *c, unsigned slot) {
+    return slot < KP_BINDINGS && c->active_profile < c->profile_count ? &c->profiles[c->active_profile].bindings[slot] : NULL;
+}
+bool kp_binding_step(const kp_config_t *c, const kp_binding_t *b, unsigned index, kp_step_t *out) {
+    if (!b || !out || index >= b->count || b->steps + (index + 1) * sizeof(*out) > c->used) return false;
+    memcpy(out, c->data + b->steps + index * sizeof(*out), sizeof(*out)); return true;
+}
+static bool stored_text(const kp_config_t *c, unsigned offset, unsigned limit, bool multiline) {
+    return offset < c->used && memchr(c->data + offset, 0, c->used - offset) &&
+           kp_text_valid(kp_text(c, offset), limit, multiline);
 }
 bool kp_config_valid(const kp_config_t *c) {
-    if (!c || c->version != KP_VERSION) return false;
-    for (unsigned n = 0; n < KP_BINDINGS; ++n) {
-        const kp_action_t *a = &c->bindings[n];
-        bool any = a->modifiers != 0;
-        if (a->type > KP_MEDIA) return false;
-        for (unsigned i = 0; i < 6; ++i) {
-            if (!a->keys[i]) continue;
-            if (a->type != KP_KEYBOARD || !kp_key_valid(a->keys[i])) return false;
-            any = true;
-            for (unsigned j = 0; j < i; ++j) if (a->keys[j] == a->keys[i]) return false;
+    if (!c || c->version != KP_VERSION || !c->profile_count || c->profile_count > KP_MAX_PROFILES ||
+        c->active_profile >= c->profile_count || !c->used || c->used > sizeof(c->data) || c->data[0]) return false;
+    for (unsigned p = 0; p < c->profile_count; ++p) {
+        const kp_profile_t *profile = &c->profiles[p];
+        if (!stored_text(c, profile->name, KP_NAME_CHARS, false) || !*kp_text(c, profile->name)) return false;
+        for (unsigned j = 0; j < p; ++j)
+            if (!strcmp(kp_text(c, profile->name), kp_text(c, c->profiles[j].name))) return false;
+        for (unsigned i = 0; i < KP_BINDINGS; ++i) {
+            const kp_binding_t *b = &profile->bindings[i];
+            if (b->count > KP_MAX_STEPS || b->reserved ||
+                !stored_text(c, b->title, KP_NAME_CHARS, false) ||
+                !stored_text(c, b->description, KP_DESCRIPTION_CHARS, true) ||
+                (!b->count && b->steps) || (b->count && (b->steps & 1))) return false;
+            for (unsigned j = 0; j < b->count; ++j) {
+                kp_step_t step;
+                if (!kp_binding_step(c, b, j, &step) || !kp_action_valid(&step.action, false) ||
+                    step.delay_ms > KP_MAX_DELAY_MS || (j + 1 == b->count && step.delay_ms)) return false;
+            }
         }
-        if (a->type == KP_KEYBOARD) {
-            if (!any || a->consumer) return false;
-        } else if (a->type == KP_MEDIA) {
-            bool found = false;
-            for (unsigned i = 0; i < sizeof(media) / sizeof(media[0]); ++i)
-                if (a->consumer == media[i]) found = true;
-            if (!found || any) return false;
-        } else if (any || a->consumer) return false;
     }
     return true;
+}
+bool kp_legacy_valid(const kp_legacy_config_t *c) {
+    if (!c || c->version != 1) return false;
+    for (unsigned i = 0; i < KP_BINDINGS; ++i) if (!kp_action_valid(&c->bindings[i], true)) return false;
+    return true;
+}
+bool kp_migrate(const kp_legacy_config_t *old, kp_config_t *c) {
+    if (!kp_legacy_valid(old)) return false;
+    kp_config_empty(c);
+    if (!kp_profile_add(c, "默认")) return false;
+    for (unsigned i = 0; i < KP_BINDINGS; ++i) {
+        kp_step_t step = {.action = old->bindings[i]};
+        bool enter = step.action.type == KP_KEYBOARD && !step.action.modifiers && step.action.keys[0] == 0x28;
+        for (unsigned j = 1; j < 6; ++j) if (step.action.keys[j]) enter = false;
+        const char *title = enter ? "回车" : "";
+        if (!kp_binding_set(c, 0, i, title, "", &step, step.action.type == KP_NONE ? 0 : 1)) return false;
+    }
+    return true;
+}
+void kp_defaults(kp_config_t *c) {
+    kp_legacy_config_t old = {.version = 1};
+    old.bindings[0] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x29}};
+    old.bindings[2] = (kp_action_t){.type = KP_KEYBOARD, .modifiers = 0x04};
+    old.bindings[3] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x2a}};
+    old.bindings[4] = (kp_action_t){.type = KP_KEYBOARD, .modifiers = 0x08, .keys = {0x04}};
+    old.bindings[5] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x51}};
+    old.bindings[6] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x28}};
+    (void)kp_migrate(&old, c);
 }
 void kp_report(const kp_action_t *a, uint8_t keyboard[8], uint8_t consumer[2]) {
     memset(keyboard, 0, 8);
@@ -64,7 +155,7 @@ void kp_action_label(const kp_action_t *a, char *out, size_t size) {
         for (unsigned i = 0; i < 6; ++i) if (media[i] == a->consumer) snprintf(out, size, "%s", labels[i]);
         return;
     }
-    const char *mods[] = {"Ctrl", "Shift", "Opt", "Cmd", "RCtrl", "RShift", "ROpt", "RCmd"};
+    const char *mods[] = {"Control", "Shift", "Option", "Command", "RControl", "RShift", "ROption", "RCommand"};
     for (unsigned i = 0; i < 8; ++i) if (a->modifiers & (1U << i)) append(out, size, mods[i]);
     for (unsigned i = 0; i < 6; ++i) {
         unsigned k = a->keys[i];
@@ -90,18 +181,60 @@ void kp_action_label(const kp_action_t *a, char *out, size_t size) {
         append(out, size, name);
     }
 }
+void kp_binding_label(const kp_config_t *c, const kp_binding_t *b, char *out, size_t size) {
+    if (!size) return;
+    out[0] = 0;
+    if (!b || !b->count) { snprintf(out, size, "关闭"); return; }
+    for (unsigned i = 0; i < b->count; ++i) {
+        kp_step_t step; char action[192];
+        if (!kp_binding_step(c, b, i, &step)) return;
+        kp_action_label(&step.action, action, sizeof(action));
+        size_t used = strlen(out), needed = strlen(action) + (i ? 5 : 0);
+        if (used + needed + 1 > size) {
+            if (used + 4 <= size) memcpy(out + used, "…", 4);
+            return;
+        }
+        snprintf(out + used, size - used, "%s%s", i ? " → " : "", action);
+    }
+}
+void kp_binding_title(const kp_config_t *c, const kp_binding_t *b, char *out, size_t size) {
+    if (b && *kp_text(c, b->title)) snprintf(out, size, "%s", kp_text(c, b->title));
+    else if (b && b->count > 1) snprintf(out, size, "组合指令");
+    else kp_binding_label(c, b, out, size);
+}
 static void emit(kp_model_t *m, kp_effect_t e, const kp_action_t *a) {
     if (m->emit) m->emit(m->user, e, a);
 }
 void kp_cancel(kp_model_t *m) {
     memset(m->key, 0, sizeof(m->key));
     m->blocked = m->down_mask != 0;
-    emit(m, KP_RELEASE, NULL);
+    m->executing = false; m->feedback.visible = false;
+    emit(m, KP_CANCEL, NULL);
+}
+void kp_link_changed(kp_model_t *m, uint32_t now) {
+    kp_feedback_t previous = m->feedback;
+    bool running = m->executing;
+    bool show = m->page == KP_CONSOLE && previous.visible &&
+                (running || (previous.state == KP_FEEDBACK_FAILED && (int32_t)(now - previous.until) < 0));
+    kp_cancel(m);
+    if (show) {
+        previous.state = KP_FEEDBACK_FAILED; previous.holding = false;
+        if (running) previous.until = now + KP_FEEDBACK_MS;
+        m->feedback = previous;
+    }
 }
 static void page(kp_model_t *m, kp_page_t target) {
     kp_cancel(m);
     m->page = target;
     m->selected = 0;
+}
+void kp_set_busy(kp_model_t *m, bool busy) {
+    m->executing = busy;
+    if (!busy) return;
+    for (unsigned i = 0; i < 3; ++i) {
+        m->key[i].pending = false;
+        if (m->key[i].down && i != m->triggered_slot / 3) m->key[i].ignored = true;
+    }
 }
 void kp_init(kp_model_t *m, const kp_config_t *c, kp_emit_t cb, void *u) {
     memset(m, 0, sizeof(*m));
@@ -118,19 +251,28 @@ static void back(kp_model_t *m) {
     case KP_CONSOLE: case KP_SETTINGS: page(m, KP_MENU); break;
     case KP_HOTSPOT: kp_hotspot_exit(m); break;
     case KP_FORGET: page(m, KP_SETTINGS); break;
+    case KP_PROFILES: page(m, KP_MENU); break;
     case KP_MENU: kp_cancel(m); break;
     }
 }
 static void click(kp_model_t *m, unsigned key, bool doubled) {
     if (m->page == KP_CONSOLE) {
-        const kp_action_t *a = &m->config.bindings[key * 3 + (doubled ? 1 : 0)];
-        if (a->type != KP_NONE) emit(m, KP_TAP, a);
+        if (m->executing) return;
+        m->triggered_slot = key * 3 + (doubled ? 1 : 0);
+        kp_step_t step;
+        if (kp_binding_step(&m->config, kp_binding(&m->config, m->triggered_slot), 0, &step)) emit(m, KP_TAP, &step.action);
         return;
     }
     if (m->page == KP_HOTSPOT) {
         // Only long OK exits; short keys cannot accidentally stop configuration.
-    } else if (key < 2) m->selected ^= 1U;
-    else if (m->page == KP_MENU) page(m, m->selected == 0 ? KP_CONSOLE : KP_SETTINGS);
+    } else if (key < 2) {
+        unsigned count = m->page == KP_MENU ? 3 : m->page == KP_PROFILES ? m->config.profile_count : 2;
+        m->selected = (m->selected + (key == 0 ? count - 1 : 1)) % count;
+    } else if (m->page == KP_MENU) {
+        kp_page_t target = m->selected == 0 ? KP_CONSOLE : m->selected == 1 ? KP_PROFILES : KP_SETTINGS;
+        page(m, target);
+        if (target == KP_PROFILES) m->selected = m->config.active_profile;
+    } else if (m->page == KP_PROFILES) emit(m, KP_SELECT_PROFILE, NULL);
     else if (m->page == KP_SETTINGS) {
         bool ap = m->selected == 0;
         page(m, ap ? KP_HOTSPOT : KP_FORGET);
@@ -142,20 +284,22 @@ static void click(kp_model_t *m, unsigned key, bool doubled) {
     }
 }
 void kp_tick(kp_model_t *m, uint32_t now) {
+    if (m->feedback.visible && !m->executing && (int32_t)(now - m->feedback.until) >= 0) m->feedback.visible = false;
     if (m->blocked) return;
     for (unsigned i = 0; i < 3; ++i) {
         kp_key_t *k = &m->key[i];
         if (k->down && !k->long_sent && (uint32_t)(now - k->pressed_at) >= KP_HOLD_MS) {
             k->long_sent = true; k->pending = false; k->doubled = false;
             if (i == 2) { back(m); return; }
-            if (m->page == KP_CONSOLE) {
-                const kp_action_t *a = &m->config.bindings[i * 3 + 2];
-                if (a->type != KP_NONE) emit(m, KP_HOLD, a);
+            if (m->page == KP_CONSOLE && !m->executing && !k->ignored) {
+                m->triggered_slot = i * 3 + 2;
+                kp_step_t step;
+                if (kp_binding_step(&m->config, kp_binding(&m->config, m->triggered_slot), 0, &step)) emit(m, KP_HOLD, &step.action);
             }
         }
         if (k->pending && !k->down && (uint32_t)(now - k->released_at) >= KP_CLICK_MS) {
             k->pending = false;
-            click(m, i, false);
+            if (!k->ignored) click(m, i, false);
         }
     }
 }
@@ -171,8 +315,10 @@ void kp_input(kp_model_t *m, unsigned key, bool down, uint32_t now) {
     if (down) {
         k->doubled = k->pending;
         k->pending = false; k->down = true; k->long_sent = false; k->pressed_at = now;
+        k->ignored = m->page == KP_CONSOLE && m->executing;
     } else {
         k->down = false;
+        if (k->ignored) { memset(k, 0, sizeof(*k)); return; }
         if (k->long_sent) { emit(m, KP_RELEASE, NULL); k->long_sent = false; }
         else if (m->page != KP_CONSOLE || k->doubled) {
             k->doubled = false;

@@ -1,76 +1,255 @@
 #include "keypad_config.h"
+#include <stdio.h>
 #include <string.h>
 
-static bool number(const cJSON *object, const char *name, unsigned max, unsigned *out) {
-    const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, name);
-    if (!cJSON_IsNumber(value) || value->valuedouble < 0 || value->valuedouble > max ||
-        value->valuedouble != (double)value->valueint) return false;
-    *out = value->valueint;
-    return true;
+typedef struct {
+    kp_json_read_t read; void *user;
+    char buffer[256]; size_t pos, size, total;
+    bool failed;
+} parser_t;
+static int peek(parser_t *p) {
+    if (p->failed) return -1;
+    if (p->pos == p->size) {
+        int size = p->read(p->user, p->buffer, sizeof(p->buffer));
+        if (size < 0 || size > (int)sizeof(p->buffer)) { p->failed = true; return -1; }
+        p->pos = 0; p->size = (size_t)size;
+        if (!size) return -1;
+    }
+    return (unsigned char)p->buffer[p->pos];
 }
-static bool fields(const cJSON *obj, const char *const *names, unsigned count) {
-    if (!cJSON_IsObject(obj) || (unsigned)cJSON_GetArraySize(obj) != count) return false;
-    for (const cJSON *p = obj->child; p; p = p->next) {
-        bool found = false;
-        for (unsigned i = 0; i < count; ++i) if (p->string && !strcmp(p->string, names[i])) found = true;
-        if (!found) return false;
-        for (const cJSON *q = p->next; q; q = q->next)
-            if (q->string && !strcmp(p->string, q->string)) return false;
+static int take(parser_t *p) {
+    int c = peek(p);
+    if (c >= 0) { ++p->pos; if (++p->total > KP_JSON_BYTES) { p->failed = true; return -1; } }
+    return c;
+}
+static void space(parser_t *p) {
+    int c;
+    while ((c = peek(p)) == ' ' || c == '\n' || c == '\r' || c == '\t') (void)take(p);
+}
+static bool token(parser_t *p, int expected) { space(p); return take(p) == expected; }
+static int hex(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+static bool unicode(parser_t *p, uint32_t *out) {
+    *out = 0;
+    for (unsigned i = 0; i < 4; ++i) {
+        int n = hex(take(p)); if (n < 0) return false;
+        *out = (*out << 4) | (unsigned)n;
     }
     return true;
 }
-bool kp_config_parse(const cJSON *json, kp_config_t *out) {
-    const char *root_fields[] = {"version", "bindings"};
-    const char *action_fields[] = {"type", "modifiers", "keys", "consumer"};
-    kp_config_t c = {0}; unsigned n;
-    if (!out || !fields(json, root_fields, 2) || !number(json, "version", KP_VERSION, &n)) return false;
-    c.version = n;
-    const cJSON *bindings = cJSON_GetObjectItemCaseSensitive(json, "bindings");
-    if (!cJSON_IsArray(bindings) || cJSON_GetArraySize(bindings) != KP_BINDINGS) return false;
-    for (unsigned i = 0; i < KP_BINDINGS; ++i) {
-        const cJSON *a = cJSON_GetArrayItem(bindings, i);
-        if (!fields(a, action_fields, 4)) return false;
-        if (!number(a, "type", KP_MEDIA, &n)) return false;
-        c.bindings[i].type = n;
-        if (!number(a, "modifiers", 255, &n)) return false;
-        c.bindings[i].modifiers = n;
-        if (!number(a, "consumer", 0xffff, &n)) return false;
-        c.bindings[i].consumer = n;
-        const cJSON *keys = cJSON_GetObjectItemCaseSensitive(a, "keys");
-        if (!cJSON_IsArray(keys) || cJSON_GetArraySize(keys) > 6) return false;
-        for (int j = 0; j < cJSON_GetArraySize(keys); ++j) {
-            const cJSON *k = cJSON_GetArrayItem(keys, j);
-            if (!cJSON_IsNumber(k) || k->valuedouble <= 0 || k->valuedouble > 255 ||
-                k->valuedouble != (double)k->valueint) return false;
-            c.bindings[i].keys[j] = k->valueint;
+static bool string(parser_t *p, char *out, size_t size) {
+    if (!token(p, '"')) return false;
+    size_t used = 0;
+    for (;;) {
+        int c = take(p);
+        if (c < 0x20) return false;
+        if (c == '"') { out[used] = 0; return true; }
+        if (c == '\\') {
+            c = take(p);
+            if (c == 'u') {
+                uint32_t cp;
+                if (!unicode(p, &cp) || !cp) return false;
+                if (cp >= 0xd800 && cp <= 0xdbff) {
+                    uint32_t low;
+                    if (take(p) != '\\' || take(p) != 'u' || !unicode(p, &low) || low < 0xdc00 || low > 0xdfff) return false;
+                    cp = 0x10000 + ((cp - 0xd800) << 10) + low - 0xdc00;
+                } else if (cp >= 0xdc00 && cp <= 0xdfff) return false;
+                unsigned char bytes[4]; unsigned count;
+                if (cp < 0x80) { bytes[0] = cp; count = 1; }
+                else if (cp < 0x800) { bytes[0] = 0xc0 | (cp >> 6); bytes[1] = 0x80 | (cp & 63); count = 2; }
+                else if (cp < 0x10000) { bytes[0] = 0xe0 | (cp >> 12); bytes[1] = 0x80 | ((cp >> 6) & 63); bytes[2] = 0x80 | (cp & 63); count = 3; }
+                else { bytes[0] = 0xf0 | (cp >> 18); bytes[1] = 0x80 | ((cp >> 12) & 63); bytes[2] = 0x80 | ((cp >> 6) & 63); bytes[3] = 0x80 | (cp & 63); count = 4; }
+                if (used + count >= size) return false;
+                memcpy(out + used, bytes, count); used += count; continue;
+            }
+            switch (c) {
+            case '"': case '\\': case '/': break;
+            case 'b': c = '\b'; break; case 'f': c = '\f'; break; case 'n': c = '\n'; break;
+            case 'r': c = '\r'; break; case 't': c = '\t'; break;
+            default: return false;
+            }
         }
+        if (used + 1 >= size) return false;
+        out[used++] = (char)c;
     }
-    if (!kp_config_valid(&c)) return false;
-    *out = c;
-    return true;
 }
-cJSON *kp_config_json(const kp_config_t *c) {
-    cJSON *root = cJSON_CreateObject();
-    cJSON *list = cJSON_AddArrayToObject(root, "bindings");
-    if (!root || !list || !cJSON_AddNumberToObject(root, "version", c->version)) goto fail;
-    for (unsigned i = 0; i < KP_BINDINGS; ++i) {
-        const kp_action_t *a = &c->bindings[i];
-        cJSON *entry = cJSON_CreateObject();
-        if (!entry) goto fail;
-        if (!cJSON_AddItemToArray(list, entry)) { cJSON_Delete(entry); goto fail; }
-        if (!cJSON_AddNumberToObject(entry, "type", a->type) ||
-            !cJSON_AddNumberToObject(entry, "modifiers", a->modifiers) ||
-            !cJSON_AddNumberToObject(entry, "consumer", a->consumer)) goto fail;
-        cJSON *keys = cJSON_AddArrayToObject(entry, "keys");
-        if (!keys) goto fail;
-        for (unsigned j = 0; j < 6; ++j) if (a->keys[j]) {
-            cJSON *k = cJSON_CreateNumber(a->keys[j]);
-            if (!k) goto fail;
-            if (!cJSON_AddItemToArray(keys, k)) { cJSON_Delete(k); goto fail; }
-        }
+static bool number(parser_t *p, unsigned max, unsigned *out) {
+    space(p); int c = peek(p);
+    if (c < '0' || c > '9') return false;
+    bool zero = c == '0'; unsigned value = 0, digits = 0;
+    while ((c = peek(p)) >= '0' && c <= '9') {
+        if ((zero && digits) || value > max / 10 || (value == max / 10 && (unsigned)(c - '0') > max % 10)) return false;
+        value = value * 10 + (unsigned)(take(p) - '0'); ++digits;
     }
-    return root;
-fail:
-    cJSON_Delete(root);
-    return NULL;
+    *out = value; return true;
+}
+static bool field(parser_t *p, const char *const *names, unsigned count, unsigned *seen, unsigned *index) {
+    char name[32];
+    if (!string(p, name, sizeof(name)) || !token(p, ':')) return false;
+    for (unsigned i = 0; i < count; ++i) if (!strcmp(name, names[i])) {
+        if (*seen & (1U << i)) return false;
+        *seen |= 1U << i; *index = i; return true;
+    }
+    return false;
+}
+// Returns 1 for another item, 0 for the end, -1 for malformed delimiters.
+static int more(parser_t *p, int end) {
+    space(p); int c = take(p);
+    if (c == end) return 0;
+    return c == ',' ? 1 : -1;
+}
+static bool step(parser_t *p, kp_step_t *out) {
+    const char *const names[] = {"type", "modifiers", "keys", "consumer", "delay_ms"};
+    unsigned seen = 0, f, value; int next;
+    memset(out, 0, sizeof(*out));
+    if (!token(p, '{')) return false;
+    do {
+        if (!field(p, names, 5, &seen, &f)) return false;
+        if (f == 2) {
+            if (!token(p, '[')) return false;
+            space(p);
+            if (peek(p) == ']') { (void)take(p); continue; }
+            unsigned count = 0;
+            do {
+                if (count == 6 || !number(p, 255, &value) || !value) return false;
+                out->action.keys[count++] = value;
+            } while ((next = more(p, ']')) == 1);
+            if (next < 0) return false;
+        } else {
+            unsigned max = f == 0 ? KP_MEDIA : f == 1 ? 255 : f == 3 ? 65535 : KP_MAX_DELAY_MS;
+            if (!number(p, max, &value)) return false;
+            if (f == 0) out->action.type = value;
+            else if (f == 1) out->action.modifiers = value;
+            else if (f == 3) out->action.consumer = value;
+            else out->delay_ms = value;
+        }
+    } while ((next = more(p, '}')) == 1);
+    return next == 0 && seen == 31 && kp_action_valid(&out->action, false);
+}
+static bool binding(parser_t *p, kp_config_t *c, unsigned profile, unsigned slot) {
+    const char *const names[] = {"title", "description", "steps"};
+    char title[KP_NAME_CHARS * 4 + 1] = "", description[KP_DESCRIPTION_CHARS * 4 + 1] = "";
+    kp_step_t steps[KP_MAX_STEPS]; unsigned count = 0, seen = 0, f; int next;
+    if (!token(p, '{')) return false;
+    do {
+        if (!field(p, names, 3, &seen, &f)) return false;
+        if (f < 2) {
+            if (!string(p, f == 0 ? title : description, f == 0 ? sizeof(title) : sizeof(description))) return false;
+        } else {
+            if (!token(p, '[')) return false;
+            space(p);
+            if (peek(p) == ']') { (void)take(p); continue; }
+            do {
+                if (count == KP_MAX_STEPS || !step(p, &steps[count++])) return false;
+            } while ((next = more(p, ']')) == 1);
+            if (next < 0) return false;
+        }
+    } while ((next = more(p, '}')) == 1);
+    return next == 0 && seen == 7 && kp_binding_set(c, profile, slot, title, description, steps, count);
+}
+static bool profile(parser_t *p, kp_config_t *c) {
+    const char *const names[] = {"name", "bindings"};
+    char name[KP_NAME_CHARS * 4 + 1]; unsigned seen = 0, f, index = c->profile_count++; int next;
+    if (!token(p, '{')) return false;
+    do {
+        if (!field(p, names, 2, &seen, &f)) return false;
+        if (f == 0) {
+            if (!string(p, name, sizeof(name)) || !kp_profile_name_set(c, index, name)) return false;
+        } else {
+            if (!token(p, '[')) return false;
+            for (unsigned i = 0; i < KP_BINDINGS; ++i) {
+                if (i && !token(p, ',')) return false;
+                if (!binding(p, c, index, i)) return false;
+            }
+            if (!token(p, ']')) return false;
+        }
+    } while ((next = more(p, '}')) == 1);
+    return next == 0 && seen == 3;
+}
+bool kp_config_decode(kp_json_read_t read, void *user, kp_config_t *out) {
+    if (!read || !out) return false;
+    parser_t p = {.read = read, .user = user};
+    const char *const names[] = {"version", "active_profile", "profiles"};
+    unsigned seen = 0, f, value; int next;
+    kp_config_empty(out);
+    if (!token(&p, '{')) return false;
+    do {
+        if (!field(&p, names, 3, &seen, &f)) return false;
+        if (f == 2) {
+            if (!token(&p, '[')) return false;
+            do {
+                if (out->profile_count == KP_MAX_PROFILES || !profile(&p, out)) return false;
+            } while ((next = more(&p, ']')) == 1);
+            if (next < 0) return false;
+        } else {
+            if (!number(&p, f == 0 ? KP_VERSION : KP_MAX_PROFILES - 1, &value)) return false;
+            if (f == 0) out->version = value; else out->active_profile = value;
+        }
+    } while ((next = more(&p, '}')) == 1);
+    if (next != 0 || seen != 7) return false;
+    space(&p);
+    return peek(&p) < 0 && !p.failed && kp_config_valid(out);
+}
+typedef struct { const char *data; size_t used; } memory_t;
+static int memory_read(void *user, char *buffer, size_t capacity) {
+    memory_t *m = user; size_t count = strlen(m->data + m->used);
+    if (count > capacity) count = capacity;
+    memcpy(buffer, m->data + m->used, count); m->used += count; return (int)count;
+}
+bool kp_config_decode_string(const char *json, kp_config_t *out) {
+    if (!json) return false;
+    memory_t m = {.data = json}; return kp_config_decode(memory_read, &m, out);
+}
+typedef struct { kp_json_write_t write; void *user; char buffer[256]; size_t used; bool failed; } writer_t;
+static bool flush(writer_t *w) {
+    if (w->failed) return false;
+    if (w->used && !w->write(w->user, w->buffer, w->used)) { w->failed = true; return false; }
+    w->used = 0; return true;
+}
+static void output(writer_t *w, const char *text) {
+    while (*text && !w->failed) {
+        if (w->used == sizeof(w->buffer) && !flush(w)) return;
+        w->buffer[w->used++] = *text++;
+    }
+}
+static void quoted(writer_t *w, const char *text) {
+    output(w, "\"");
+    while (*text) {
+        char byte[2] = {*text++, 0};
+        if (byte[0] == '"' || byte[0] == '\\') output(w, "\\");
+        if (byte[0] == '\n') output(w, "\\n"); else output(w, byte);
+    }
+    output(w, "\"");
+}
+bool kp_config_encode(const kp_config_t *c, kp_json_write_t write, void *user) {
+    if (!write || !kp_config_valid(c)) return false;
+    writer_t w = {.write = write, .user = user}; char number_text[128];
+    snprintf(number_text, sizeof(number_text), "{\"version\":2,\"active_profile\":%u,\"profiles\":[", c->active_profile); output(&w, number_text);
+    for (unsigned p = 0; p < c->profile_count; ++p) {
+        if (p) output(&w, ",");
+        output(&w, "{\"name\":"); quoted(&w, kp_text(c, c->profiles[p].name)); output(&w, ",\"bindings\":[");
+        for (unsigned i = 0; i < KP_BINDINGS; ++i) {
+            const kp_binding_t *b = &c->profiles[p].bindings[i];
+            if (i) output(&w, ",");
+            output(&w, "{\"title\":"); quoted(&w, kp_text(c, b->title));
+            output(&w, ",\"description\":"); quoted(&w, kp_text(c, b->description)); output(&w, ",\"steps\":[");
+            for (unsigned j = 0; j < b->count; ++j) {
+                kp_step_t s; if (!kp_binding_step(c, b, j, &s)) return false;
+                if (j) output(&w, ",");
+                snprintf(number_text, sizeof(number_text), "{\"type\":%u,\"modifiers\":%u,\"keys\":[", s.action.type, s.action.modifiers); output(&w, number_text);
+                bool comma = false;
+                for (unsigned k = 0; k < 6; ++k) if (s.action.keys[k]) {
+                    snprintf(number_text, sizeof(number_text), "%s%u", comma ? "," : "", s.action.keys[k]); output(&w, number_text); comma = true;
+                }
+                snprintf(number_text, sizeof(number_text), "],\"consumer\":%u,\"delay_ms\":%u}", s.action.consumer, s.delay_ms); output(&w, number_text);
+            }
+            output(&w, "]}");
+        }
+        output(&w, "]}");
+    }
+    output(&w, "]}"); return flush(&w);
 }

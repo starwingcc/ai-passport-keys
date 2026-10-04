@@ -1,26 +1,60 @@
 #include "keypad_config.h"
+#include "cJSON.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-int main(void) {
-    kp_config_t c, decoded; kp_defaults(&c);
-    cJSON *root=kp_config_json(&c); assert(root);
-    assert(kp_config_parse(root,&decoded)); assert(!memcmp(&c,&decoded,sizeof(c)));
-    cJSON *list=cJSON_GetObjectItem(root,"bindings");
-    cJSON_AddItemToArray(list,cJSON_Duplicate(cJSON_GetArrayItem(list,0),true));
-    assert(!kp_config_parse(root,&decoded)); // Ninth binding could overwrite reserved OK hold.
-    cJSON_DeleteItemFromArray(list,8);
-    cJSON *a=cJSON_GetArrayItem(list,0);
-    cJSON_SetNumberValue(cJSON_GetObjectItem(a,"modifiers"),256); assert(!kp_config_parse(root,&decoded));
-    cJSON_SetNumberValue(cJSON_GetObjectItem(a,"modifiers"),1.5); assert(!kp_config_parse(root,&decoded));
-    cJSON_SetNumberValue(cJSON_GetObjectItem(a,"modifiers"),0);
-    cJSON *keys=cJSON_GetObjectItem(a,"keys");
-    cJSON_AddItemToArray(keys,cJSON_CreateNumber(c.bindings[0].keys[0])); assert(!kp_config_parse(root,&decoded));
-    cJSON_DeleteItemFromArray(keys,1);
-    cJSON_AddNumberToObject(a,"ok_long",1); assert(!kp_config_parse(root,&decoded));
-    cJSON_DeleteItemFromObject(a,"ok_long");
-    cJSON_AddNumberToObject(root,"version",1); assert(!kp_config_parse(root,&decoded));
+static char encoded[KP_JSON_BYTES+1];static size_t size;
+static bool write_json(void *user,const char *data,size_t n){(void)user;assert(size+n<=KP_JSON_BYTES);memcpy(encoded+size,data,n);size+=n;encoded[size]=0;return true;}
+static bool decode(cJSON *json,kp_config_t *out){char *s=cJSON_PrintUnformatted(json);assert(s);bool valid=kp_config_decode_string(s,out);free(s);return valid;}
+typedef struct {const char *text;size_t pos;} reader_t;
+static int one_byte(void *user,char *out,size_t max){(void)max;reader_t *r=user;if(!r->text[r->pos])return 0;*out=r->text[r->pos++];return 1;}
+int main(int argc,char **argv){
+    if(argc==2&&!strcmp(argv[1],"--defaults")){kp_config_t d;kp_defaults(&d);assert(kp_config_encode(&d,write_json,NULL));printf("{\"bytes\":%zu,\"config\":%s}\n",kp_config_size(&d),encoded);return 0;}
+    kp_config_t c,decoded;kp_defaults(&c);assert(kp_config_encode(&c,write_json,NULL));
+    assert(kp_config_decode_string(encoded,&decoded));
+    assert(decoded.profile_count==1&&decoded.active_profile==0&&kp_binding(&decoded,6)->count==1);
+    reader_t reader={encoded,0};assert(kp_config_decode(one_byte,&reader,&decoded));
+    cJSON *root=cJSON_Parse(encoded);assert(root);
+    cJSON *profiles=cJSON_GetObjectItem(root,"profiles"),*profile=cJSON_GetArrayItem(profiles,0);
+    cJSON *bindings=cJSON_GetObjectItem(profile,"bindings"),*binding=cJSON_GetArrayItem(bindings,0);
+    cJSON *steps=cJSON_GetObjectItem(binding,"steps"),*step=cJSON_GetArrayItem(steps,0);
+    cJSON_AddItemToArray(bindings,cJSON_Duplicate(binding,true));assert(!decode(root,&decoded));cJSON_DeleteItemFromArray(bindings,8);
+    cJSON_SetNumberValue(cJSON_GetObjectItem(step,"modifiers"),256);assert(!decode(root,&decoded));
+    cJSON_SetNumberValue(cJSON_GetObjectItem(step,"modifiers"),1.5);assert(!decode(root,&decoded));
+    cJSON_SetNumberValue(cJSON_GetObjectItem(step,"modifiers"),0);
+    cJSON *keys=cJSON_GetObjectItem(step,"keys");cJSON_AddItemToArray(keys,cJSON_CreateNumber(41));assert(!decode(root,&decoded));cJSON_DeleteItemFromArray(keys,1);
+    cJSON_SetNumberValue(cJSON_GetObjectItem(step,"delay_ms"),1);assert(!decode(root,&decoded));cJSON_SetNumberValue(cJSON_GetObjectItem(step,"delay_ms"),0);
+    cJSON_AddNumberToObject(step,"extra",1);assert(!decode(root,&decoded));cJSON_DeleteItemFromObject(step,"extra");
+    cJSON_AddNumberToObject(root,"version",2);assert(!decode(root,&decoded));cJSON_DeleteItemFromObject(root,"version");cJSON_DeleteItemFromObject(root,"version");cJSON_AddNumberToObject(root,"version",2);
+    cJSON_SetNumberValue(cJSON_GetObjectItem(root,"active_profile"),1);assert(!decode(root,&decoded));cJSON_SetNumberValue(cJSON_GetObjectItem(root,"active_profile"),0);
+    cJSON_SetValuestring(cJSON_GetObjectItem(binding,"title"),"😀");assert(!decode(root,&decoded));
+    cJSON_SetValuestring(cJSON_GetObjectItem(binding,"title"),"12345678901234567");assert(!decode(root,&decoded));
+    cJSON_SetValuestring(cJSON_GetObjectItem(binding,"title"),"编程龘");assert(decode(root,&decoded));
+    cJSON_AddItemToArray(profiles,cJSON_Duplicate(profile,true));assert(!decode(root,&decoded));
+    cJSON_SetValuestring(cJSON_GetObjectItem(cJSON_GetArrayItem(profiles,1),"name"),"浏览");assert(decode(root,&decoded));
     cJSON_Delete(root);
-    assert(!kp_config_parse(NULL,&decoded));
-    puts("Keypad JSON validation: PASS");
+    assert(!kp_config_decode_string("{}",&decoded));assert(!kp_config_decode_string("{\"version\":02}",&decoded));
+    char *trailing=malloc(strlen(encoded)+4);assert(trailing);sprintf(trailing,"%s {}",encoded);assert(!kp_config_decode_string(trailing,&decoded));free(trailing);
+    for(size_t n=0;n<strlen(encoded);n++) {char saved=encoded[n];encoded[n]=0;assert(!kp_config_decode_string(encoded,&decoded));encoded[n]=saved;}
+    // Binding-level limits and atomic arena allocation on overflow.
+    kp_step_t all[KP_MAX_STEPS];for(unsigned i=0;i<KP_MAX_STEPS;i++)all[i]=(kp_step_t){{.type=KP_KEYBOARD,.keys={4}},i+1==KP_MAX_STEPS?0:5000};
+    kp_defaults(&c);assert(kp_binding_set(&c,0,0,"64步","",all,KP_MAX_STEPS));
+    assert(!kp_binding_set(&c,0,0,"","",all,KP_MAX_STEPS+1));
+    uint16_t before;do{before=c.used;}while(kp_binding_set(&c,0,1,"","",all,KP_MAX_STEPS));assert(c.used==before&&kp_config_valid(&c));
+    kp_config_empty(&c);for(unsigned i=0;i<KP_MAX_PROFILES;i++){char name[16];sprintf(name,"情景%u",i);assert(kp_profile_add(&c,name));}
+    assert(!kp_profile_add(&c,"第九套"));assert(kp_config_valid(&c));
+    assert(!kp_profile_add(&c,"情景0"));
+    // Exactly 6 KiB persists; one more string cannot replace a binding.
+    kp_config_empty(&c);assert(kp_profile_add(&c,"A"));
+    for(unsigned i=0;i<7;i++)assert(kp_binding_set(&c,0,i,"",i?"":"123456789012345678901234",all,64));
+    all[16].delay_ms=0;assert(kp_binding_set(&c,0,7,"","",all,17));
+    assert(kp_config_size(&c)==KP_CONFIG_BYTES&&kp_config_valid(&c));before=c.used;
+    assert(!kp_binding_set(&c,0,7,"A","",NULL,0)&&c.used==before&&kp_config_valid(&c));
+    // The streaming parser admits the exact transport limit and rejects one extra byte.
+    size_t base=strlen(encoded);char *limit=malloc(KP_JSON_BYTES+2);assert(limit);memcpy(limit,encoded,base);
+    memset(limit+base,' ',KP_JSON_BYTES-base);limit[KP_JSON_BYTES]=0;assert(kp_config_decode_string(limit,&decoded));
+    limit[KP_JSON_BYTES]=' ';limit[KP_JSON_BYTES+1]=0;assert(!kp_config_decode_string(limit,&decoded));free(limit);
+    assert(!kp_config_decode_string(NULL,&decoded));
+    puts("Keypad streaming JSON, strict fields, Unicode and capacity: PASS");
 }

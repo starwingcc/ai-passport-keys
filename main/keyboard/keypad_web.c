@@ -6,6 +6,8 @@
 #include "esp_netif.h"
 #include "esp_random.h"
 #include "esp_mac.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,13 +17,16 @@ static esp_netif_t *s_netif;
 static bool s_wifi_initialized, s_wifi_started;
 static char s_ssid[32], s_session[33];
 static const char s_password[] = "12345678";
+#define ASSET_CHUNK_BYTES 512U
 static kp_web_request_t s_request;
-extern const char index_start[] asm("_binary_index_html_start");
-extern const char index_end[] asm("_binary_index_html_end");
-extern const char js_start[] asm("_binary_app_js_start");
-extern const char js_end[] asm("_binary_app_js_end");
-extern const char css_start[] asm("_binary_app_css_start");
-extern const char css_end[] asm("_binary_app_css_end");
+extern const char index_start[] __asm__("_binary_index_html_start");
+extern const char index_end[] __asm__("_binary_index_html_end");
+extern const char js_start[] __asm__("_binary_app_js_start");
+extern const char js_end[] __asm__("_binary_app_js_end");
+extern const char charset_start[] __asm__("_binary_charset_js_start");
+extern const char charset_end[] __asm__("_binary_charset_js_end");
+extern const char css_start[] __asm__("_binary_app_css_start");
+extern const char css_end[] __asm__("_binary_app_css_end");
 
 const char *kp_web_ssid(void) { return s_ssid; }
 const char *kp_web_password(void) { return s_password; }
@@ -33,18 +38,47 @@ static esp_err_t fail(httpd_req_t *req, const char *status, const char *message)
 static esp_err_t static_file(httpd_req_t *req) {
     const char *start = index_start, *end = index_end, *type = "text/html; charset=utf-8";
     if (!strcmp(req->uri, "/app.js")) { start = js_start; end = js_end; type = "text/javascript; charset=utf-8"; }
+    else if (!strcmp(req->uri, "/charset.js")) { start = charset_start; end = charset_end; type = "text/javascript; charset=utf-8"; }
     else if (!strcmp(req->uri, "/app.css")) { start = css_start; end = css_end; type = "text/css; charset=utf-8"; }
     httpd_resp_set_type(req, type);
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
     httpd_resp_set_hdr(req, "Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'");
-    return httpd_resp_send(req, start, end - start - 1);
+    // Large single sends can exhaust TCP/Wi-Fi buffers on this no-PSRAM board.
+    size_t remaining = end - start - 1;
+    while (remaining) {
+        size_t count = remaining < ASSET_CHUNK_BYTES ? remaining : ASSET_CHUNK_BYTES;
+        esp_err_t rc = httpd_resp_send_chunk(req, start, count);
+        if (rc != ESP_OK) {
+            ESP_LOGW("keypad_web", "Asset send failed uri=%s free=%u largest=%u",
+                     req->uri, (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+            return rc;
+        }
+        start += count; remaining -= count;
+    }
+    return httpd_resp_send_chunk(req, NULL, 0);
 }
 static bool authorized(httpd_req_t *req) {
     char token[sizeof(s_session)];
     if (httpd_req_get_hdr_value_len(req, "X-Session") != strlen(s_session)) return false;
     if (httpd_req_get_hdr_value_str(req, "X-Session", token, sizeof(token)) != ESP_OK) return false;
     return s_session[0] && strcmp(token, s_session) == 0;
+}
+typedef struct { httpd_req_t *request; size_t remaining; } body_reader_t;
+static int read_body(void *user, char *buffer, size_t capacity) {
+    body_reader_t *r = user;
+    if (!r->remaining) return 0;
+    if (capacity > r->remaining) capacity = r->remaining;
+    int count = httpd_req_recv(r->request, buffer, capacity);
+    if (count <= 0) return -1;
+    r->remaining -= count; return count;
+}
+static bool write_body(void *user, const char *buffer, size_t size) {
+    return httpd_resp_send_chunk(user, buffer, size) == ESP_OK;
+}
+static bool write_config(const kp_config_t *config, void *user) {
+    return kp_config_encode(config, write_body, user);
 }
 static esp_err_t api(httpd_req_t *req) {
     char host[32];
@@ -54,40 +88,30 @@ static esp_err_t api(httpd_req_t *req) {
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_set_type(req, "application/json");
     if (req->method == HTTP_GET) {
-        kp_config_t config; kp_store_get(&config);
-        cJSON *root = cJSON_CreateObject(), *body = kp_config_json(&config);
-        if (!root || !body) { cJSON_Delete(root); cJSON_Delete(body); return fail(req, "500 Internal Server Error", "内存不足"); }
-        if (!cJSON_AddItemToObject(root, "config", body)) {
-            cJSON_Delete(body); cJSON_Delete(root); return fail(req, "500 Internal Server Error", "内存不足");
-        }
-        if (!cJSON_AddStringToObject(root, "session", s_session)) { cJSON_Delete(root); return fail(req, "500 Internal Server Error", "内存不足"); }
-        char *text = cJSON_PrintUnformatted(root);
-        cJSON_Delete(root);
-        if (!text) return fail(req, "500 Internal Server Error", "内存不足");
-        esp_err_t rc = httpd_resp_sendstr(req, text);
-        cJSON_free(text);
-        return rc;
+        esp_err_t rc = httpd_resp_send_chunk(req, "{\"config\":", 10);
+        if (rc == ESP_OK && !kp_store_read(write_config, req)) rc = ESP_FAIL;
+        if (rc != ESP_OK) return rc;
+        char tail[64]; snprintf(tail, sizeof(tail), ",\"session\":\"%s\"}", s_session);
+        rc = httpd_resp_send_chunk(req, tail, strlen(tail));
+        return rc == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : rc;
     }
     if (!authorized(req)) return fail(req, "403 Forbidden", "设置会话已失效，请刷新页面");
-    if (req->content_len > 2048) return fail(req, "413 Payload Too Large", "配置过大");
+    if (req->content_len > KP_JSON_BYTES) return fail(req, "413 Payload Too Large", "配置过大");
     if (!strcmp(req->uri, "/api/config")) {
         if (!req->content_len) return fail(req, "400 Bad Request", "配置为空");
-        char *body = malloc(req->content_len + 1);
-        if (!body) return fail(req, "500 Internal Server Error", "内存不足");
-        size_t used = 0;
-        while (used < req->content_len) {
-            int received = httpd_req_recv(req, body + used, req->content_len - used);
-            if (received <= 0) { free(body); return ESP_FAIL; }
-            used += received;
+        kp_config_t *config = malloc(sizeof(*config));
+        if (!config) {
+            ESP_LOGE("keypad_web", "Config allocation failed free=%u largest=%u needed=%u",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                     (unsigned)sizeof(*config));
+            return fail(req, "500 Internal Server Error", "内存不足");
         }
-        body[used] = 0;
-        const char *end = NULL;
-        cJSON *json = cJSON_ParseWithLengthOpts(body, used + 1, &end, true);
-        kp_config_t config;
-        bool valid = end == body + used && kp_config_parse(json, &config);
-        cJSON_Delete(json); free(body);
-        if (!valid) return fail(req, "400 Bad Request", "无效配置；OK 长按固定返回，不可映射");
-        if (kp_store_save(&config) != ESP_OK) return fail(req, "500 Internal Server Error", "保存失败，仍使用原配置");
+        body_reader_t reader = {.request = req, .remaining = req->content_len};
+        bool valid = kp_config_decode(read_body, &reader, config) && !reader.remaining;
+        if (!valid) { free(config); return fail(req, "400 Bad Request", "无效配置：请检查文字、步骤、情景或容量；OK 长按不可映射"); }
+        esp_err_t saved = kp_store_save(config); free(config);
+        if (saved != ESP_OK) return fail(req, "500 Internal Server Error", "保存失败，仍使用原配置");
         return httpd_resp_sendstr(req, "{\"ok\":true}");
     }
     if (req->content_len) return fail(req, "400 Bad Request", "此操作不接受请求体");
@@ -142,7 +166,7 @@ esp_err_t kp_web_start(kp_web_request_t callback) {
     if (rc != ESP_OK) goto fail;
     s_wifi_started = true;
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
-    http.max_open_sockets = 3; http.max_uri_handlers = 8;
+    http.max_open_sockets = 3; http.max_uri_handlers = 9;
     http.lru_purge_enable = true; http.stack_size = 6144;
     http.recv_wait_timeout = 5; http.send_wait_timeout = 5;
     rc = httpd_start(&s_http, &http);
@@ -151,6 +175,7 @@ esp_err_t kp_web_start(kp_web_request_t callback) {
         {.uri="/", .method=HTTP_GET, .handler=static_file},
         {.uri="/app.js", .method=HTTP_GET, .handler=static_file},
         {.uri="/app.css", .method=HTTP_GET, .handler=static_file},
+        {.uri="/charset.js", .method=HTTP_GET, .handler=static_file},
         {.uri="/api/config", .method=HTTP_GET, .handler=api},
         {.uri="/api/config", .method=HTTP_POST, .handler=api},
         {.uri="/api/exit", .method=HTTP_POST, .handler=api},

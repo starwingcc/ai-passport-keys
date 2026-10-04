@@ -6,6 +6,8 @@
 #include "keypad_store.h"
 #include "keypad_web.h"
 #include "keypad_ui.h"
+#include "keypad_runner.h"
+#include <stdlib.h>
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -25,12 +27,12 @@ static atomic_uint s_physical, s_requests;
 static atomic_bool s_overflow;
 static kp_model_t s_model;
 static char s_message[96] = "准备连接 Passport Keys";
-static bool s_pulse, s_ap_start, s_ap_stop, s_forget, s_ap_active;
-static uint32_t s_pulse_until;
+static bool s_ap_start, s_ap_stop, s_forget, s_ap_active, s_select_profile;
+static unsigned s_target_profile;
+static kp_runner_t s_runner;
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 static void message(const char *text) { snprintf(s_message, sizeof(s_message), "%s", text); }
 static void release(void) {
-    s_pulse = false;
     if (kp_ble_status().ready && kp_ble_send(NULL) != ESP_OK) {
         kp_ble_recover(); message("发送异常，正在重连");
     }
@@ -38,29 +40,50 @@ static void release(void) {
 static void effect(void *user, kp_effect_t event, const kp_action_t *action) {
     (void)user;
     switch (event) {
-    case KP_TAP: case KP_HOLD:
+    case KP_TAP: case KP_HOLD: {
+        (void)action;
         kp_ble_status_t status = kp_ble_status();
         if (!status.ready) {
             message(!status.connected ? "尚未连接，指令已忽略" :
                     !status.handles_ready ? "键盘服务未就绪" :
                     !status.secure ? "等待配对完成" : "等待电脑启用键盘");
-            ESP_LOGW("keypad", "Input skipped: connected=%d secure=%d handles=%d keyboard_notify=%d paused=%d",
-                     status.connected, status.secure, status.handles_ready,
-                     status.keyboard_subscribed, status.paused);
             break;
         }
-        release();
-        esp_err_t sent = kp_ble_send(action);
-        if (sent == ESP_ERR_NOT_SUPPORTED) { message("电脑未启用媒体按键"); break; }
-        if (sent != ESP_OK) { kp_ble_recover(); message("发送异常，正在重连"); break; }
-        kp_action_label(action, s_message, sizeof(s_message));
-        s_pulse = event == KP_TAP;
-        s_pulse_until = now_ms() + 40;
+        const kp_binding_t *binding = kp_binding(&s_model.config, s_model.triggered_slot);
+        if (!kp_runner_start(&s_runner, &s_model.config, binding, event == KP_HOLD)) break;
+        kp_set_busy(&s_model, true);
+        uint32_t serial = s_model.feedback.serial + 1;
+        s_model.feedback = (kp_feedback_t){.visible = true, .holding = s_runner.hold,
+            .slot = s_model.triggered_slot, .total = binding->count,
+            .state = KP_FEEDBACK_RUNNING, .serial = serial};
+        message("正在执行");
         break;
-    case KP_RELEASE: release(); break;
+    }
+    case KP_RELEASE: kp_runner_release(&s_runner, now_ms()); break;
+    case KP_CANCEL: if (s_runner.running) message("已取消"); kp_runner_cancel(&s_runner); release(); break;
+    case KP_SELECT_PROFILE: s_target_profile = s_model.selected; s_select_profile = true; break;
     case KP_AP_START: s_ap_start = true; break;
     case KP_AP_STOP: s_ap_stop = true; break;
     case KP_CLEAR_BOND: s_forget = true; break;
+    }
+}
+static void advance_runner(void) {
+    kp_action_t action;
+    if (!kp_runner_request(&s_runner, now_ms(), &action)) return;
+    esp_err_t sent = kp_ble_send(action.type == KP_NONE ? NULL : &action);
+    uint32_t now = now_ms();
+    kp_runner_result(&s_runner, sent == ESP_OK, now);
+    s_model.feedback.completed = s_runner.completed;
+    s_model.feedback.holding = s_runner.hold;
+    if (!s_runner.running) {
+        kp_set_busy(&s_model, false);
+        s_model.feedback.state = s_runner.failed ? KP_FEEDBACK_FAILED : KP_FEEDBACK_DONE;
+        s_model.feedback.until = now + KP_FEEDBACK_MS;
+        if (s_runner.failed) {
+            release();
+            if (sent == ESP_ERR_NOT_SUPPORTED) message("电脑未启用媒体按键");
+            else { kp_ble_recover(); message("发送失败，剩余步骤已取消"); }
+        } else message("已完成");
     }
 }
 static void on_key(bsp_btn_t key, bsp_btn_ev_t ev, void *user) {
@@ -73,11 +96,14 @@ static void on_key(bsp_btn_t key, bsp_btn_ev_t ev, void *user) {
     if (xQueueSend(s_queue, &input, 0) != pdTRUE) atomic_store(&s_overflow, true);
 }
 static void web_request(bool forget) { atomic_fetch_or(&s_requests, forget ? 2U : 1U); }
-static void resync_input(void) {
+static void sync_physical_input(void) {
     // Drop all queued events on mode/link transitions. Synchronize the physical
     // state as well, including a release that could have been lost on overflow.
     xQueueReset(s_queue);
     s_model.down_mask = atomic_load(&s_physical);
+}
+static void resync_input(void) {
+    sync_physical_input();
     kp_cancel(&s_model);
 }
 static void memory_log(const char *phase) {
@@ -93,8 +119,9 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(kp_store_init());
-    kp_config_t config; kp_store_get(&config);
-    kp_init(&s_model, &config, effect, NULL);
+    kp_config_t *config = malloc(sizeof(*config));
+    if (!config) { ESP_LOGE("keypad", "Configuration allocation failed"); return; }
+    kp_store_get(config); kp_init(&s_model, config, effect, NULL); free(config);
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) { ESP_LOGE("keypad", "Display unavailable"); return; }
     bsp_display_backlight(80);
     bool battery_ok = bsp_battery_init() == ESP_OK;
@@ -112,7 +139,9 @@ void app_main(void) {
         uint32_t now = now_ms();
         kp_ble_status_t ble = kp_ble_status();
         if (ble.generation != generation) {
-            generation = ble.generation; resync_input();
+            bool interrupted = s_runner.running;
+            generation = ble.generation; sync_physical_input(); kp_link_changed(&s_model, now);
+            if (interrupted) message("连接状态变化，指令已停止");
         }
         if (atomic_exchange(&s_overflow, false)) { resync_input(); message("输入已恢复，请重新按键"); }
         input_t input;
@@ -127,14 +156,26 @@ void app_main(void) {
         }
         now = now_ms();
         kp_tick(&s_model, now);
-        if (s_pulse && (int32_t)(now - s_pulse_until) >= 0) release();
+        advance_runner();
+        if (s_select_profile) {
+            s_select_profile = false; resync_input();
+            uint8_t previous = s_model.config.active_profile;
+            s_model.config.active_profile = s_target_profile;
+            if (kp_store_save(&s_model.config) == ESP_OK) {
+                ++s_model.config_revision; s_model.page = KP_CONSOLE; s_model.selected = 0;
+                message("情景已切换");
+            } else {
+                s_model.config.active_profile = previous; message("保存失败，仍使用原情景");
+            }
+            resync_input();
+        }
         unsigned request = atomic_exchange(&s_requests, 0);
         if (request && s_model.page == KP_HOTSPOT) kp_hotspot_exit(&s_model);
         if (s_ap_stop) {
             s_ap_stop = false;
             rc = kp_web_stop();
             if (rc == ESP_OK) {
-                s_ap_active = false; kp_store_get(&s_model.config);
+                s_ap_active = false; kp_store_get(&s_model.config); ++s_model.config_revision;
                 kp_ble_pause(false); message("热点已关闭");
                 if (request & 2U) { s_model.page = KP_FORGET; s_model.selected = 0; }
             } else { s_model.page = KP_HOTSPOT; message("关闭失败，长按 OK 重试"); }

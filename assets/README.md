@@ -19,17 +19,23 @@ Store reusable font files and generated font sources in `fonts/`.
 
 ### Passport Keys fonts
 
-The Chinese console embeds `passport_font_16.c` and `passport_font_20.c`,
-16/20 px, 4 bpp, uncompressed, read-only LVGL assets explicitly selected by
-all application labels. `passport-codepoints.txt` lists 195 glyphs: printable
-ASCII and the fixed device UI text. No runtime font file loading is needed.
+The application embeds three uncompressed, read-only LVGL fonts: dynamic 16/28 px
+at 2 bpp and fixed-interface 20 px at 4 bpp. `passport-codepoints.txt` lists 21,364
+dynamic glyphs; `passport-ui-codepoints.txt` lists 228 fixed glyphs. Labels explicitly
+select their font; dynamic scenario names use 16 px rather than the fixed subset.
+`CONFIG_LV_FONT_FMT_TXT_LARGE=y` is required for bitmap offsets beyond 20 bits.
 
 Source: [Noto Sans CJK SC Regular](https://github.com/notofonts/noto-cjk/blob/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf),
 SHA-256 `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`.
 The SIL Open Font License is retained in [fonts/OFL.txt](fonts/OFL.txt).
-The subset's internal family name is changed to `PassportKeysSubset`;
-[fonts/passport-keys-subset.otf](fonts/passport-keys-subset.otf) preserves the
-actual outlines used for conversion.
+The subset is renamed `PassportKeysSubset`; [fonts/passport-keys-subset.otf](fonts/passport-keys-subset.otf)
+retains the actual outlines. No runtime font-file loading is needed.
+
+The inventory covers source-supported U+4E00–U+9FFF, printable ASCII, selected
+U+3000–U+303F and U+FF00–U+FFEE characters, ellipsis, direction arrows and fixed text.
+Vertical kana repeat marks U+3031/U+3032 are excluded because they span two lines.
+Unsupported characters are rejected by the shared C/JavaScript coverage tables,
+including emoji. This is a declared inventory, not all Unicode or all Chinese.
 
 Generate with FontTools 4.61.1, lv_font_conv 1.5.3 and Node.js:
 
@@ -40,11 +46,12 @@ python3 tools/generate_keypad_fonts.py \
 python3 tests/test_keypad_fonts.py
 ```
 
-Run from the repository root. The generator verifies the source cmap, extracts
-fixed device text from `main/main.c` and `main/keyboard/*.c` (excluding web-only
-text), and records the subset. Regenerate after adding device text. The static
-test parses both generated cmaps; the application's LVGL host preview also
-checks real glyph lookup and a known missing glyph. Real-screen acceptance
+The generator checks the source cmap, includes fixed text from `main/main.c` and
+`main/keyboard/*.c` except web-only code, updates inventories and C/web coverage,
+and converts without compression or kerning. Regenerate after changing device
+text. Static tests parse all three cmaps, including sparse/dense missing entries;
+LVGL previews verify actual glyph lookup, a missing-glyph negative case and screen
+layout. Check Flash size and runtime heap/stack separately; real-screen acceptance
 remains necessary. See the [application guide](../docs/assets/passport-keys.md).
 
 ## Images
