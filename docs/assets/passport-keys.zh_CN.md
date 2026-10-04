@@ -1,216 +1,101 @@
 [English](passport-keys.md) · **简体中文**
 
-# Passport Keys
+# Passport Keys 应用说明
 
-Passport Keys 将三键 ESP32-C3 Passport 变成支持组合动作和情景配置的蓝牙键盘，
-无需电脑常驻软件。目标为 ESP-IDF 5.5.3、8 MB Flash、无 PSRAM、240×320 屏幕。
-设备界面使用中文。
+Passport Keys 将三键 AI Passport 变成支持动作和情景配置的蓝牙键盘，无需电脑常驻软件。
 
-## 快速开始
+## 使用
 
-1. 按下文说明安装已验证固件。开机进入**开始控制**，展示当前情景和映射。
-2. 在电脑蓝牙设置连接 **Passport Keys**。Just Works 配对无需六位配对码，
-   也无需在 Passport 上确认数字。
-3. 打开文本编辑器：上键发送 Esc，下键发送 Backspace，OK 发送回车；
-   长按上键保持左 Option，双击下键发送左 Command+A。
-4. 长按 OK **500ms** 打开主菜单。**情景列表**用于切换配置，**设置**用于
-   热点配置或清除蓝牙配对。
+开机进入**开始控制**。在电脑蓝牙设置中连接 **Passport Keys**，即可通过设备按键发送指令。
 
-清除配对不会删除情景。电脑缓存了旧名称或配对时，在 Passport 清除配对，
-并在电脑忽略这台键盘后重新连接。
+默认映射：
 
-## 按键、详情与执行
-
-```text
-开始控制（默认开机页）
-└── 长按 OK → 主菜单
-    ├── 开始控制
-    ├── 情景列表 → 上下选择，OK 保存并切换
-    └── 设置
-        ├── 热点配置 → 热点名称、密码、网页地址
-        └── 清除蓝牙配对 → 取消／确认
-```
-
-上下循环选择，短按 OK 进入或确认。长按 OK 返回上一层，在主菜单不执行操作。
-只有开始控制向电脑发送按键。OK 长按为全局保留操作，没有可配置映射位。
-
-| 实体键 | 单击 | 双击 | 长按 |
+| 按键 | 单击 | 双击 | 长按 |
 | --- | --- | --- | --- |
 | 上 | Esc | 禁用 | 保持左 Option |
 | 下 | Backspace | 左 Command+A | 保持方向下 |
-| OK | 回车 | 禁用 | 固定返回 |
+| OK | 回车 | 禁用 | 打开菜单／返回 |
 
-每个情景有八个独立动作。单击松开后等待 **180ms** 双击窗口。长按达到 **500ms**
-后触发；双击第二次按下保持到阈值时转为长按，不发送双击。已有保存映射会迁移到
-“默认”情景，固件更新继续保留它们。
+菜单中，上下选择，短按 OK 进入或确认，长按 OK 返回。通过**情景列表**切换当前情景。
+换电脑时，在**设置 → 清除蓝牙配对**中清除配对，并在旧电脑上忽略设备。清除配对不会删除情景。
 
-动作可以配置标题和描述；副标题显示实际序列，例如 `Command+A → Command+C`。
-执行期间，开始控制用全屏详情替代映射列表；完成后再保留 **500ms**，然后返回总览。
-单步长按在实体键松开后完成。标题 28px，副标题和描述 16px；长内容换行，超出可视
-区域时省略。网页提供使用浏览器字体的预览。
+配置动作：
 
-点击动作的每一步按下键盘组合键或媒体键约 **40ms**，释放全部报告后，再等待下一步。
-默认间隔 **80ms**，可配置为 **0–5000ms**，最后一步没有额外等待。上／下长按绑定
-单步时保持到松开，重复速度由电脑决定；绑定多步时完整执行一次，松开不会截断或
-重复组合。
+1. 进入**设置 → 热点配置**，选择**开启**并确认。蓝牙暂时断开；确认页默认选中取消。
+2. 按屏幕显示的名称和密码连接热点，在浏览器打开 `http://192.168.4.1`。
+3. 新增或编辑情景，选择实体键和手势，填写标题并添加键盘／媒体步骤。步骤列表为空即禁用。
+   如需更改开机情景，点击**设为当前**，然后保存修改。
+4. 在设备长按 OK，或在网页点击**退出热点**。蓝牙恢复，返回开始控制即可使用已保存的动作。
 
-执行期间忽略新的指令手势，不排队、不补发。长按 OK 可取消剩余步骤、释放报告并
-打开菜单。页面、情景和连接状态变化，输入过期／溢出或报告发送失败也会停止执行。
-失败步骤不自动重试，设备无法撤销已完成的步骤。媒体控制需要电脑启用 Consumer
-通知订阅，Boot 协议下不可用。
+最多支持 **8 个情景**、**每动作 64 步**，情景名称和动作标题最多 **16 个字符**，
+网页显示总容量。OK 长按保留给导航和取消。单步长按保持到松开，多步长按只执行一次。
+动作执行期间忽略新指令，长按 OK 可取消。
 
-ADC 电阻梯只能识别一个实体键；电脑组合键应配置到一个动作。60 秒无实体输入时，
-背光降至 12%，再次按键恢复 80%。
+## 构建与刷写
 
-## 通过 Wi-Fi 配置动作和情景
-
-1. 长按 OK，进入设置，再选择热点配置。
-2. 连接屏幕显示的 `Passport-Keys-XXXX`，使用固定 WPA2 密码 **`12345678`**，
-   屏幕也显示该密码；只允许一个 Wi-Fi 客户端。
-3. 打开 `http://192.168.4.1`。HTML、CSS、JavaScript 和字形覆盖数据全部内置。
-4. 选择要编辑的情景，或新增空白、复制、重命名、删除情景。编辑不会自动激活；
-   点击**设为当前**后保存才会生效。至少保留一个情景；删除当前情景时选择剩余
-   第一个。设备重启后记住已保存的当前情景。
-5. 选择上／下／OK 的单击、双击或长按，编辑标题和描述，然后添加键盘／媒体步骤。
-   每一步可独立录制组合键或手动选键，并调整顺序、删除和等待时间。没有步骤即禁用。
-   OK 长按只读。
-6. 保存。文字无效、容量超限或 NVS 提交失败时，设备保留原配置，网页保留未保存编辑。
-7. 在 Passport 长按 OK 或网页退出热点。设备停止 HTTP 和 Wi-Fi、恢复 BLE，
-   不重启，返回设置；再返回主菜单进入开始控制。
-
-上限为 **8 个情景**、**每动作 64 步**、**全部紧凑配置共 6 KiB**；网页显示占用，
-各项最大值不能保证同时达到。情景名称和标题最多 16 个 Unicode 字符，描述最多
-64 个；名称不能为空或重复，描述允许换行。生成的字形清单支持 21,364 个字形，
-包括源字体具备的基本汉字、可打印 ASCII 和选定标点／符号。不支持的字符明确拒绝，
-包括 emoji 和竖排假名重复符 U+3031／U+3032。参见
-[字库资源](../../assets/README.zh_CN.md#passport-keys-字库)。
-
-录制使用 `KeyboardEvent.code`，保留修饰键左右侧并忽略自动重复。取消、失焦、
-页面隐藏、切换情景／按键页或调整步骤结构都会取消录制。Fn、输入法、系统快捷键
-和浏览器保留组合可能被拦截，此时手动选键。浏览器预览不能证明设备的精确字体效果。
-
-热点期间暂停 BLE。网页请求清除配对时先退出热点，再在设备上确认，之后才删除配对。
-
-## 按键与蓝牙兼容
-
-- 标准键盘用法码 `0x04–0x73`，排除电源键 `0x66`，包含 F1–F24 和小键盘。
-  一个组合键最多六个不同普通键。
-- 左右 Control、Shift、Option/Alt、Command/GUI，共八个修饰位，支持纯修饰键组合。
-- 音量加减、静音、播放暂停、上一首（`0xB6`）和下一首（`0xB5`）。
-
-仍不支持真正的 Apple Fn／地球键、厂商专用键、亮度／背光／电源控制、文本输入
-及多电脑切换。用法码遵循
-[USB HID 用法表](https://www.usb.org/sites/default/files/hut1_21_0.pdf)。
-
-设备保留一台电脑的配对记录。换电脑前清除配对，并在电脑忽略旧记录。Just Works
-保留加密和配对，但首次连接没有 MITM 身份核对。发送要求已连接、加密、配对、
-16 字节密钥及键盘通知订阅，不要求表示 MITM 的 `authenticated` 标志。固定 IDF
-版本的等级 3 Boot 声明有语法问题，因此 HID 使用等级 2 的加密 GATT。
-
-## 开发与配置契约
-
-先读 [AGENTS.zh_CN.md](../../AGENTS.zh_CN.md)、
-[AI 指南](../development/ai-guide.zh_CN.md)并确认五个必需的
-[Passport Skill](../../skills/README.zh_CN.md)。继续当前应用分支并保留本地修改。
-按[环境指南](../development/engineering/environment-setup.zh_CN.md)激活 **ESP-IDF 5.5.3**。
-
-| 子系统 | 职责 |
-| --- | --- |
-| `main/main.c` | 工作任务、带时间戳输入、BLE／热点切换、情景提交、反馈与背光 |
-| `main/keyboard/keypad_model.*`、`keypad_text.c` | 纯手势、导航、紧凑配置、UTF-8 和字形检查 |
-| `main/keyboard/keypad_runner.*` | 纯报告序列、确认计时、长按、取消与失败处理 |
-| `main/keyboard/keypad_config.*`、`keypad_store.*` | 有界流式 JSON、互斥保护的 NVS 持久化 |
-| `main/keyboard/keypad_web.*`、`main/web/` | 热点生命周期、本地动作与情景编辑器 |
-| `main/keyboard/keypad_ui.*`、`assets/fonts/` | 复用的 LVGL 对象、详情／列表页和经验证的字库 |
-
-版本 2 JSON 根字段恰为 `version`、从零开始的 `active_profile` 和 `profiles`。
-每个情景有 `name` 和八个 `bindings`，依次为上单击／双击／长按、下单击／双击／
-长按、OK 单击／双击。每个动作含 `title`、`description`、`steps`；每步含 `type`
-（1 键盘、2 媒体）、`modifiers`、`keys`、`consumer`、`delay_ms`。空步骤禁用动作，
-最后等待为零。拒绝未知／重复字段、非法整数字面量、重复／不支持的按键、不支持的
-字形及超限值。
-
-NVS 命名空间 `passport_keys` 将紧凑有界 blob 存于 `config_v2`。有效 v2 优先；
-否则将有效 `config_v1` 迁移到默认情景，保留旧数据用于回退。迁移提交失败时在 RAM
-使用旧映射，下次启动重试。缺失／损坏配置回退默认，不擦除 NVS 或配对。只有 NVS
-提交成功后才替换当前配置。
-
-| 请求 | 结果 |
-| --- | --- |
-| `GET /api/config` | 有界分块输出 `{config, session}` |
-| `POST /api/config` | 严格校验版本 2 并提交 |
-| `POST /api/exit` | 空请求体，退出热点并返回设置 |
-| `POST /api/forget` | 空请求体，退出热点后请求设备确认 |
-
-POST 必须带 GET 返回的 `X-Session`。API Host 为 `192.168.4.1`，可附加 `:80`，
-不开放 CORS。请求体最多 **32 KiB**，socket 最多三个，Wi-Fi 客户端最多一个。
-解析使用小型流式缓冲区，不构建完整 JSON 树，不在任务栈放大配置副本；退出热点
-后重新载入配置。
-
-网页静态资源按 **512 字节块**流式发送。配置 GET 在存储互斥锁保护下直接编码已提交
-配置，不额外复制 6 KiB 快照；传输失败也会释放锁。读取回调不得调用存储 API 或保留
-配置指针。POST 仍使用有界堆候选，校验、分配或 NVS 提交失败都保留原配置。
-
-配置热点将可选的 Wi-Fi 收发代码保留在 Flash，避免占用共享指令／数据 RAM。TCP
-发送队列为**每连接 2,880 字节**（两个 MSS），以峰值吞吐换取内存余量。这些优化保留
-情景、步骤、文字和容量的全部上限。发送／分配失败日志只记录空闲堆和最大连续块，
-不记录配置内容或会话。
-
-保留容量 24 的输入队列及 250ms 过期取消。BLE 命令由 NimBLE 串行处理，超时后
-保留缓冲区所有权。按键回调只入队；LVGL 访问持有 `bsp_lvgl_lock()`。界面缓存配置
-修订号和可见反馈，不复制整套配置。原硬件测试 demo 保留为参考，不编译进应用。
-
-## 验证、预览与刷写
+使用 **ESP-IDF 5.5.3**；未安装时先按[环境指南](../development/engineering/environment-setup.zh_CN.md)
+准备环境。在仓库根目录执行。以下使用当前 `build/tooling` 下的已有安装；
+其他安装位置请调整路径：
 
 ```sh
-source /path/to/esp-idf-v5.5.3/export.sh
-./tools/validate.sh --static
+export IDF_TOOLS_PATH="$PWD/build/tooling/espressif"
+export IDF_PYTHON_ENV_PATH="$IDF_TOOLS_PATH/python_env/idf5.5_py3.12_env"
+export PATH="$IDF_PYTHON_ENV_PATH/bin:$PATH"
+source "$PWD/build/tooling/esp-idf-v5.5.3/export.sh"
+PASSPORT_PY="$IDF_PYTHON_ENV_PATH/bin/python"
 ./tools/validate.sh
-cmake -S tests/keypad_preview -B build/preview
-cmake --build build/preview
-mkdir -p build/preview/screens
-build/preview/keypad_preview build/preview/screens
 ```
 
-主机门禁覆盖手势、组合执行、UTF-8／字形清单、JSON、NVS 迁移与失败、BLE、HTTP
-和网页辅助逻辑。HTTP 检查用单次最多发送 512 字节的传输桩测试实际内嵌资源，在禁用
-堆分配时读取完整 6 KiB 配置，并验证发送失败、锁释放、POST 错误和启动回滚。网页
-默认值／容量与固件生成的样本比较。实际 LVGL 预览验证字形查找，
-渲染六个页面、五种详情状态、长情景列表和长总览标题，再在与固件匹配的 24 KiB
-内置分配器中重复 100 次详情／总览切换。应用使用明确样式，关闭未使用的自动主题。
-这些检查不能证明射频、操作系统时序或实屏效果。
+完整门禁会测试、构建并校验固件，生成 `build/FoloToy-AI-Passport.bin` 和
+`build/FoloToy-AI-Passport-full.bin`。开机后用 USB 数据线连接设备，查看串口并设置
+`PASSPORT_PORT`。当前 macOS 设备使用 `/dev/cu.usbmodem1201`；如果列出的端口不同，
+请使用实际值：
 
-2026-10-04 使用 ESP-IDF 5.5.3 和受版本管理的默认配置验证得到：
+```sh
+"$PASSPORT_PY" -m serial.tools.list_ports
+PASSPORT_PORT=/dev/cu.usbmodem1201
+```
 
-| 资源 | 测得边界 |
-| --- | --- |
-| 应用镜像／factory 分区 | 7,151,056 / 8,323,072 字节 |
-| 链接时内部 RAM／链接器容量 | 167,786 / 321,296 字节 |
-| 运行时分配前的剩余内部 RAM | 153,510 字节 |
-| 64 位主机 LVGL 内存池 | 记录峰值分配 17,432 字节；最大剩余块 3,840 字节 |
-| 紧凑配置 | 恰好 6,144 字节通过，超限拒绝 |
-| 流式 JSON 输入 | 恰好 32,768 字节通过，超限拒绝 |
+刷写命令需在同一个终端执行；新开终端时，先重新激活 ESP-IDF 并设置 `PASSPORT_PY`。
 
-MAP 中的 RAM 余量不等于运行时空闲堆。字体位图／描述符留在 Flash，整套配置候选
-使用有界堆分配。相比此前占用 187,182 字节的构建，内存优化释放 **19,396 字节**
-链接时内部 RAM，移除 GET 的 6 KiB 快照，并将每连接发送队列减半。此前实机测得
-启动空闲堆 66,160 字节，热点启动后、客户端请求前剩余 22,044 字节；该固件加载
-网页时配置 GET 分配失败。优化固件仍需重新测量实机内存并验收热点。
-启动和热点开启／关闭日志记录空闲堆、最大连续块、历史最小堆及
-工作任务栈水位。最大配置下的热点运行和反复热点进出仍须在板上测量。
+### 更新并保留情景和配对
 
-完整门禁保留已验证的 `build/FoloToy-AI-Passport-full.bin`，并在
-`build/firmware/<full-image-sha256>/` 保存匹配的镜像、ELF、MAP、manifest。用
-`python3 tools/archive_firmware.py verify build/firmware/<full-image-sha256>` 校验指定归档。
-构建、预览和私有日志保持忽略，不自动发布。
+本项目现有分区布局不变时，仅将应用镜像写入 **`0x10000`**：
 
-空设备或有意完整刷新时，将验证过的合并 `full.bin` 写入 **`0x0`**，其填充可能重置
-NVS 映射和配对。保留配置时先确认现有分区表，再将匹配应用写入实际应用起点，通常
-为 **`0x10000`**。不能将应用单镜像写入 `0x0`。不要求原固件备份或整片擦除；遵循
-[刷写／数据政策](../development/engineering/firmware-layout.zh_CN.md#刷写与存储数据)，
-写入前取得授权。
+```sh
+"$PASSPORT_PY" -m esptool \
+  --chip esp32c3 --port "$PASSPORT_PORT" --baud 460800 \
+  --before default_reset --after hard_reset \
+  write_flash --flash_mode dio --flash_freq 80m --flash_size 8MB \
+  0x10000 build/FoloToy-AI-Passport.bin
+```
 
-实机验收应检查组合顺序与间隔、两种长按、忙时输入抑制、OK 取消、断开／重连不补发、
-情景保存／重启／迁移、中文显示与长文本省略，以及十轮热点进出后的堆／栈稳定性。
-分别报告 **Build**、**Host tests**、**Device tests**、**Unverified**。此前 Mac 的基本输入
-验收不能替代这些新功能的设备验证。日志不记录按键、配对秘密和原始报告内容。
+### 首次安装或完整刷新
+
+将合并镜像写入 **`0x0`**。**这会清除已保存的情景和配对。**
+
+```sh
+"$PASSPORT_PY" -m esptool \
+  --chip esp32c3 --port "$PASSPORT_PORT" --baud 460800 \
+  --before default_reset --after hard_reset \
+  write_flash --flash_mode dio --flash_freq 80m --flash_size 8MB \
+  0x0 build/FoloToy-AI-Passport-full.bin
+```
+
+刷写后重新连接蓝牙，检查按键输入和情景切换。
+
+## Agent 开发入口
+
+从 [AGENTS.zh_CN.md](../../AGENTS.zh_CN.md) 开始，遵循
+[AI 开发指南](../development/ai-guide.zh_CN.md)，确认必需的
+[Passport Skill](../../skills/README.zh_CN.md) 可用，并保留已有改动。
+
+- `main/main.c` 和 `main/keyboard/`：设备交互、蓝牙、配置和存储。
+- `main/web/`：热点配置网页。
+- `assets/fonts/` 和 `tests/`：字库资源与验证。
+
+保留既有容量上限、热点内存优化和存储数据兼容，具体实现约束以源码和测试为准。
+迭代时运行 `./tools/validate.sh --static`，交付前运行完整门禁。界面修改还需检查
+[LVGL 预览](../../tests/keypad_preview/)和[字体覆盖](../../assets/README.zh_CN.md#passport-keys-字库)。
+分别报告 Build、Host tests、Device tests 和 Unverified。刷写前取得用户授权，
+难以由 Agent 可靠测量的实机项目交给用户操作。未经请求不提交、不推送。

@@ -12,7 +12,7 @@ bool kp_codepoint_supported(uint32_t cp) {
     }
     return false;
 }
-bool kp_text_valid(const char *text, unsigned limit, bool multiline) {
+static bool text_valid(const char *text, unsigned limit, bool multiline, bool display_coverage) {
     if (!text) return false;
     const unsigned char *p = (const unsigned char *)text;
     unsigned count = 0;
@@ -28,7 +28,16 @@ bool kp_text_valid(const char *text, unsigned limit, bool multiline) {
             cp = (cp << 6) | (*p++ & 0x3f);
         }
         if (cp < minimum || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return false;
-        if (++count > limit || (!kp_codepoint_supported(cp) && !(multiline && cp == '\n'))) return false;
+        if (++count > limit) return false;
+        if (multiline && cp == '\n') continue;
+        if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f) ||
+            (display_coverage && !kp_codepoint_supported(cp))) return false;
     }
     return true;
+}
+bool kp_text_valid(const char *text, unsigned limit, bool multiline) {
+    return text_valid(text, limit, multiline, true);
+}
+bool kp_text_utf8_valid(const char *text, unsigned limit, bool multiline) {
+    return text_valid(text, limit, multiline, false);
 }

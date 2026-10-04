@@ -17,10 +17,14 @@
 
 ### Passport Keys 字库
 
-应用嵌入三份未压缩、只读 LVGL 字库：动态文字使用 16/28px、2bpp，固定界面使用
-20px、4bpp。`passport-codepoints.txt` 列出 21,364 个动态字形，
-`passport-ui-codepoints.txt` 列出 228 个固定字形。控件显式绑定字体；动态情景名称
-使用 16px，不使用固定子集。位图偏移超过 20 位，需要 `CONFIG_LV_FONT_FMT_TXT_LARGE=y`。
+应用嵌入四份只读 LVGL 字库：动态文字使用 16/20/28px、2bpp、无损 RLE 压缩，
+固定界面使用未压缩 20px、4bpp。`passport-codepoints.txt` 列出 3,886 个动态字形，
+`passport-ui-codepoints.txt` 列出 227 个固定字形。控件显式绑定字体；动态情景名称
+与所有菜单行均使用 `passport_font_20_menu`。开始控制仍使用 16px 映射文字及固定
+20px 实体键标签。压缩后的 16/28px 字库保留原来的像素和度量。
+全部子集的位图偏移均在 20 位以内；`CONFIG_LV_FONT_FMT_TXT_LARGE=n`
+将字形描述表的存储减半。
+`CONFIG_LV_USE_FONT_COMPRESSED=y` 启用有界字形解码。
 
 来源：[Noto Sans CJK SC Regular](https://github.com/notofonts/noto-cjk/blob/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf)，
 SHA-256 为 `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`。
@@ -28,10 +32,12 @@ SIL Open Font License 保存在 [fonts/OFL.txt](fonts/OFL.txt)。子集更名为
 `PassportKeysSubset`；[fonts/passport-keys-subset.otf](fonts/passport-keys-subset.otf)
 保留实际轮廓。运行时无需读取字体文件。
 
-清单覆盖源字体具备的 U+4E00–U+9FFF、可打印 ASCII、选定的 U+3000–U+303F 和
-U+FF00–U+FFEE 字符、省略号、方向箭头及固定文字。竖排假名重复符 U+3031／U+3032
-因跨越两行而排除。共享 C／JavaScript 覆盖表拒绝不支持字符，包括 emoji；这份
-明确清单不代表全部 Unicode 或全部中文。
+清单包含 GB2312 一级的 3,755 个汉字、可打印 ASCII、常用中文标点、省略号、
+方向箭头及全部固定界面字符。可复现的选择规则位于 `tools/keypad_font_inventory.py`。
+共享 C／JavaScript 覆盖表拒绝新输入的不支持字符，包括生僻字及 emoji。
+更改清单后，已有 v2／v3 配置的名称及快捷键仍会保留：UTF-8 原文保持完整，设备
+以可见占位符显示缺字，浏览器显示原名供修改。通过浏览器保存前，需要替换名称中
+不支持的字符。这份清单不代表全部中文或全部 Unicode。
 
 使用 FontTools 4.61.1、lv_font_conv 1.5.3 和 Node.js 生成：
 
@@ -43,8 +49,8 @@ python3 tests/test_keypad_fonts.py
 ```
 
 生成器检查源 cmap，收集 `main/main.c` 和 `main/keyboard/*.c` 的固定文字（排除
-仅网页代码），更新清单和 C／网页覆盖数据，再以无压缩、无字距调整方式转换。
-修改设备文字后重新生成。静态测试解析三份 cmap，包括稀疏／密集映射中的缺字；
+仅网页代码），更新清单和 C／网页覆盖数据，再以无字距调整方式转换，三种动态字号
+使用压缩。修改设备文字后重新生成。静态测试解析四份 cmap，包括稀疏／密集映射中的缺字；
 LVGL 预览验证实际字形查找、缺字负例与布局。Flash 容量和运行时堆／栈单独检查，
 仍须实屏验收。参见[应用指南](../docs/assets/passport-keys.zh_CN.md)。
 

@@ -4,6 +4,7 @@
 #include "../main/keyboard/keypad_store.c"
 static uint8_t persisted[KP_CONFIG_BYTES],staged[KP_CONFIG_BYTES];static size_t persisted_size,staged_size;
 static kp_legacy_config_t legacy;
+static kp_v2_config_t v2;static size_t v2_size;
 static bool legacy_valid,fail_open,fail_set,fail_commit;
 static int locked,opened,commits;
 SemaphoreHandle_t xSemaphoreCreateMutex(void){return &locked;}
@@ -13,10 +14,11 @@ esp_err_t nvs_open(const char *ns,int mode,nvs_handle_t *h){assert(!strcmp(ns,"p
 esp_err_t nvs_get_blob(nvs_handle_t h,const char *key,void *out,size_t *size){
     assert(h==1&&opened);const void *data;size_t n;
     if(!strcmp(key,"config_v1")){if(!legacy_valid)return ESP_FAIL;data=&legacy;n=sizeof(legacy);}
-    else {assert(!strcmp(key,"config_v2"));if(!persisted_size)return ESP_FAIL;data=persisted;n=persisted_size;}
+    else if(!strcmp(key,"config_v2")){if(!v2_size)return ESP_FAIL;data=&v2;n=v2_size;}
+    else {assert(!strcmp(key,"config_v3"));if(!persisted_size)return ESP_FAIL;data=persisted;n=persisted_size;}
     if(!out){*size=n;return ESP_OK;}if(*size<n)return ESP_FAIL;memcpy(out,data,n);*size=n;return ESP_OK;
 }
-esp_err_t nvs_set_blob(nvs_handle_t h,const char *key,const void *data,size_t n){assert(h==1&&opened&&!strcmp(key,"config_v2")&&n<=sizeof(staged));if(fail_set)return ESP_FAIL;memcpy(staged,data,n);staged_size=n;return ESP_OK;}
+esp_err_t nvs_set_blob(nvs_handle_t h,const char *key,const void *data,size_t n){assert(h==1&&opened&&!strcmp(key,"config_v3")&&n<=sizeof(staged));if(fail_set)return ESP_FAIL;memcpy(staged,data,n);staged_size=n;return ESP_OK;}
 esp_err_t nvs_commit(nvs_handle_t h){assert(h==1&&opened);if(fail_commit)return ESP_FAIL;memcpy(persisted,staged,staged_size);persisted_size=staged_size;++commits;return ESP_OK;}
 void nvs_close(nvs_handle_t h){assert(h==1&&opened);opened=0;}
 static bool read_committed(const kp_config_t *config, void *user){
@@ -41,6 +43,13 @@ int main(void){
     assert(kp_store_save(&c)==ESP_OK&&persisted_size==kp_config_size(&c));assert(kp_store_init()==ESP_OK);
     kp_store_get(&actual);assert(actual.active_profile==1&&!memcmp(&c,&actual,sizeof(c)));
     assert(kp_store_read(read_committed,&c)&&!locked);
+    // A font shrink must not reset profiles or macros stored by older firmware.
+    kp_config_t rare=c;
+    memcpy(rare.data+rare.profiles[1].name,"龘字",7);
+    memcpy(rare.data+rare.profiles[0].bindings[6].title,"靐字",7);
+    assert(kp_config_valid(&rare));memcpy(persisted,&rare,kp_config_size(&rare));
+    assert(kp_store_init()==ESP_OK);kp_store_get(&actual);assert(!memcmp(&actual,&rare,sizeof(actual)));
+    assert(!kp_profile_name_set(&actual,1,"龘字")&&!kp_binding_set(&actual,0,6,"靐字",NULL,0));
     c.version=99;assert(kp_store_save(&c)==ESP_ERR_INVALID_ARG);
     // Valid v1 survives failed migration commits and takes priority over defaults.
     persisted_size=0;legacy=(kp_legacy_config_t){.version=1};legacy.bindings[0]=(kp_action_t){.type=KP_KEYBOARD,.keys={0x52}};legacy_valid=true;
@@ -48,8 +57,64 @@ int main(void){
     assert(!persisted_size&&kp_binding_step(&actual,kp_binding(&actual,0),0,&s)&&s.action.keys[0]==0x52);
     fail_commit=false;int previous=commits;assert(kp_store_init()==ESP_OK&&commits==previous+1);
     assert(legacy_valid&&legacy.bindings[0].keys[0]==0x52);assert(kp_store_init()==ESP_OK&&commits==previous+1);
-    // Invalid/truncated v2 falls back to the retained v1, without an NVS erase.
-    ((kp_config_t *)persisted)->version=99;assert(kp_store_init()==ESP_OK);kp_store_get(&actual);assert(kp_binding_step(&actual,kp_binding(&actual,0),0,&s)&&s.action.keys[0]==0x52);
-    persisted_size=10;legacy_valid=false;assert(kp_store_init()==ESP_OK);kp_store_get(&actual);assert(!memcmp(&actual,&original,sizeof(actual)));
-    puts("Keypad NVS v1 migration, profile persistence and failure recovery: PASS");
+    // Multi-profile v2 uses its exact disk layout and discards only descriptions.
+    persisted_size=0;memset(&v2,0,sizeof(v2));v2.version=2;v2.used=1;v2.profile_count=8;v2.active_profile=7;
+    for(unsigned p=0;p<8;p++){
+        char name[16];sprintf(name,"情景%u",p);v2.profiles[p].name=v2.used;memcpy(v2.data+v2.used,name,strlen(name)+1);v2.used+=strlen(name)+1;
+        for(unsigned i=0;i<8;i++){
+            kp_v2_binding_t *b=&v2.profiles[p].bindings[i];b->title=v2.used;memcpy(v2.data+v2.used,"标题",7);v2.used+=7;
+            b->description=v2.used;memcpy(v2.data+v2.used,"旧描述",10);v2.used+=10;
+            b->count=(p+i)%3; if(!b->count)continue;
+            b->steps=(v2.used+1)&~1U;
+            for(unsigned j=0;j<b->count;j++){kp_step_t step={{.type=KP_KEYBOARD,.keys={4+i}},j+1==b->count?0:137};memcpy(v2.data+b->steps+j*sizeof(step),&step,sizeof(step));}
+            v2.used=b->steps+b->count*sizeof(kp_step_t);
+        }
+    }
+    // A v2 blob at the 6 KiB boundary is still valid input; compaction frees its unused arena.
+    v2.used=sizeof(v2.data);v2_size=sizeof(v2);kp_v2_config_t retained=v2;
+    fail_set=true;assert(kp_store_init()==ESP_OK&&!persisted_size);fail_set=false;
+    fail_commit=true;assert(kp_store_init()==ESP_OK&&!persisted_size);kp_store_get(&actual);
+    assert(actual.version==3&&actual.profile_count==8&&actual.active_profile==7&&kp_config_valid(&actual));
+    assert(kp_config_size(&actual)<KP_CONFIG_BYTES&&!memcmp(&v2,&retained,sizeof(v2)));
+    for(unsigned p=0;p<8;p++){char name[16];sprintf(name,"情景%u",p);assert(!strcmp(kp_text(&actual,actual.profiles[p].name),name));}
+    for(unsigned p=0;p<8;p++)for(unsigned i=0;i<8;i++){
+        const kp_binding_t *b=&actual.profiles[p].bindings[i];assert(!strcmp(kp_text(&actual,b->title),"标题")&&b->count==(p+i)%3);
+        for(unsigned j=0;j<b->count;j++){assert(kp_binding_step(&actual,b,j,&s)&&s.action.keys[0]==4+i&&s.delay_ms==(j+1==b->count?0:137));}
+    }
+    original=actual;assert(kp_store_init()==ESP_OK);kp_store_get(&actual);assert(!memcmp(&actual,&original,sizeof(actual)));
+    fail_commit=false;previous=commits;assert(kp_store_init()==ESP_OK&&commits==previous+1&&!memcmp(&v2,&retained,sizeof(v2)));
+    assert(kp_store_init()==ESP_OK&&commits==previous+1);kp_store_get(&actual);assert(!memcmp(&actual,&original,sizeof(actual)));
+    // Reject malformed legacy metadata/steps before touching the destination.
+    kp_config_t sentinel=original;v2.active_profile=8;assert(!kp_migrate_v2(&v2,v2_size,&sentinel)&&!memcmp(&sentinel,&original,sizeof(sentinel)));v2=retained;
+    assert(!kp_migrate_v2(&v2,v2_size-1,&sentinel));
+    v2.profiles[0].bindings[1].reserved=1;assert(!kp_migrate_v2(&v2,v2_size,&sentinel));v2=retained;
+    kp_step_t bad={{.type=KP_KEYBOARD,.keys={0x66}},0};memcpy(v2.data+v2.profiles[0].bindings[1].steps,&bad,sizeof(bad));assert(!kp_migrate_v2(&v2,v2_size,&sentinel));v2=retained;
+    // Invalid/truncated v3 falls back to retained v2, then invalid v2 to v1.
+    ((kp_config_t *)persisted)->version=99;assert(kp_store_init()==ESP_OK);kp_store_get(&actual);assert(actual.active_profile==7);
+    persisted_size=10;v2.profiles[0].bindings[0].title=v2.used;assert(kp_store_init()==ESP_OK);kp_store_get(&actual);
+    assert(actual.profile_count==1&&kp_binding_step(&actual,kp_binding(&actual,0),0,&s)&&s.action.keys[0]==0x52);
+    v2=retained;persisted_size=0;v2_size=536;legacy_valid=false;assert(kp_store_init()==ESP_OK);kp_store_get(&actual);kp_defaults(&original);assert(!memcmp(&actual,&original,sizeof(actual)));
+    // A fully occupied v2 arena, with 465 live steps and a live description, migrates without loss.
+    memset(&v2,0,sizeof(v2));v2.version=2;v2.profile_count=1;v2.used=28;v2.profiles[0].name=1;
+    memcpy(v2.data+1,"A",2);memcpy(v2.data+3,"123456789012345678901234",25);v2.profiles[0].bindings[0].description=3;
+    for(unsigned i=0;i<8;i++){
+        kp_v2_binding_t *b=&v2.profiles[0].bindings[i];b->steps=v2.used;b->count=i==7?17:64;
+        for(unsigned j=0;j<b->count;j++){kp_step_t step={{.type=KP_KEYBOARD,.keys={4}},j+1==b->count?0:5000};memcpy(v2.data+v2.used,&step,sizeof(step));v2.used+=sizeof(step);}
+    }
+    assert(offsetof(kp_v2_config_t,data)+v2.used==KP_CONFIG_BYTES&&kp_migrate_v2(&v2,sizeof(v2),&actual));
+    assert(kp_config_size(&actual)==5992&&kp_config_valid(&actual));
+    for(unsigned i=0;i<8;i++){assert(kp_binding(&actual,i)->count==(i==7?17:64));assert(kp_binding_step(&actual,kp_binding(&actual,i),0,&s)&&s.action.keys[0]==4&&s.delay_ms==5000);}
+    // v2 migration also preserves formerly supported names and action data.
+    v2=retained;memcpy(v2.data+v2.profiles[0].name,"龘字0",8);
+    memcpy(v2.data+v2.profiles[0].bindings[1].title,"靐字",7);
+    memcpy(v2.data+v2.profiles[0].bindings[1].description,"龘描述",10);
+    assert(kp_migrate_v2(&v2,sizeof(v2),&actual)&&kp_config_valid(&actual));
+    assert(actual.profile_count==8&&actual.active_profile==7);
+    assert(!strcmp(kp_text(&actual,actual.profiles[0].name),"龘字0"));
+    const kp_binding_t *restored=&actual.profiles[0].bindings[1];
+    assert(!strcmp(kp_text(&actual,restored->title),"靐字")&&restored->count==1);
+    assert(kp_binding_step(&actual,restored,0,&s)&&s.action.keys[0]==5&&s.delay_ms==0);
+    original=actual;v2.data[v2.profiles[0].name]=0xc0;
+    assert(!kp_migrate_v2(&v2,sizeof(v2),&actual)&&!memcmp(&actual,&original,sizeof(actual)));
+    puts("Keypad NVS v1/v2/v3 migration, profile persistence and failure recovery: PASS");
 }

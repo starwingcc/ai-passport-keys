@@ -7,7 +7,7 @@
 <section class="profiles" aria-label="情景列表"><div class="profile-heading"><label for="profile">编辑情景</label><span id="current-profile"></span></div><div class="profile-tools"><select id="profile" aria-label="选择要编辑的情景"></select><button id="new-profile" class="secondary">新增空白</button><button id="copy-profile" class="secondary">复制</button><button id="delete-profile" class="quiet">删除</button><button id="activate-profile" class="secondary">设为当前</button></div><div class="profile-meta"><label>情景名称 <input id="profile-name" maxlength="16" autocomplete="off"></label><span id="capacity"></span></div></section>
 <div class="toolbar"><div class="tabs" role="tablist" aria-label="实体按键"><button class="tab active" data-key="0" role="tab" aria-selected="true">↑ 上键</button><button class="tab" data-key="1" role="tab" aria-selected="false">↓ 下键</button><button class="tab" data-key="2" role="tab" aria-selected="false">OK 确定键</button></div><span id="dirty">正在读取设备…</span></div>
 <section id="actions" aria-label="按键动作"></section>
-<section class="notes"><p><b>01 / 执行</b> 单击等待约 180ms。长按 500ms 触发：单步保持到松开，多步只执行一次。组合执行期间忽略新指令，长按 OK 可取消。</p><p><b>02 / 详情</b> 标题和描述显示在设备全屏详情中，副标题自动列出按键序列。完成后保留 0.5 秒。长内容换行，超出屏幕时省略。</p></section>
+<section class="notes"><p><b>01 / 执行</b> 双击无步骤时，短按松开立即发送单击；有步骤时等待 180ms，快速连点按两次一组发送双击。上下键长按 200ms；仅绑定长按时按下立即执行。单步保持到松开，多步只执行一次。OK 长按仍为 500ms。组合执行期间忽略新指令，长按 OK 可取消。</p><p><b>02 / 详情</b> 标题显示在设备全屏详情中，副标题自动列出按键序列。完成后保留 0.5 秒。长内容换行，超出屏幕时省略。</p></section>
 <footer><button id="defaults" class="quiet">恢复默认配置</button><div><button id="exit" class="secondary">退出热点</button><button id="save" class="primary">保存到 Passport <span>↗</span></button></div></footer>
 </fieldset>
 <p id="status" role="status" aria-live="polite"></p>

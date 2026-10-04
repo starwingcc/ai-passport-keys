@@ -4,14 +4,14 @@
 #include <stdint.h>
 
 #define KP_BINDINGS 8
-#define KP_VERSION 2
+#define KP_VERSION 3
 #define KP_MAX_PROFILES 8
 #define KP_MAX_STEPS 64
 #define KP_CONFIG_BYTES 6144
 #define KP_NAME_CHARS 16
-#define KP_DESCRIPTION_CHARS 64
 #define KP_CLICK_MS 180U
-#define KP_HOLD_MS 500U
+#define KP_ACTION_HOLD_MS 200U
+#define KP_SYSTEM_HOLD_MS 500U
 #define KP_PULSE_MS 40U
 #define KP_FEEDBACK_MS 500U
 #define KP_DELAY_MS 80U
@@ -22,7 +22,7 @@ typedef struct { uint8_t type, modifiers, keys[6]; uint16_t consumer; } kp_actio
 typedef struct { uint32_t version; kp_action_t bindings[KP_BINDINGS]; } kp_legacy_config_t;
 typedef struct { kp_action_t action; uint16_t delay_ms; } kp_step_t;
 // Offsets refer to data, never to pointers or native heap allocations.
-typedef struct { uint16_t title, description, steps; uint8_t count, reserved; } kp_binding_t;
+typedef struct { uint16_t title, steps; uint8_t count, reserved; } kp_binding_t;
 typedef struct { uint16_t name; kp_binding_t bindings[KP_BINDINGS]; } kp_profile_t;
 #define KP_CONFIG_HEADER (8 + KP_MAX_PROFILES * sizeof(kp_profile_t))
 typedef struct {
@@ -35,7 +35,7 @@ typedef struct {
 _Static_assert(sizeof(kp_config_t) == KP_CONFIG_BYTES, "configuration budget");
 _Static_assert(sizeof(kp_step_t) == 12, "persisted step layout");
 
-typedef enum { KP_CONSOLE, KP_MENU, KP_SETTINGS, KP_HOTSPOT, KP_FORGET, KP_PROFILES } kp_page_t;
+typedef enum { KP_CONSOLE, KP_MENU, KP_SETTINGS, KP_HOTSPOT, KP_FORGET, KP_PROFILES, KP_AP_CONFIRM } kp_page_t;
 typedef enum { KP_TAP, KP_HOLD, KP_RELEASE, KP_AP_START, KP_AP_STOP,
                KP_CLEAR_BOND, KP_CANCEL, KP_SELECT_PROFILE } kp_effect_t;
 typedef void (*kp_emit_t)(void *user, kp_effect_t effect, const kp_action_t *action);
@@ -67,12 +67,14 @@ void kp_config_empty(kp_config_t *config);
 bool kp_profile_add(kp_config_t *config, const char *name);
 bool kp_profile_name_set(kp_config_t *config, unsigned profile, const char *name);
 bool kp_binding_set(kp_config_t *config, unsigned profile, unsigned slot,
-                    const char *title, const char *description, const kp_step_t *steps, unsigned count);
+                    const char *title, const kp_step_t *steps, unsigned count);
 const char *kp_text(const kp_config_t *config, unsigned offset);
 const kp_binding_t *kp_binding(const kp_config_t *config, unsigned slot);
 bool kp_binding_step(const kp_config_t *config, const kp_binding_t *binding, unsigned index, kp_step_t *out);
 size_t kp_config_size(const kp_config_t *config);
 bool kp_text_valid(const char *text, unsigned max_chars, bool multiline);
+// Stored names survive a font inventory change; new input still uses kp_text_valid.
+bool kp_text_utf8_valid(const char *text, unsigned max_chars, bool multiline);
 bool kp_codepoint_supported(uint32_t codepoint);
 bool kp_action_valid(const kp_action_t *action, bool allow_none);
 bool kp_legacy_valid(const kp_legacy_config_t *config);

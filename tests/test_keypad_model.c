@@ -8,16 +8,18 @@ static void effect(void *ctx, kp_effect_t e, const kp_action_t *a) { (void)ctx; 
 static void press(kp_model_t *m, unsigned k, uint32_t t) { kp_input(m,k,true,t); }
 static void release(kp_model_t *m, unsigned k, uint32_t t) { kp_input(m,k,false,t); }
 static void click(kp_model_t *m, unsigned k, uint32_t t) { press(m,k,t); release(m,k,t+40); kp_tick(m,t+220); }
+static void quick(kp_model_t *m, unsigned k, uint32_t t) { press(m,k,t); release(m,k,t+20); }
 static void set(kp_config_t *c, unsigned slot, kp_action_t a) {
-    kp_step_t step={.action=a}; assert(kp_binding_set(c,0,slot,"","",&step,1));
+    kp_step_t step={.action=a}; assert(kp_binding_set(c,0,slot,"",&step,1));
 }
 int main(void) {
     kp_config_t c; kp_defaults(&c); assert(kp_config_valid(&c) && sizeof(c)==6144);
+    set(&c,1,(kp_action_t){.type=KP_KEYBOARD,.keys={5}});
     kp_model_t m; kp_init(&m,&c,effect,NULL);
     press(&m,0,0); release(&m,0,50); kp_tick(&m,229); assert(count[KP_TAP]==0);
     kp_tick(&m,230); assert(count[KP_TAP]==1 && last.keys[0]==0x29);
-    press(&m,0,300); kp_tick(&m,799); assert(count[KP_HOLD]==0);
-    kp_tick(&m,800); assert(count[KP_HOLD]==1 && last.modifiers==4 && !last.keys[0]);
+    press(&m,0,300); kp_tick(&m,499); assert(count[KP_HOLD]==0);
+    kp_tick(&m,500); assert(count[KP_HOLD]==1 && last.modifiers==4 && !last.keys[0]);
     kp_tick(&m,1200); assert(count[KP_HOLD]==1 && count[KP_RELEASE]==0);
     release(&m,0,1300); assert(count[KP_RELEASE]==1);
     click(&m,1,1700); assert(count[KP_TAP]==2 && last.keys[0]==0x2a);
@@ -31,24 +33,31 @@ int main(void) {
     click(&m,2,4100); assert(count[KP_SELECT_PROFILE]==1 && m.page==KP_PROFILES);
     press(&m,2,4400); kp_tick(&m,4900); release(&m,2,5000); assert(m.page==KP_MENU);
     click(&m,0,5100); click(&m,2,5400); assert(m.page==KP_SETTINGS); // UP wraps to third entry.
-    click(&m,2,5700); assert(m.page==KP_HOTSPOT && count[KP_AP_START]==1);
-    click(&m,2,6000); assert(m.page==KP_HOTSPOT);
-    press(&m,2,6300); kp_tick(&m,6800); release(&m,2,6900);
+    quick(&m,2,5700); assert(m.page==KP_AP_CONFIRM && !m.selected && !count[KP_AP_START]);
+    quick(&m,2,5800); assert(m.page==KP_SETTINGS && !count[KP_AP_START] && !count[KP_AP_STOP]);
+    quick(&m,2,5900); assert(m.page==KP_AP_CONFIRM);
+    press(&m,2,6000); kp_tick(&m,6499); assert(m.page==KP_AP_CONFIRM);
+    kp_tick(&m,6500);release(&m,2,6510);assert(m.page==KP_SETTINGS&&!count[KP_AP_START]&&!count[KP_AP_STOP]);
+    quick(&m,2,6600);quick(&m,0,6700);assert(m.selected==1);quick(&m,1,6800);assert(m.selected==0);
+    quick(&m,1,6900);quick(&m,2,7000);assert(m.page==KP_HOTSPOT&&count[KP_AP_START]==1);
+    quick(&m,2,7100); assert(m.page==KP_HOTSPOT);
+    press(&m,2,7200); kp_tick(&m,7700); release(&m,2,7800);
     assert(m.page==KP_SETTINGS && count[KP_AP_STOP]==1);
-    click(&m,1,7000); click(&m,2,7300); assert(m.page==KP_FORGET && !m.selected);
-    click(&m,2,7600); assert(m.page==KP_SETTINGS && !count[KP_CLEAR_BOND]);
-    click(&m,1,7900); click(&m,2,8200); click(&m,1,8500); click(&m,2,8800);
+    quick(&m,1,7900); quick(&m,2,8000); assert(m.page==KP_FORGET && !m.selected);
+    quick(&m,2,8100); assert(m.page==KP_SETTINGS && !count[KP_CLEAR_BOND]);
+    quick(&m,1,8200); quick(&m,2,8300); quick(&m,1,8400); quick(&m,2,8500);
     assert(count[KP_CLEAR_BOND]==1 && m.page==KP_SETTINGS);
     // Each physical gesture maps independently; OK hold is never a ninth binding.
     for(unsigned slot=0;slot<KP_BINDINGS;slot++) {
         kp_defaults(&c); set(&c,slot,(kp_action_t){.type=KP_KEYBOARD,.keys={4+slot}});
         kp_init(&m,&c,effect,NULL); memset(count,0,sizeof(count)); unsigned key=slot/3,g=slot%3;
         press(&m,key,0);
-        if(g==2){kp_tick(&m,499);assert(!count[KP_HOLD]);kp_tick(&m,500);release(&m,key,600);assert(count[KP_HOLD]==1&&count[KP_RELEASE]==1);}
+        if(g==2){kp_tick(&m,199);assert(!count[KP_HOLD]);kp_tick(&m,200);release(&m,key,600);assert(count[KP_HOLD]==1&&count[KP_RELEASE]==1);}
         else {release(&m,key,40);if(g==1){press(&m,key,100);release(&m,key,140);}kp_tick(&m,400);assert(count[KP_TAP]==1);}
         assert(last.keys[0]==4+slot && m.triggered_slot==slot);
     }
-    // A second press held to 500ms becomes a hold, never a double tap.
+    // A second press held to 200ms becomes a hold, never a double tap.
+    set(&c,1,(kp_action_t){.type=KP_KEYBOARD,.keys={5}});
     kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
     press(&m,0,0);release(&m,0,30);press(&m,0,100);kp_tick(&m,600);release(&m,0,700);kp_tick(&m,1000);
     assert(!count[KP_TAP] && count[KP_HOLD]==1);
@@ -63,6 +72,28 @@ int main(void) {
     press(&m,1,0);kp_set_busy(&m,false);kp_tick(&m,600);release(&m,1,700);kp_tick(&m,1000);
     assert(!count[KP_TAP] && !count[KP_HOLD] && !count[KP_RELEASE]);
     kp_set_busy(&m,true);press(&m,2,1100);kp_tick(&m,1600);assert(m.page==KP_MENU&&!m.executing&&count[KP_CANCEL]);release(&m,2,1700);
+    // No double binding: every release sends the single immediately, even with a title on an empty action.
+    kp_defaults(&c);assert(kp_binding_set(&c,0,1,"空双击",NULL,0));kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
+    for(unsigned i=0;i<6;i++){quick(&m,0,i*50);assert(count[KP_TAP]==i+1&&!m.key[0].pending);}
+    kp_tick(&m,1000);assert(count[KP_TAP]==6);
+    // Bound singles/doubles: five quick taps yield two doubles and one delayed single.
+    set(&c,1,(kp_action_t){.type=KP_KEYBOARD,.keys={5}});kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
+    for(unsigned i=0;i<5;i++){quick(&m,0,i*50);assert(count[KP_TAP]==(i+1)/2);if(i%2)assert(m.triggered_slot==1&&last.keys[0]==5);}
+    kp_tick(&m,399);assert(count[KP_TAP]==2);kp_tick(&m,400);assert(count[KP_TAP]==3&&m.triggered_slot==0);
+    // At exactly the click deadline, the previous single expires before the next press.
+    kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));quick(&m,0,UINT32_MAX-99);
+    kp_tick(&m,99);assert(!count[KP_TAP]);press(&m,0,100);assert(count[KP_TAP]==1);release(&m,0,120);kp_tick(&m,300);assert(count[KP_TAP]==2);
+    // 199ms is a short press; 200ms starts a hold. OK remains a 500ms system gesture.
+    kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));press(&m,0,0);release(&m,0,199);kp_tick(&m,379);assert(count[KP_TAP]==1&&!count[KP_HOLD]);
+    press(&m,0,400);release(&m,0,600);assert(count[KP_HOLD]==1&&count[KP_RELEASE]==1);kp_tick(&m,1000);assert(count[KP_TAP]==1);
+    press(&m,2,1100);kp_tick(&m,1599);assert(m.page==KP_CONSOLE);kp_tick(&m,1600);assert(m.page==KP_MENU);release(&m,2,1610);
+    // Hold-only UP starts on the press, stays once, and releases on the edge.
+    assert(kp_binding_set(&c,0,0,"空单击",NULL,0));assert(kp_binding_set(&c,0,1,"",NULL,0));
+    kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));press(&m,0,UINT32_MAX-50);assert(count[KP_HOLD]==1);
+    kp_tick(&m,500);assert(count[KP_HOLD]==1);release(&m,0,501);assert(count[KP_RELEASE]==1&&!count[KP_TAP]);
+    // Inputs begun while busy, including hold-only keys, cannot be replayed after completion.
+    kp_set_busy(&m,true);quick(&m,0,600);quick(&m,1,650);kp_set_busy(&m,false);kp_tick(&m,1000);assert(!count[KP_TAP]&&count[KP_HOLD]==1);
+    press(&m,0,1100);kp_cancel(&m);assert(m.blocked&&count[KP_CANCEL]);release(&m,0,1200);assert(!m.blocked&&count[KP_RELEASE]==1);
     // Feedback expires at exactly 500ms, including wrap; menus cannot be timed out.
     kp_init(&m,&c,effect,NULL);m.feedback=(kp_feedback_t){.visible=true,.until=300};
     kp_tick(&m,299);assert(m.feedback.visible);kp_tick(&m,300);assert(!m.feedback.visible);
@@ -85,7 +116,12 @@ int main(void) {
     a.keys[0]=4;a.keys[1]=4;assert(!kp_action_valid(&a,false));
     char text[80];a=(kp_action_t){.type=KP_MEDIA,.consumer=0xb5};kp_action_label(&a,text,sizeof(text));assert(!strcmp(text,"下一首"));
     a.consumer=0xb6;kp_action_label(&a,text,sizeof(text));assert(!strcmp(text,"上一首"));
-    assert(kp_text_valid("编程浏览龘，ABC",16,false));assert(!kp_text_valid("😀",16,false));
+    assert(kp_text_valid("编程浏览，ABC",16,false));assert(!kp_text_valid("😀",16,false));
+    assert(!kp_text_valid("龘",16,false)&&!kp_codepoint_supported(0x9f98));
+    assert(kp_text_utf8_valid("编程龘",16,false));
+    assert(!kp_text_utf8_valid("\xc0\xaf",16,false)&&!kp_text_utf8_valid("\xed\xa0\x80",16,false));
+    assert(!kp_text_utf8_valid("a\nb",16,false)&&kp_text_utf8_valid("a\nb",64,true));
+    assert(!kp_text_utf8_valid("\xc2\x85",16,false)&&!kp_text_utf8_valid("12345678901234567",16,false));
     assert(!kp_text_valid("\xc0\xaf",16,false));assert(!kp_text_valid("\xed\xa0\x80",16,false));
     assert(!kp_text_valid("a\nb",16,false)&&kp_text_valid("a\nb",64,true));
     assert(!kp_text_valid("12345678901234567",16,false));

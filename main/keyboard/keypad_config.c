@@ -131,14 +131,14 @@ static bool step(parser_t *p, kp_step_t *out) {
     return next == 0 && seen == 31 && kp_action_valid(&out->action, false);
 }
 static bool binding(parser_t *p, kp_config_t *c, unsigned profile, unsigned slot) {
-    const char *const names[] = {"title", "description", "steps"};
-    char title[KP_NAME_CHARS * 4 + 1] = "", description[KP_DESCRIPTION_CHARS * 4 + 1] = "";
+    const char *const names[] = {"title", "steps"};
+    char title[KP_NAME_CHARS * 4 + 1] = "";
     kp_step_t steps[KP_MAX_STEPS]; unsigned count = 0, seen = 0, f; int next;
     if (!token(p, '{')) return false;
     do {
-        if (!field(p, names, 3, &seen, &f)) return false;
-        if (f < 2) {
-            if (!string(p, f == 0 ? title : description, f == 0 ? sizeof(title) : sizeof(description))) return false;
+        if (!field(p, names, 2, &seen, &f)) return false;
+        if (f == 0) {
+            if (!string(p, title, sizeof(title))) return false;
         } else {
             if (!token(p, '[')) return false;
             space(p);
@@ -149,7 +149,7 @@ static bool binding(parser_t *p, kp_config_t *c, unsigned profile, unsigned slot
             if (next < 0) return false;
         }
     } while ((next = more(p, '}')) == 1);
-    return next == 0 && seen == 7 && kp_binding_set(c, profile, slot, title, description, steps, count);
+    return next == 0 && seen == 3 && kp_binding_set(c, profile, slot, title, steps, count);
 }
 static bool profile(parser_t *p, kp_config_t *c) {
     const char *const names[] = {"name", "bindings"};
@@ -228,7 +228,7 @@ static void quoted(writer_t *w, const char *text) {
 bool kp_config_encode(const kp_config_t *c, kp_json_write_t write, void *user) {
     if (!write || !kp_config_valid(c)) return false;
     writer_t w = {.write = write, .user = user}; char number_text[128];
-    snprintf(number_text, sizeof(number_text), "{\"version\":2,\"active_profile\":%u,\"profiles\":[", c->active_profile); output(&w, number_text);
+    snprintf(number_text, sizeof(number_text), "{\"version\":3,\"active_profile\":%u,\"profiles\":[", c->active_profile); output(&w, number_text);
     for (unsigned p = 0; p < c->profile_count; ++p) {
         if (p) output(&w, ",");
         output(&w, "{\"name\":"); quoted(&w, kp_text(c, c->profiles[p].name)); output(&w, ",\"bindings\":[");
@@ -236,7 +236,7 @@ bool kp_config_encode(const kp_config_t *c, kp_json_write_t write, void *user) {
             const kp_binding_t *b = &c->profiles[p].bindings[i];
             if (i) output(&w, ",");
             output(&w, "{\"title\":"); quoted(&w, kp_text(c, b->title));
-            output(&w, ",\"description\":"); quoted(&w, kp_text(c, b->description)); output(&w, ",\"steps\":[");
+            output(&w, ",\"steps\":[");
             for (unsigned j = 0; j < b->count; ++j) {
                 kp_step_t s; if (!kp_binding_step(c, b, j, &s)) return false;
                 if (j) output(&w, ",");

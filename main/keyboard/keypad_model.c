@@ -49,15 +49,14 @@ bool kp_action_valid(const kp_action_t *a, bool allow_none) {
     return allow_none && !any && !a->consumer;
 }
 bool kp_binding_set(kp_config_t *c, unsigned profile, unsigned slot,
-                    const char *title, const char *description, const kp_step_t *steps, unsigned count) {
+                    const char *title, const kp_step_t *steps, unsigned count) {
     if (profile >= c->profile_count || slot >= KP_BINDINGS || count > KP_MAX_STEPS ||
-        (count && !steps) || !kp_text_valid(title, KP_NAME_CHARS, false) ||
-        !kp_text_valid(description, KP_DESCRIPTION_CHARS, true)) return false;
+        (count && !steps) || !kp_text_valid(title, KP_NAME_CHARS, false)) return false;
     for (unsigned i = 0; i < count; ++i)
         if (!kp_action_valid(&steps[i].action, false) || steps[i].delay_ms > KP_MAX_DELAY_MS ||
             (i + 1 == count && steps[i].delay_ms)) return false;
     uint16_t before = c->used; kp_binding_t b = {0};
-    if (!put_text(c, title, &b.title) || !put_text(c, description, &b.description)) goto fail;
+    if (!put_text(c, title, &b.title)) goto fail;
     if (count) {
         unsigned offset = (c->used + 1U) & ~1U;
         if (offset + count * sizeof(*steps) > sizeof(c->data)) goto fail;
@@ -77,7 +76,7 @@ bool kp_binding_step(const kp_config_t *c, const kp_binding_t *b, unsigned index
 }
 static bool stored_text(const kp_config_t *c, unsigned offset, unsigned limit, bool multiline) {
     return offset < c->used && memchr(c->data + offset, 0, c->used - offset) &&
-           kp_text_valid(kp_text(c, offset), limit, multiline);
+           kp_text_utf8_valid(kp_text(c, offset), limit, multiline);
 }
 bool kp_config_valid(const kp_config_t *c) {
     if (!c || c->version != KP_VERSION || !c->profile_count || c->profile_count > KP_MAX_PROFILES ||
@@ -91,7 +90,6 @@ bool kp_config_valid(const kp_config_t *c) {
             const kp_binding_t *b = &profile->bindings[i];
             if (b->count > KP_MAX_STEPS || b->reserved ||
                 !stored_text(c, b->title, KP_NAME_CHARS, false) ||
-                !stored_text(c, b->description, KP_DESCRIPTION_CHARS, true) ||
                 (!b->count && b->steps) || (b->count && (b->steps & 1))) return false;
             for (unsigned j = 0; j < b->count; ++j) {
                 kp_step_t step;
@@ -116,7 +114,7 @@ bool kp_migrate(const kp_legacy_config_t *old, kp_config_t *c) {
         bool enter = step.action.type == KP_KEYBOARD && !step.action.modifiers && step.action.keys[0] == 0x28;
         for (unsigned j = 1; j < 6; ++j) if (step.action.keys[j]) enter = false;
         const char *title = enter ? "回车" : "";
-        if (!kp_binding_set(c, 0, i, title, "", &step, step.action.type == KP_NONE ? 0 : 1)) return false;
+        if (!kp_binding_set(c, 0, i, title, &step, step.action.type == KP_NONE ? 0 : 1)) return false;
     }
     return true;
 }
@@ -250,7 +248,7 @@ static void back(kp_model_t *m) {
     switch (m->page) {
     case KP_CONSOLE: case KP_SETTINGS: page(m, KP_MENU); break;
     case KP_HOTSPOT: kp_hotspot_exit(m); break;
-    case KP_FORGET: page(m, KP_SETTINGS); break;
+    case KP_FORGET: case KP_AP_CONFIRM: page(m, KP_SETTINGS); break;
     case KP_PROFILES: page(m, KP_MENU); break;
     case KP_MENU: kp_cancel(m); break;
     }
@@ -275,12 +273,30 @@ static void click(kp_model_t *m, unsigned key, bool doubled) {
     } else if (m->page == KP_PROFILES) emit(m, KP_SELECT_PROFILE, NULL);
     else if (m->page == KP_SETTINGS) {
         bool ap = m->selected == 0;
-        page(m, ap ? KP_HOTSPOT : KP_FORGET);
-        if (ap) emit(m, KP_AP_START, NULL);
+        page(m, ap ? KP_AP_CONFIRM : KP_FORGET);
+    } else if (m->page == KP_AP_CONFIRM) {
+        bool confirm = m->selected == 1;
+        page(m, confirm ? KP_HOTSPOT : KP_SETTINGS);
+        if (confirm) emit(m, KP_AP_START, NULL);
     } else if (m->page == KP_FORGET) {
         bool confirm = m->selected == 1; // Cancel is initially selected.
         page(m, KP_SETTINGS);
         if (confirm) emit(m, KP_CLEAR_BOND, NULL);
+    }
+}
+static bool bound(const kp_model_t *m, unsigned slot) {
+    const kp_binding_t *b = kp_binding(&m->config, slot);
+    return b && b->count;
+}
+static void hold(kp_model_t *m, unsigned key) {
+    kp_key_t *k = &m->key[key];
+    k->long_sent = true; k->pending = k->doubled = false;
+    if (key == 2) { back(m); return; }
+    if (m->page == KP_CONSOLE && !m->executing && !k->ignored) {
+        m->triggered_slot = key * 3 + 2;
+        kp_step_t step;
+        if (kp_binding_step(&m->config, kp_binding(&m->config, m->triggered_slot), 0, &step))
+            emit(m, KP_HOLD, &step.action);
     }
 }
 void kp_tick(kp_model_t *m, uint32_t now) {
@@ -288,14 +304,10 @@ void kp_tick(kp_model_t *m, uint32_t now) {
     if (m->blocked) return;
     for (unsigned i = 0; i < 3; ++i) {
         kp_key_t *k = &m->key[i];
-        if (k->down && !k->long_sent && (uint32_t)(now - k->pressed_at) >= KP_HOLD_MS) {
-            k->long_sent = true; k->pending = false; k->doubled = false;
-            if (i == 2) { back(m); return; }
-            if (m->page == KP_CONSOLE && !m->executing && !k->ignored) {
-                m->triggered_slot = i * 3 + 2;
-                kp_step_t step;
-                if (kp_binding_step(&m->config, kp_binding(&m->config, m->triggered_slot), 0, &step)) emit(m, KP_HOLD, &step.action);
-            }
+        unsigned threshold = m->page == KP_CONSOLE && i < 2 ? KP_ACTION_HOLD_MS : KP_SYSTEM_HOLD_MS;
+        if (k->down && !k->long_sent && (uint32_t)(now - k->pressed_at) >= threshold) {
+            hold(m, i);
+            if (i == 2) return;
         }
         if (k->pending && !k->down && (uint32_t)(now - k->released_at) >= KP_CLICK_MS) {
             k->pending = false;
@@ -316,13 +328,18 @@ void kp_input(kp_model_t *m, unsigned key, bool down, uint32_t now) {
         k->doubled = k->pending;
         k->pending = false; k->down = true; k->long_sent = false; k->pressed_at = now;
         k->ignored = m->page == KP_CONSOLE && m->executing;
+        if (m->page == KP_CONSOLE && key < 2 && !k->ignored &&
+            !bound(m, key * 3) && !bound(m, key * 3 + 1) && bound(m, key * 3 + 2)) hold(m, key);
     } else {
         k->down = false;
         if (k->ignored) { memset(k, 0, sizeof(*k)); return; }
-        if (k->long_sent) { emit(m, KP_RELEASE, NULL); k->long_sent = false; }
-        else if (m->page != KP_CONSOLE || k->doubled) {
-            k->doubled = false;
-            click(m, key, m->page == KP_CONSOLE);
+        if (k->long_sent) {
+            if (m->triggered_slot == key * 3 + 2) emit(m, KP_RELEASE, NULL);
+            k->long_sent = false;
+        }
+        else if (m->page != KP_CONSOLE || k->doubled || !bound(m, key * 3 + 1)) {
+            bool doubled = k->doubled; k->doubled = false;
+            click(m, key, m->page == KP_CONSOLE && doubled);
         } else { k->pending = true; k->released_at = now; }
     }
 }

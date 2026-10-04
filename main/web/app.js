@@ -16,7 +16,7 @@
   const modLabels=['左 Ctrl','左 Shift','左 Option','左 Command','右 Ctrl','右 Shift','右 Option','右 Command'];
   const media=[[233,'音量加'],[234,'音量减'],[226,'静音'],[205,'播放 / 暂停'],[182,'上一首'],[181,'下一首']];
   const clone=x=>JSON.parse(JSON.stringify(x));
-  const empty=()=>({title:'',description:'',steps:[]});
+  const empty=()=>({title:'',steps:[]});
   const newStep=()=>({type:1,modifiers:0,keys:[40],consumer:0,delay_ms:0});
   const modNames=['Control','Shift','Option','Command','RControl','RShift','ROption','RCommand'];
   const usageNames={40:'Enter',41:'Esc',42:'Backspace',43:'Tab',44:'Space',76:'Delete',79:'Right',80:'Left',81:'Down',82:'Up'};
@@ -28,7 +28,7 @@
   }
   const sequenceLabel=b=>b.steps.length?b.steps.map(actionLabel).join(' → '):'关闭';
   const titleLabel=b=>b.title||(b.steps.length>1?'组合指令':sequenceLabel(b));
-  function defaults(){const bindings=Array.from({length:8},empty);[[0,0,41],[2,4,0],[3,0,42],[4,8,4],[5,0,81],[6,0,40]].forEach(([slot,mod,key])=>{bindings[slot].steps=[{type:1,modifiers:mod,keys:key?[key]:[],consumer:0,delay_ms:0}];});bindings[6].title='回车';return{version:2,active_profile:0,profiles:[{name:'默认',bindings}]};}
+  function defaults(){const bindings=Array.from({length:8},empty);[[0,0,41],[2,4,0],[3,0,42],[4,8,4],[5,0,81],[6,0,40]].forEach(([slot,mod,key])=>{bindings[slot].steps=[{type:1,modifiers:mod,keys:key?[key]:[],consumer:0,delay_ms:0}];});bindings[6].title='回车';return{version:3,active_profile:0,profiles:[{name:'默认',bindings}]};}
   function capture(events){
     let modifiers=0;const pressed=new Set();
     for(const e of events){
@@ -48,11 +48,11 @@
   }
   const utf8=s=>new TextEncoder().encode(s).length;
   function supported(cp){const ranges=root.KeypadCharset;let lo=0,hi=ranges.length;while(lo<hi){const mid=(lo+hi)>>1;if(cp<ranges[mid][0])hi=mid;else if(cp>ranges[mid][1])lo=mid+1;else return true;}return false;}
-  function validateText(s,max,multiline=false){if(typeof s!=='string'||Array.from(s).length>max)throw Error('名称和标题最多 16 字，描述最多 64 字。');for(const ch of s){const cp=ch.codePointAt(0);if(!supported(cp)&&!(multiline&&cp===10))throw Error('设备不支持字符“'+ch+'”（U+'+cp.toString(16).toUpperCase()+'），请替换。');}}
-  function capacity(c){let used=1;const put=s=>{if(s)used+=utf8(s)+1;};for(const p of c.profiles){put(p.name);for(const b of p.bindings){put(b.title);put(b.description);if(b.steps.length){used=(used+1)&~1;used+=b.steps.length*12;}}}return 536+used;}
-  function validate(c){
-    if(c.version!==2||!c.profiles.length||c.profiles.length>8||!Number.isInteger(c.active_profile)||c.active_profile<0||c.active_profile>=c.profiles.length)throw Error('情景配置无效。');
-    const names=new Set();for(const p of c.profiles){validateText(p.name,16);if(!p.name||names.has(p.name))throw Error('情景名称不能为空或重复。');names.add(p.name);if(p.bindings.length!==8)throw Error('每个情景必须有八个动作。');for(const b of p.bindings){validateText(b.title,16);validateText(b.description,64,true);if(b.steps.length>64)throw Error('每个动作最多 64 步。');for(const [i,a] of b.steps.entries()){if(!Number.isInteger(a.delay_ms)||a.delay_ms<0||a.delay_ms>5000||(i===b.steps.length-1&&a.delay_ms!==0))throw Error('步骤间隔必须为 0–5000ms，最后一步为 0。');if(!Number.isInteger(a.modifiers)||a.modifiers<0||a.modifiers>255||!Array.isArray(a.keys)||a.keys.length>6||new Set(a.keys).size!==a.keys.length||a.keys.some(k=>!Number.isInteger(k)||!keys.some(v=>v.usage===k)))throw Error('组合键无效或包含重复按键。');if(a.type===1){if(a.consumer!==0||(!a.modifiers&&!a.keys.length))throw Error('键盘步骤至少需要一个按键或修饰键。');}else if(a.type===2){if(a.modifiers||a.keys.length||!media.some(m=>m[0]===a.consumer))throw Error('媒体步骤无效。');}else throw Error('步骤类型无效。');}}}
+  function validateText(s,max,displayCoverage=true){if(typeof s!=='string'||Array.from(s).length>max)throw Error('名称和标题最多 16 字。');for(const ch of s){const cp=ch.codePointAt(0);if(cp<32||(cp>=127&&cp<=159)||(cp>=0xD800&&cp<=0xDFFF)||(displayCoverage&&!supported(cp)))throw Error('设备不支持字符“'+ch+'”（U+'+cp.toString(16).toUpperCase()+'），请替换。');}}
+  function capacity(c){let used=1;const put=s=>{if(s)used+=utf8(s)+1;};for(const p of c.profiles){put(p.name);for(const b of p.bindings){put(b.title);if(b.steps.length){used=(used+1)&~1;used+=b.steps.length*12;}}}return 408+used;}
+  function validate(c,stored=false){
+    if(c.version!==3||!c.profiles.length||c.profiles.length>8||!Number.isInteger(c.active_profile)||c.active_profile<0||c.active_profile>=c.profiles.length)throw Error('情景配置无效。');
+    const names=new Set();for(const p of c.profiles){validateText(p.name,16,!stored);if(!p.name||names.has(p.name))throw Error('情景名称不能为空或重复。');names.add(p.name);if(p.bindings.length!==8)throw Error('每个情景必须有八个动作。');for(const b of p.bindings){if(Object.keys(b).length!==2||!Object.hasOwn(b,'title')||!Array.isArray(b.steps))throw Error('动作字段无效。');validateText(b.title,16,!stored);if(b.steps.length>64)throw Error('每个动作最多 64 步。');for(const [i,a] of b.steps.entries()){if(!Number.isInteger(a.delay_ms)||a.delay_ms<0||a.delay_ms>5000||(i===b.steps.length-1&&a.delay_ms!==0))throw Error('步骤间隔必须为 0–5000ms，最后一步为 0。');if(!Number.isInteger(a.modifiers)||a.modifiers<0||a.modifiers>255||!Array.isArray(a.keys)||a.keys.length>6||new Set(a.keys).size!==a.keys.length||a.keys.some(k=>!Number.isInteger(k)||!keys.some(v=>v.usage===k)))throw Error('组合键无效或包含重复按键。');if(a.type===1){if(a.consumer!==0||(!a.modifiers&&!a.keys.length))throw Error('键盘步骤至少需要一个按键或修饰键。');}else if(a.type===2){if(a.modifiers||a.keys.length||!media.some(m=>m[0]===a.consumer))throw Error('媒体步骤无效。');}else throw Error('步骤类型无效。');}}}
     if(capacity(c)>6144)throw Error('配置超过 6 KiB，请减少步骤或文字。');if(utf8(JSON.stringify(c))>32768)throw Error('配置超过网页传输容量，请减少步骤。');return true;
   }
   function addStep(b,a=newStep()){if(b.steps.length>=64)throw Error('每个动作最多 64 步。');if(b.steps.length)b.steps.at(-1).delay_ms=80;b.steps.push({...clone(a),delay_ms:0});}
@@ -70,8 +70,8 @@
   function element(tag,text,cls){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(cls)el.className=cls;return el;}
   function button(text,cls,fn){const b=element('button',text,cls);b.type='button';b.addEventListener('click',()=>{try{fn();}catch(e){status(e.message,true);}});return b;}
   function select(options,value,fn){const s=element('select');for(const [v,label] of options){const o=element('option',label);o.value=v;s.append(o);}s.value=value;s.addEventListener('change',()=>fn(Number(s.value)));return s;}
-  function preview(b){const frame=element('div',undefined,'device-preview');frame.setAttribute('aria-label','设备详情预览');frame.append(element('div',config.profiles[editing].name,'preview-profile'),element('div','--%','preview-battery'),element('div','蓝牙已连接','preview-state'),element('div',titleLabel(b),'preview-title'),element('div',sequenceLabel(b),'preview-keys'),element('div',b.description,'preview-description'),element('div','已完成','preview-progress'));return frame;}
-  function metadata(card,b,name){let frame;for(const [field,label,max] of [['title','动作标题',16],['description','描述',64]]){const wrap=element('label',label,'text-field');const input=element(field==='description'?'textarea':'input');input.value=b[field];input.maxLength=max;input.setAttribute('aria-label',name+label);if(field==='title')input.placeholder='留空则自动命名';input.addEventListener('input',()=>{b[field]=input.value;changed();if(frame){frame.querySelector('.preview-title').textContent=titleLabel(b);frame.querySelector('.preview-description').textContent=b.description;}});wrap.append(input);card.append(wrap);}const details=element('details',undefined,'preview-details');details.append(element('summary','查看设备全屏预览'));frame=preview(b);details.append(frame);card.append(details);}
+  function preview(b,gesture){const frame=element('div',undefined,'device-preview');frame.setAttribute('aria-label','设备详情预览');const band=element('div',undefined,'preview-band');band.append(element('div',titleLabel(b),'preview-title'));frame.append(element('div',config.profiles[editing].name,'preview-profile'),element('div','--%','preview-battery'),element('div',['上','下','OK'][selected]+' · '+gesture,'preview-state'),band,element('div',sequenceLabel(b),'preview-keys'),element('div','已完成','preview-status'),element('div',b.steps.length>1?b.steps.length+' / '+b.steps.length:'','preview-progress'));return frame;}
+  function metadata(card,b,name){const wrap=element('label','动作标题','text-field'),input=element('input');input.value=b.title;input.maxLength=16;input.setAttribute('aria-label',name+'动作标题');input.placeholder='留空则自动命名';let frame;input.addEventListener('input',()=>{b.title=input.value;changed();frame.querySelector('.preview-title').textContent=titleLabel(b);});wrap.append(input);card.append(wrap);const details=element('details',undefined,'preview-details');details.append(element('summary','查看设备全屏预览'));frame=preview(b,name);details.append(frame);card.append(details);}
   function render(){
     $('editor').disabled=busy||!config;$('forget').disabled=busy||!config;if(!config)return;
     metrics();$('profile').replaceChildren(...config.profiles.map((p,i)=>{const o=element('option',p.name+(i===config.active_profile?' · 当前':''));o.value=i;return o;}));$('profile').value=editing;$('profile-name').value=config.profiles[editing].name;
@@ -82,6 +82,7 @@
       const head=element('div',undefined,'action-head');head.append(element('h2',name),element('span',`0${gesture+1} / ${fixed?'SYSTEM':'ACTION'}`,'index'));card.append(head);
       if(fixed){card.append(element('div','返回上一层','binding'),element('p','OK 长按 500ms 保留为全局返回。组合执行期间，可随时取消并进入主菜单。'));$('actions').append(card);return;}
       const b=config.profiles[editing].bindings[slot];metadata(card,b,name);
+      if(gesture===2)card.append(element('p','上下键长按 200ms 触发；只有长按有步骤时，按下立即执行。单步保持到松开，多步完整执行一次。','empty-state'));
       const heading=element('div',undefined,'steps-heading');heading.append(element('h3','操作步骤'),element('span',b.steps.length+' / 64'));card.append(heading);
       if(!b.steps.length)card.append(element('p','此动作未启用。添加步骤后开始配置。','empty-state'));
       b.steps.forEach((a,index)=>{
@@ -122,5 +123,5 @@
   $('exit').addEventListener('click',()=>{if(dirty&&!confirm('尚有未保存的修改，仍要退出热点？'))return;operation(async()=>{await request('/api/exit');status('热点正在关闭。设备返回设置；长按 OK 进入主菜单，再选择“开始控制”。');config=null;dirty=false;$('dirty').textContent='会话已结束';});});
   $('forget').addEventListener('click',()=>{if(dirty&&!confirm('尚有未保存修改，清除配对将结束网页会话，仍要继续？'))return;if(!confirm('设备将退出热点并显示确认页，请在设备上确认清除配对。'))return;operation(async()=>{await request('/api/forget');status('请在 Passport 确认清除配对。热点正在关闭。');config=null;dirty=false;$('dirty').textContent='请在设备确认';});});
   window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
-  fetch('/api/config',{signal:AbortSignal.timeout(8000)}).then(async r=>{if(!r.ok)throw Error('读取配置失败');const data=await r.json();validate(data.config);config=data.config;session=data.session;editing=config.active_profile;$('dirty').textContent='已读取设备配置';render();}).catch(e=>{status('无法读取配置：'+e.message+'。请确认已连接 Passport 热点，然后刷新。',true);$('dirty').textContent='连接失败';});
+  fetch('/api/config',{signal:AbortSignal.timeout(8000)}).then(async r=>{if(!r.ok)throw Error('读取配置失败');const data=await r.json();validate(data.config,true);config=data.config;session=data.session;editing=config.active_profile;$('dirty').textContent='已读取设备配置';render();}).catch(e=>{status('无法读取配置：'+e.message+'。请确认已连接 Passport 热点，然后刷新。',true);$('dirty').textContent='连接失败';});
 })(globalThis);

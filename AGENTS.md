@@ -45,6 +45,7 @@ retain the separate authorization requirements for flashing, Git writes, and pub
 - Keep testable state machines, protocols, timing, and layout calculations independent from ESP-IDF/LVGL and cover them with host tests.
 - Never commit credentials, device QR secrets, private keys, personal data, or unsanitized logs.
 - Every maintained Markdown document uses English at its default `.md` path and Simplified Chinese in a paired `.zh_CN.md` file. Keep both versions aligned and retain reciprocal language links.
+- Application guides should contain only essential guidance for agent development, brief user operation, and building and flashing firmware. Keep them concise; omit unrelated content, implementation details, optimization figures, and validation history. Update them only when the relevant guidance needs to change.
 
 ## Task-specific context routing
 

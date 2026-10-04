@@ -70,6 +70,7 @@ CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
 CONFIG_LWIP_MAX_SOCKETS=6
 CONFIG_LV_TXT_ENC_UTF8=y
 CONFIG_LV_USE_FONT_PLACEHOLDER=y
+CONFIG_LV_USE_FONT_COMPRESSED=y
 
-# Dynamic Chinese bitmap offsets exceed the compact 20-bit font format.
-CONFIG_LV_FONT_FMT_TXT_LARGE=y
+# The common-character subsets fit the compact 20-bit bitmap offsets.
+CONFIG_LV_FONT_FMT_TXT_LARGE=n

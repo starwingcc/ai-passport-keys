@@ -19,11 +19,16 @@ Store reusable font files and generated font sources in `fonts/`.
 
 ### Passport Keys fonts
 
-The application embeds three uncompressed, read-only LVGL fonts: dynamic 16/28 px
-at 2 bpp and fixed-interface 20 px at 4 bpp. `passport-codepoints.txt` lists 21,364
-dynamic glyphs; `passport-ui-codepoints.txt` lists 228 fixed glyphs. Labels explicitly
-select their font; dynamic scenario names use 16 px rather than the fixed subset.
-`CONFIG_LV_FONT_FMT_TXT_LARGE=y` is required for bitmap offsets beyond 20 bits.
+The application embeds four read-only LVGL fonts: dynamic 16/20/28 px
+at 2 bpp with lossless RLE compression and uncompressed fixed-interface 20 px
+at 4 bpp. `passport-codepoints.txt` lists 3,886
+dynamic glyphs; `passport-ui-codepoints.txt` lists 227 fixed glyphs. Labels explicitly
+select their font; all menu rows use `passport_font_20_menu`, including dynamic
+scenario names. Start control retains its 16 px mappings and fixed 20 px key labels.
+The compressed 16/28 px fonts preserve their original pixels and metrics.
+All subsets fit the compact 20-bit bitmap offsets;
+`CONFIG_LV_FONT_FMT_TXT_LARGE=n` halves the glyph-descriptor storage.
+`CONFIG_LV_USE_FONT_COMPRESSED=y` enables the bounded glyph decoder.
 
 Source: [Noto Sans CJK SC Regular](https://github.com/notofonts/noto-cjk/blob/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf),
 SHA-256 `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`.
@@ -31,11 +36,15 @@ The SIL Open Font License is retained in [fonts/OFL.txt](fonts/OFL.txt).
 The subset is renamed `PassportKeysSubset`; [fonts/passport-keys-subset.otf](fonts/passport-keys-subset.otf)
 retains the actual outlines. No runtime font-file loading is needed.
 
-The inventory covers source-supported U+4E00–U+9FFF, printable ASCII, selected
-U+3000–U+303F and U+FF00–U+FFEE characters, ellipsis, direction arrows and fixed text.
-Vertical kana repeat marks U+3031/U+3032 are excluded because they span two lines.
-Unsupported characters are rejected by the shared C/JavaScript coverage tables,
-including emoji. This is a declared inventory, not all Unicode or all Chinese.
+The inventory includes the 3,755 GB2312 level-one Hanzi, printable ASCII,
+common Chinese punctuation, ellipsis, direction arrows and every fixed-interface
+character. The reproducible selection is in `tools/keypad_font_inventory.py`.
+New unsupported characters, including uncommon Hanzi and emoji, are rejected by
+the shared C/JavaScript coverage tables. Existing v2/v3 names and shortcuts survive
+an inventory change: stored UTF-8 text remains intact, missing glyphs show visible
+placeholders on the device, and the browser shows the original names for editing.
+Unsupported names must be corrected before saving from the browser. This inventory
+does not cover all Chinese characters or Unicode.
 
 Generate with FontTools 4.61.1, lv_font_conv 1.5.3 and Node.js:
 
@@ -48,8 +57,9 @@ python3 tests/test_keypad_fonts.py
 
 The generator checks the source cmap, includes fixed text from `main/main.c` and
 `main/keyboard/*.c` except web-only code, updates inventories and C/web coverage,
-and converts without compression or kerning. Regenerate after changing device
-text. Static tests parse all three cmaps, including sparse/dense missing entries;
+and converts without kerning, using compression for the three dynamic sizes.
+Regenerate after changing device text. Static tests parse all four cmaps,
+including sparse/dense missing entries;
 LVGL previews verify actual glyph lookup, a missing-glyph negative case and screen
 layout. Check Flash size and runtime heap/stack separately; real-screen acceptance
 remains necessary. See the [application guide](../docs/assets/passport-keys.md).

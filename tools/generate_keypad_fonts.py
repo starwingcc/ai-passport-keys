@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 from fontTools import subset
 from fontTools.ttLib import TTFont
+from keypad_font_inventory import common_codepoints
 
 ROOT = Path(__file__).resolve().parent.parent
 p = argparse.ArgumentParser()
@@ -19,15 +20,11 @@ for path in sorted((ROOT / 'main/keyboard').glob('*.c')):
 fixed = set(range(32, 127)) | {ord(c) for c in text if ord(c) >= 128}
 font = TTFont(a.source, recalcTimestamp=False)
 cmap = set(font.getBestCmap())
-missing = fixed - cmap
+requested = fixed | common_codepoints()
+missing = requested - cmap
 if missing:
     raise SystemExit('Missing source glyphs: ' + str(sorted(missing)))
-requested = set(range(0x4e00, 0xa000)) | set(range(0x3000, 0x3040)) | set(range(0xff00, 0xffef))
-# Vertical kana repeat marks extend across two lines; they are outside the
-# supported horizontal UI inventory.
-requested -= {0x3031, 0x3032}
-requested |= {0x2026, 0x2190, 0x2191, 0x2192, 0x2193}
-dynamic = fixed | (requested & cmap)
+dynamic = requested
 options = subset.Options()
 options.name_IDs = ['*']
 sub = subset.Subsetter(options=options)
@@ -53,13 +50,18 @@ for cp in sorted(dynamic):
 (ROOT / 'main/web/charset.js').write_text(
     '// Generated display coverage; keep aligned with keypad_charset.h.\n'
     'globalThis.KeypadCharset = ' + str(ranges).replace(' ', '') + ';\n')
-for size, chars, bpp in [(16, dynamic, 2), (20, fixed, 4), (28, dynamic, 2)]:
+for name, size, chars, bpp, compressed in [
+        ('passport_font_16', 16, dynamic, 2, True),
+        ('passport_font_20', 20, fixed, 4, False),
+        ('passport_font_20_menu', 20, dynamic, 2, True),
+        ('passport_font_28', 28, dynamic, 2, True)]:
     symbols = ''.join(chr(cp) for cp in sorted(chars))
     subprocess.run([a.node, str(a.converter), '--font', str(asset), '--symbols', symbols,
-                    '--size', str(size), '--bpp', str(bpp), '--format', 'lvgl', '--no-compress', '--no-kerning',
-                    '--lv-font-name', f'passport_font_{size}', '--lv-include', 'lvgl.h',
-                    '--output', str(ROOT / f'assets/fonts/passport_font_{size}.c')], check=True)
-    generated = ROOT / f'assets/fonts/passport_font_{size}.c'
+                    '--size', str(size), '--bpp', str(bpp), '--format', 'lvgl', '--no-kerning',
+                    *([] if compressed else ['--no-compress']),
+                    '--lv-font-name', name, '--lv-include', 'lvgl.h',
+                    '--output', str(ROOT / f'assets/fonts/{name}.c')], check=True)
+    generated = ROOT / f'assets/fonts/{name}.c'
     generated.write_text('\n'.join(line for line in generated.read_text().splitlines()
                                    if not line.startswith(' * Opts:')) + '\n')
-print(f'Generated {len(dynamic)} dynamic glyphs at 16/28px and {len(fixed)} fixed glyphs at 20px.')
+print(f'Generated {len(dynamic)} dynamic glyphs at 16/20/28px and {len(fixed)} fixed glyphs at 20px.')

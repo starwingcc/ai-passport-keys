@@ -26,31 +26,35 @@ int main(int argc,char **argv){
     cJSON *keys=cJSON_GetObjectItem(step,"keys");cJSON_AddItemToArray(keys,cJSON_CreateNumber(41));assert(!decode(root,&decoded));cJSON_DeleteItemFromArray(keys,1);
     cJSON_SetNumberValue(cJSON_GetObjectItem(step,"delay_ms"),1);assert(!decode(root,&decoded));cJSON_SetNumberValue(cJSON_GetObjectItem(step,"delay_ms"),0);
     cJSON_AddNumberToObject(step,"extra",1);assert(!decode(root,&decoded));cJSON_DeleteItemFromObject(step,"extra");
-    cJSON_AddNumberToObject(root,"version",2);assert(!decode(root,&decoded));cJSON_DeleteItemFromObject(root,"version");cJSON_DeleteItemFromObject(root,"version");cJSON_AddNumberToObject(root,"version",2);
+    cJSON_AddNumberToObject(root,"version",3);assert(!decode(root,&decoded));cJSON_DeleteItemFromObject(root,"version");cJSON_DeleteItemFromObject(root,"version");cJSON_AddNumberToObject(root,"version",3);
     cJSON_SetNumberValue(cJSON_GetObjectItem(root,"active_profile"),1);assert(!decode(root,&decoded));cJSON_SetNumberValue(cJSON_GetObjectItem(root,"active_profile"),0);
     cJSON_SetValuestring(cJSON_GetObjectItem(binding,"title"),"😀");assert(!decode(root,&decoded));
     cJSON_SetValuestring(cJSON_GetObjectItem(binding,"title"),"12345678901234567");assert(!decode(root,&decoded));
-    cJSON_SetValuestring(cJSON_GetObjectItem(binding,"title"),"编程龘");assert(decode(root,&decoded));
+    cJSON_SetValuestring(cJSON_GetObjectItem(binding,"title"),"编程龘");assert(!decode(root,&decoded));
+    cJSON_SetValuestring(cJSON_GetObjectItem(binding,"title"),"编程浏览");assert(decode(root,&decoded));
     cJSON_AddItemToArray(profiles,cJSON_Duplicate(profile,true));assert(!decode(root,&decoded));
     cJSON_SetValuestring(cJSON_GetObjectItem(cJSON_GetArrayItem(profiles,1),"name"),"浏览");assert(decode(root,&decoded));
+    cJSON_AddStringToObject(binding,"description","discarded");assert(!decode(root,&decoded));
+    cJSON_DeleteItemFromObject(binding,"description");
+    cJSON_SetNumberValue(cJSON_GetObjectItem(root,"version"),2);assert(!decode(root,&decoded));
     cJSON_Delete(root);
     assert(!kp_config_decode_string("{}",&decoded));assert(!kp_config_decode_string("{\"version\":02}",&decoded));
     char *trailing=malloc(strlen(encoded)+4);assert(trailing);sprintf(trailing,"%s {}",encoded);assert(!kp_config_decode_string(trailing,&decoded));free(trailing);
     for(size_t n=0;n<strlen(encoded);n++) {char saved=encoded[n];encoded[n]=0;assert(!kp_config_decode_string(encoded,&decoded));encoded[n]=saved;}
     // Binding-level limits and atomic arena allocation on overflow.
     kp_step_t all[KP_MAX_STEPS];for(unsigned i=0;i<KP_MAX_STEPS;i++)all[i]=(kp_step_t){{.type=KP_KEYBOARD,.keys={4}},i+1==KP_MAX_STEPS?0:5000};
-    kp_defaults(&c);assert(kp_binding_set(&c,0,0,"64步","",all,KP_MAX_STEPS));
-    assert(!kp_binding_set(&c,0,0,"","",all,KP_MAX_STEPS+1));
-    uint16_t before;do{before=c.used;}while(kp_binding_set(&c,0,1,"","",all,KP_MAX_STEPS));assert(c.used==before&&kp_config_valid(&c));
+    kp_defaults(&c);assert(kp_binding_set(&c,0,0,"64步",all,KP_MAX_STEPS));
+    assert(!kp_binding_set(&c,0,0,"",all,KP_MAX_STEPS+1));
+    uint16_t before;do{before=c.used;}while(kp_binding_set(&c,0,1,"",all,KP_MAX_STEPS));assert(c.used==before&&kp_config_valid(&c));
     kp_config_empty(&c);for(unsigned i=0;i<KP_MAX_PROFILES;i++){char name[16];sprintf(name,"情景%u",i);assert(kp_profile_add(&c,name));}
     assert(!kp_profile_add(&c,"第九套"));assert(kp_config_valid(&c));
     assert(!kp_profile_add(&c,"情景0"));
     // Exactly 6 KiB persists; one more string cannot replace a binding.
     kp_config_empty(&c);assert(kp_profile_add(&c,"A"));
-    for(unsigned i=0;i<7;i++)assert(kp_binding_set(&c,0,i,"",i?"":"123456789012345678901234",all,64));
-    all[16].delay_ms=0;assert(kp_binding_set(&c,0,7,"","",all,17));
+    for(unsigned i=0;i<7;i++)assert(kp_binding_set(&c,0,i,i?"":"1234567",all,64));
+    all[28].delay_ms=0;assert(kp_binding_set(&c,0,7,"",all,29));
     assert(kp_config_size(&c)==KP_CONFIG_BYTES&&kp_config_valid(&c));before=c.used;
-    assert(!kp_binding_set(&c,0,7,"A","",NULL,0)&&c.used==before&&kp_config_valid(&c));
+    assert(!kp_binding_set(&c,0,7,"A",NULL,0)&&c.used==before&&kp_config_valid(&c));
     // The streaming parser admits the exact transport limit and rejects one extra byte.
     size_t base=strlen(encoded);char *limit=malloc(KP_JSON_BYTES+2);assert(limit);memcpy(limit,encoded,base);
     memset(limit+base,' ',KP_JSON_BYTES-base);limit[KP_JSON_BYTES]=0;assert(kp_config_decode_string(limit,&decoded));
