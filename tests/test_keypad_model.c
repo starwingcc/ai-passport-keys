@@ -10,11 +10,51 @@ static void effect(void *ctx, kp_effect_t e, const kp_action_t *a) {
 static void press(kp_model_t *m, unsigned k, uint32_t t) { kp_input(m, k, true, t); }
 static void release(kp_model_t *m, unsigned k, uint32_t t) { kp_input(m, k, false, t); }
 static void click(kp_model_t *m, unsigned k, uint32_t t) { press(m,k,t); release(m,k,t+40); kp_tick(m,t+220); }
+static void check_default_gestures(void) {
+    kp_model_t m; kp_init(&m,NULL,effect,NULL);
+    uint8_t keyboard[8], consumer[2];
+    const uint8_t zero[8] = {0};
+    click(&m,0,0);
+    assert(count[KP_TAP]==1 && last.type==KP_KEYBOARD);
+    kp_report(&last,keyboard,consumer);
+    const uint8_t esc[8] = {0,0,0x29};
+    assert(!memcmp(keyboard,esc,8) && consumer[0]==0 && consumer[1]==0);
+
+    press(&m,0,300); kp_tick(&m,799); assert(count[KP_HOLD]==0);
+    kp_tick(&m,800); assert(count[KP_HOLD]==1);
+    kp_report(&last,keyboard,consumer);
+    const uint8_t option[8] = {0x04};
+    assert(!memcmp(keyboard,option,8));
+    kp_tick(&m,1200); assert(count[KP_HOLD]==1 && count[KP_RELEASE]==0);
+    release(&m,0,1300); assert(count[KP_RELEASE]==1);
+    kp_report(NULL,keyboard,consumer); assert(!memcmp(keyboard,zero,8));
+    kp_tick(&m,1600); assert(count[KP_TAP]==1);
+
+    click(&m,1,1700); assert(count[KP_TAP]==2);
+    kp_report(&last,keyboard,consumer);
+    const uint8_t backspace[8] = {0,0,0x2a};
+    assert(!memcmp(keyboard,backspace,8));
+    press(&m,1,2000); release(&m,1,2040);
+    press(&m,1,2100); release(&m,1,2140); assert(count[KP_TAP]==3);
+    kp_report(&last,keyboard,consumer);
+    const uint8_t select_all[8] = {0x08,0,0x04};
+    assert(!memcmp(keyboard,select_all,8));
+    kp_tick(&m,2400); assert(count[KP_TAP]==3);
+
+    click(&m,2,2500); assert(count[KP_TAP]==4);
+    kp_report(&last,keyboard,consumer);
+    const uint8_t enter[8] = {0,0,0x28};
+    assert(!memcmp(keyboard,enter,8));
+    assert(m.config.bindings[1].type==KP_NONE && m.config.bindings[7].type==KP_NONE);
+    assert(m.config.bindings[5].keys[0]==0x51);
+    memset(count,0,sizeof(count));
+}
 int main(void) {
+    check_default_gestures();
     kp_config_t c; kp_defaults(&c); assert(kp_config_valid(&c));
     kp_model_t m; kp_init(&m,&c,effect,NULL);
     press(&m,0,0); release(&m,0,50); kp_tick(&m,229); assert(count[KP_TAP]==0);
-    kp_tick(&m,230); assert(count[KP_TAP]==1 && last.keys[0]==0x52);
+    kp_tick(&m,230); assert(count[KP_TAP]==1 && last.keys[0]==0x29);
     c.bindings[1]=(kp_action_t){.type=KP_KEYBOARD,.modifiers=8,.keys={6}};
     m.config=c;
     press(&m,0,300); release(&m,0,340); press(&m,0,400); release(&m,0,440);

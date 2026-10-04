@@ -15,7 +15,7 @@ int main(void) {
     cJSON_SetNumberValue(cJSON_GetObjectItem(a,"modifiers"),1.5); assert(!kp_config_parse(root,&decoded));
     cJSON_SetNumberValue(cJSON_GetObjectItem(a,"modifiers"),0);
     cJSON *keys=cJSON_GetObjectItem(a,"keys");
-    cJSON_AddItemToArray(keys,cJSON_CreateNumber(82)); assert(!kp_config_parse(root,&decoded));
+    cJSON_AddItemToArray(keys,cJSON_CreateNumber(c.bindings[0].keys[0])); assert(!kp_config_parse(root,&decoded));
     cJSON_DeleteItemFromArray(keys,1);
     cJSON_AddNumberToObject(a,"ok_long",1); assert(!kp_config_parse(root,&decoded));
     cJSON_DeleteItemFromObject(a,"ok_long");

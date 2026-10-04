@@ -13,7 +13,8 @@ software. The target is ESP-IDF 5.5.3, 8 MB Flash, no PSRAM and a 240 x 320 scre
 2. Connect to **Passport Keys** in the computer's Bluetooth settings. Just Works
    pairing requires neither a six-digit passkey nor numeric confirmation on Passport.
 3. Wait for the console to show a connected keyboard, then open a text editor.
-   UP/DOWN move the cursor; a short OK press sends Enter.
+   A short UP press sends Esc, a short DOWN press sends Backspace, and a short OK
+   press sends Enter. Hold UP for Option; double-click DOWN for Command+A.
 4. Hold OK for **500 ms** to open the main menu. Settings offers hotspot mapping
    configuration and Bluetooth bond deletion.
 
@@ -38,14 +39,16 @@ computer keys. OK hold is reserved globally and cannot be mapped.
 
 | Physical key | Single click | Double click | Hold |
 | --- | --- | --- | --- |
-| UP | Up arrow | Disabled | Hold Up arrow |
-| DOWN | Down arrow | Disabled | Hold Down arrow |
+| UP | Esc | Disabled | Hold left Option |
+| DOWN | Backspace | Left Command+A | Hold Down arrow |
 | OK | Enter | Disabled | Return, fixed |
 
 There are eight configurable actions. Singles wait **180 ms** after release for
 the double-click window. UP/DOWN holds press their mapping at **500 ms** and
 release it when the physical key is released; the computer controls repeat speed.
 A second press held to the hold threshold becomes a hold without sending a double click.
+Option remains pressed until UP is released. These defaults apply when no valid
+mapping is saved; existing saved mappings are retained after a firmware update.
 
 Page and connection transitions cancel pending gestures, release reports and wait
 for physical keys to be released. Stale input is discarded without replay. The
@@ -56,8 +59,8 @@ without physical input, backlight drops to 12%; the next press restores 80%.
 ## Configure mappings over Wi-Fi
 
 1. Hold OK, enter Settings, then choose hotspot configuration.
-2. Join the displayed `Passport-Keys-XXXX` network using the screen's password.
-   Each entry generates a new 12-character WPA2 password; only one client is allowed.
+2. Join the displayed `Passport-Keys-XXXX` network using the fixed WPA2 password
+   **`12345678`**, also shown on the screen. Only one client is allowed.
 3. Open `http://192.168.4.1`. HTML, CSS and JavaScript are embedded in firmware.
 4. Choose UP/DOWN/OK and edit a single, double or hold action. Record a chord or
    choose ordinary keys and left/right modifiers manually. OK hold stays read-only.

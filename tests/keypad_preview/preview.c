@@ -46,7 +46,7 @@ int main(int argc,char **argv) {
             display_ble.connected = display_ble.ready = display_ble.secure = false;
             display_ble.keyboard_subscribed = false;
         }
-        kp_ui_update(&model,display_ble,85,"", "Passport-Keys-ABCD","AbcDef234567");
+        kp_ui_update(&model,display_ble,85,"", "Passport-Keys-ABCD","12345678");
         lv_refr_now(d);
         char path[512];snprintf(path,sizeof(path),"%s/%s.ppm",argv[1],names[p]);
         FILE *out=fopen(path,"wb");assert(out);fprintf(out,"P6\n240 320\n255\n");
@@ -60,10 +60,10 @@ int main(int argc,char **argv) {
     unsigned locks = lock_count;
     model.key[0].pressed_at++;
     model.down_mask = 1;
-    kp_ui_update(&model,ble,85,"", "Passport-Keys-ABCD","AbcDef234567");
+    kp_ui_update(&model,ble,85,"", "Passport-Keys-ABCD","12345678");
     assert(lock_count == locks); // Invisible gesture state must not redraw UI.
     model.selected = 1;
-    kp_ui_update(&model,ble,85,"", "Passport-Keys-ABCD","AbcDef234567");
+    kp_ui_update(&model,ble,85,"", "Passport-Keys-ABCD","12345678");
     assert(lock_count == locks + 1);
     puts("LVGL glyph lookup, five-page render and render cache: PASS");
     return 0;

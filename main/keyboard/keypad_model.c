@@ -9,12 +9,12 @@ bool kp_key_valid(unsigned key) {
 void kp_defaults(kp_config_t *c) {
     memset(c, 0, sizeof(*c));
     c->version = KP_VERSION;
-    const uint8_t code[] = {0x52, 0x51, 0x28};
-    for (unsigned k = 0; k < 3; ++k) {
-        c->bindings[k * 3].type = KP_KEYBOARD;
-        c->bindings[k * 3].keys[0] = code[k];
-        if (k < 2) c->bindings[k * 3 + 2] = c->bindings[k * 3];
-    }
+    c->bindings[0] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x29}}; // UP: Esc
+    c->bindings[2] = (kp_action_t){.type = KP_KEYBOARD, .modifiers = 0x04}; // UP hold: left Option
+    c->bindings[3] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x2a}}; // DOWN: Backspace
+    c->bindings[4] = (kp_action_t){.type = KP_KEYBOARD, .modifiers = 0x08, .keys = {0x04}}; // DOWN double: Command+A
+    c->bindings[5] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x51}}; // DOWN hold: Down arrow
+    c->bindings[6] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x28}}; // OK: Enter
 }
 bool kp_config_valid(const kp_config_t *c) {
     if (!c || c->version != KP_VERSION) return false;

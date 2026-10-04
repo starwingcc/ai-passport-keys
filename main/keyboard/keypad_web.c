@@ -13,7 +13,8 @@
 static httpd_handle_t s_http;
 static esp_netif_t *s_netif;
 static bool s_wifi_initialized, s_wifi_started;
-static char s_ssid[32], s_password[13], s_session[33];
+static char s_ssid[32], s_session[33];
+static const char s_password[] = "12345678";
 static kp_web_request_t s_request;
 extern const char index_start[] asm("_binary_index_html_start");
 extern const char index_end[] asm("_binary_index_html_end");
@@ -121,8 +122,6 @@ esp_err_t kp_web_start(kp_web_request_t callback) {
     if (rc != ESP_OK) return rc;
     uint8_t mac[6]; esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     snprintf(s_ssid, sizeof(s_ssid), "Passport-Keys-%02X%02X", mac[4], mac[5]);
-    const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-    for (unsigned i = 0; i < sizeof(s_password) - 1; ++i) s_password[i] = alphabet[esp_random() % (sizeof(alphabet) - 1)];
     for (unsigned i = 0; i < 16; ++i) snprintf(s_session + 2 * i, 3, "%02x", (unsigned)(esp_random() & 255));
     s_request = callback;
     s_netif = esp_netif_create_default_wifi_ap();
