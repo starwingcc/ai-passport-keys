@@ -8,7 +8,7 @@ set(CONFIG_LV_USE_THORVG_INTERNAL OFF CACHE BOOL "" FORCE)
 add_subdirectory("${ROOT}/managed_components/lvgl__lvgl" lvgl)
 add_executable(keypad_preview preview.c "${ROOT}/main/keyboard/keypad_ui.c"
     "${ROOT}/main/keyboard/keypad_home.c" "${ROOT}/main/keyboard/keypad_home_ui.c"
-    "${ROOT}/main/keyboard/keypad_model.c" "${ROOT}/main/keyboard/keypad_text.c"
+    "${ROOT}/main/keyboard/keypad_model.c" "${ROOT}/main/keyboard/keypad_text.c" "${ROOT}/main/keyboard/keypad_screen.c"
     "${ROOT}/assets/fonts/passport_font_16.c" "${ROOT}/assets/fonts/passport_font_20.c" "${ROOT}/assets/fonts/passport_font_28.c"
     "${ROOT}/assets/fonts/passport_font_20_menu.c")
 target_include_directories(keypad_preview PRIVATE stubs "${ROOT}/main/keyboard")

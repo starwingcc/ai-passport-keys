@@ -15,5 +15,7 @@ void kp_store_home_get(kp_home_config_t *home);
 esp_err_t kp_store_home_save(const kp_home_config_t *home);
 void kp_store_wifi_get(kp_wifi_config_t *wifi);
 esp_err_t kp_store_wifi_save(const kp_wifi_config_t *wifi);
+void kp_store_screen_get(kp_screen_config_t *screen);
+esp_err_t kp_store_screen_save(const kp_screen_config_t *screen);
 bool kp_store_time_sync(uint64_t epoch, uint64_t monotonic_ms);
 uint64_t kp_store_time_read(uint64_t monotonic_ms);

@@ -24,6 +24,12 @@ Default actions:
 Hold OK to cancel an action. To change computers, use **Settings → Clear Bluetooth
 pairing**, then forget the device on the old computer. This keeps your scenarios.
 
+**Settings → Screen** adjusts normal/dimmed brightness and idle timers: dimming
+0–180 seconds, screen-off 0–300 seconds, in 10-second steps; zero disables a stage.
+When both are enabled, dimming must occur first. Brightness previews live.
+UP/DOWN adjusts, short OK saves, hold OK cancels; settings survive restart.
+After screen-off, the first UP/DOWN/OK press only wakes it; release before operating.
+
 To configure the device:
 
 1. Open **Settings → Hotspot configuration**, select **Enable** and confirm.
@@ -55,7 +61,7 @@ valid time, the home shows `--:--`.
 **Export current scenario** shares the selected scenario; **Export all configuration**
 backs up all scenarios. **Import JSON** loads the editor; review and save to write
 the device. Scenario import/export and Restore defaults do not include badge
-settings, Wi-Fi credentials or Bluetooth pairing.
+settings, screen settings, Wi-Fi credentials or Bluetooth pairing.
 
 ## Build and flash
 

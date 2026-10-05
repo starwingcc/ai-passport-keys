@@ -1,4 +1,5 @@
 #include "lvgl.h"
+#include "src/misc/lv_text_private.h"
 #include "keypad_ui.h"
 #include "keypad_home_ui.h"
 #include <assert.h>
@@ -13,6 +14,23 @@ static void flush(lv_display_t *display,const lv_area_t *a,uint8_t *data){
 }
 LV_FONT_DECLARE(passport_font_16);LV_FONT_DECLARE(passport_font_20);LV_FONT_DECLARE(passport_font_28);
 LV_FONT_DECLARE(passport_font_20_menu);
+static void battery_layout(void){
+    lv_obj_t *screen=lv_screen_active();bool found=false;
+    for(unsigned i=0;i<lv_obj_get_child_count(screen);i++){
+        lv_obj_t *o=lv_obj_get_child(screen,i);
+        if(lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)||!lv_obj_check_type(o,&lv_label_class)||lv_obj_get_y(o)>=50)continue;
+        if(strcmp(lv_label_get_text(o),"100%"))continue;
+        const lv_font_t *font=lv_obj_get_style_text_font(o,LV_PART_MAIN);
+        lv_point_t size;lv_text_get_size(&size,"100%",font,0,0,LV_COORD_MAX,LV_TEXT_FLAG_NONE);
+        if(size.x>lv_obj_get_width(o)||lv_obj_get_height(o)!=font->line_height)
+            fprintf(stderr,"Full battery: text width=%d label=%dx%d line=%d x=%d y=%d\n",(int)size.x,(int)lv_obj_get_width(o),(int)lv_obj_get_height(o),font->line_height,(int)lv_obj_get_x(o),(int)lv_obj_get_y(o));
+        assert(size.x<=lv_obj_get_width(o)&&lv_obj_get_height(o)==font->line_height);
+        assert(lv_obj_get_x(o)>=180-2&&lv_obj_get_x(o)+lv_obj_get_width(o)<=224);
+        if(lv_obj_get_y(o)==23)assert(lv_obj_get_x(o)>=179); // Clear of the home battery icon.
+        found=true;
+    }
+    assert(found);
+}
 static void menu_layout(unsigned expected){
     lv_obj_t *screen=lv_screen_active();unsigned rows=0;
     for(unsigned i=0;i<lv_obj_get_child_count(screen);i++){
@@ -27,6 +45,30 @@ static void menu_layout(unsigned expected){
         }
     }
     assert(rows==expected&&passport_font_20_menu.line_height<=32);
+}
+static void screen_layout(const kp_model_t *m){
+    lv_obj_t *screen=lv_screen_active();unsigned values=0,rows=0;
+    for(unsigned i=0;i<lv_obj_get_child_count(screen);i++){
+        lv_obj_t *o=lv_obj_get_child(screen,i);
+        if(lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)||!lv_obj_check_type(o,&lv_label_class))continue;
+        const char *text=lv_label_get_text(o);const lv_font_t *font=lv_obj_get_style_text_font(o,LV_PART_MAIN);
+        for(uint32_t offset=0;text[offset];){
+            uint32_t cp=lv_text_encoded_next(text,&offset);if(cp=='\n')continue;
+            lv_font_glyph_dsc_t glyph;assert(lv_font_get_glyph_dsc(font,&glyph,cp,0)&&!glyph.is_placeholder);
+        }
+        assert(!strstr(text,"..."));
+        assert(lv_obj_get_x(o)>=18&&lv_obj_get_x(o)+lv_obj_get_width(o)<=224);
+        assert(lv_obj_get_y(o)>=18&&lv_obj_get_y(o)+lv_obj_get_height(o)<=311);
+        if(m->page==KP_SCREEN&&lv_obj_get_x(o)==156){
+            assert(lv_obj_get_y(o)==86+(int)values*42&&lv_obj_get_width(o)==64);
+            assert(font==&passport_font_20_menu);values++;
+        }
+        if(m->page==KP_SCREEN&&lv_obj_get_x(o)==20){
+            assert(lv_obj_get_y(o)==86+(int)rows*42&&lv_obj_get_width(o)==132);
+            assert(font==&passport_font_20_menu);rows++;
+        }
+    }
+    if(m->page==KP_SCREEN)assert(rows==4&&values==4);
 }
 static void console_layout(const char *state){
     lv_obj_t *screen=lv_screen_active();bool found=false,footer=false;unsigned cards=0;
@@ -57,6 +99,10 @@ static void console_layout(const char *state){
     assert(found&&footer&&cards==3);
 }
 static void save(lv_display_t *display,const char *directory,const char *name){
+    if(getenv("KEYPAD_LAYOUT_DEBUG")){
+        lv_mem_monitor_t memory;lv_mem_monitor(&memory);
+        printf("Before %s: free=%zu largest=%zu peak=%zu\n",name,memory.free_size,memory.free_biggest_size,memory.max_used);fflush(stdout);
+    }
     lv_refr_now(display);
     lv_obj_t *screen=lv_screen_active();
     assert(lv_obj_get_style_radius(screen,LV_PART_MAIN)==32&&!lv_obj_get_style_clip_corner(screen,LV_PART_MAIN));
@@ -96,8 +142,30 @@ int main(int argc,char **argv){
     uint64_t epoch=1791167040;
     kp_ble_status_t ble={.connected=true,.ready=true,.secure=true,.keyboard_subscribed=true,.handles_ready=true};kp_ui_init();
     const char *names[]={"console","menu","settings","hotspot","forget","profiles","ap_confirm"};
-    const unsigned row_counts[]={0,0,2,0,2,1,2};
+    const unsigned row_counts[]={0,0,3,0,2,1,2};
     for(unsigned p=0;p<7;p++){m.page=p;kp_ble_status_t state=ble;if(p==KP_HOTSPOT){state.paused=true;state.ready=state.connected=state.secure=state.keyboard_subscribed=false;}kp_ui_update(&m,state,85,"","Passport-Keys-ABCD","12345678",&home,epoch);save(d,argv[1],names[p]);menu_layout(row_counts[p]);}
+    m.screen_draft=m.screen_config;
+    for(unsigned p=0;p<=KP_SCREEN_EDIT;p++){
+        m.page=p;kp_ui_update(&m,ble,100,"","Passport-Keys-ABCD","12345678",&home,epoch);lv_refr_now(d);battery_layout();
+        if(p==KP_MENU||p==KP_SETTINGS)save(d,argv[1],p==KP_MENU?"home_full_battery":"settings_full_battery");
+    }
+    m.page=KP_SCREEN;m.selected=2;kp_ui_update(&m,ble,85,"","","",&home,epoch);save(d,argv[1],"screen_settings");screen_layout(&m);
+    const char *edit_names[]={"screen_normal","screen_dim_time","screen_dim_level","screen_off_time"};
+    for(unsigned setting=0;setting<KP_SCREEN_SETTING_COUNT;setting++){
+        m.page=KP_SCREEN_EDIT;m.screen_setting=setting;m.screen_draft=m.screen_config;++m.config_revision;
+        kp_ui_update(&m,ble,85,"","","",&home,epoch);save(d,argv[1],edit_names[setting]);screen_layout(&m);
+    }
+    m.screen_draft.off_after_s=0;++m.config_revision;
+    kp_ui_update(&m,ble,85,"","","",&home,epoch);save(d,argv[1],"screen_disabled");screen_layout(&m);
+    m.screen_draft.off_after_s=300;++m.config_revision;
+    kp_ui_update(&m,ble,85,"","","",&home,epoch);save(d,argv[1],"screen_300s");screen_layout(&m);
+    m.screen_save_failed=true;++m.config_revision;
+    kp_ui_update(&m,ble,85,"","","",&home,epoch);save(d,argv[1],"screen_save_failed");screen_layout(&m);m.screen_save_failed=false;
+    for(unsigned i=0;i<100;i++){
+        m.page=i%2?KP_SCREEN:KP_SCREEN_EDIT;m.screen_setting=KP_SCREEN_DIM_BRIGHTNESS;
+        m.screen_draft=m.screen_config;++m.config_revision;
+        kp_ui_update(&m,ble,85,"","","",&home,epoch);lv_refr_now(d);
+    }
     m.page=KP_MENU;
     for(unsigned avatar=0;avatar<4;avatar++){
         home.avatar=avatar;kp_ui_update(&m,ble,82,"","","",&home,epoch);
@@ -210,12 +278,12 @@ int main(int argc,char **argv){
     assert(kp_binding_set(&m.config,0,0,"全选后复制并打开新的编辑窗口测试",maximum,KP_MAX_STEPS));
     m.page=KP_CONSOLE;m.config.active_profile=0;++m.config_revision;m.feedback=(kp_feedback_t){.visible=true,.slot=0,.total=64,.state=KP_FEEDBACK_DONE};
     kp_ui_update(&m,ble,85,"","","",&home,epoch);save(d,argv[1],"command_capacity");
-    // Match the firmware's 24 KiB allocator and repeatedly reuse the detail objects.
+    // Match the firmware's 28 KiB allocator and repeatedly reuse the detail objects.
     for(unsigned i=0;i<100;i++){
         m.feedback.visible=i%2==0;++m.feedback.serial;
         kp_ui_update(&m,ble,85,"","","",&home,epoch);lv_refr_now(d);
     }
     lv_mem_monitor_t memory;lv_mem_monitor(&memory);assert(lv_mem_test()==LV_RESULT_OK&&memory.free_biggest_size>512);
-    printf("LVGL 24 KiB pool: peak=%zu free=%zu largest=%zu\n",memory.max_used,memory.free_size,memory.free_biggest_size);
+    printf("LVGL 28 KiB pool: peak=%zu free=%zu largest=%zu\n",memory.max_used,memory.free_size,memory.free_biggest_size);
     puts("LVGL live glyph lookup, pages, feedback, long text, repeated commands and cache: PASS");return 0;
 }

@@ -124,8 +124,8 @@ static void art(lv_event_t *event) {
         box(layer,cx[i]+(i?3:0),cy[j],2,5,GOLD);
     }
     box(layer,20,49,70,2,GOLD);
-    box(layer,160,27,17,10,EDGE);box(layer,177,30,2,4,EDGE);
-    box(layer,162,29,13,6,BG);box(layer,162,29,(sample_battery < 0 ? 0 : sample_battery)*13/100,6,INK);
+    box(layer,156,27,17,10,EDGE);box(layer,173,30,2,4,EDGE);
+    box(layer,158,29,13,6,BG);box(layer,158,29,(sample_battery < 0 ? 0 : sample_battery)*13/100,6,INK);
     box(layer,20,68+CONTENT_OFFSET_Y,64,64,PANEL);
     box(layer,24,68+CONTENT_OFFSET_Y,56,1,EDGE);box(layer,24,131+CONTENT_OFFSET_Y,56,1,EDGE);
     box(layer,20,72+CONTENT_OFFSET_Y,1,56,EDGE);box(layer,83,72+CONTENT_OFFSET_Y,1,56,EDGE);

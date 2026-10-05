@@ -2,7 +2,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-static unsigned count[KP_SELECT_PROFILE + 1];
+static unsigned count[KP_SAVE_SCREEN + 1];
 static kp_action_t last;
 static void effect(void *ctx, kp_effect_t e, const kp_action_t *a) { (void)ctx; ++count[e]; if (a) last = *a; }
 static void press(kp_model_t *m, unsigned k, uint32_t t) { kp_input(m,k,true,t); }
@@ -33,19 +33,20 @@ int main(void) {
     click(&m,2,4100); assert(count[KP_SELECT_PROFILE]==1 && m.page==KP_PROFILES);
     press(&m,2,4400); kp_tick(&m,4900); release(&m,2,5000); assert(m.page==KP_MENU);
     click(&m,0,5100); click(&m,2,5400); assert(m.page==KP_SETTINGS); // UP wraps to third entry.
+    quick(&m,1,5500); // Hotspot is the second settings entry.
     quick(&m,2,5700); assert(m.page==KP_AP_CONFIRM && !m.selected && !count[KP_AP_START]);
     quick(&m,2,5800); assert(m.page==KP_SETTINGS && !count[KP_AP_START] && !count[KP_AP_STOP]);
-    quick(&m,2,5900); assert(m.page==KP_AP_CONFIRM);
+    quick(&m,1,5850); quick(&m,2,5900); assert(m.page==KP_AP_CONFIRM);
     press(&m,2,6000); kp_tick(&m,6499); assert(m.page==KP_AP_CONFIRM);
     kp_tick(&m,6500);release(&m,2,6510);assert(m.page==KP_SETTINGS&&!count[KP_AP_START]&&!count[KP_AP_STOP]);
-    quick(&m,2,6600);quick(&m,0,6700);assert(m.selected==1);quick(&m,1,6800);assert(m.selected==0);
+    quick(&m,1,6550);quick(&m,2,6600);quick(&m,0,6700);assert(m.selected==1);quick(&m,1,6800);assert(m.selected==0);
     quick(&m,1,6900);quick(&m,2,7000);assert(m.page==KP_HOTSPOT&&count[KP_AP_START]==1);
     quick(&m,2,7100); assert(m.page==KP_HOTSPOT);
     press(&m,2,7200); kp_tick(&m,7700); release(&m,2,7800);
     assert(m.page==KP_SETTINGS && count[KP_AP_STOP]==1);
-    quick(&m,1,7900); quick(&m,2,8000); assert(m.page==KP_FORGET && !m.selected);
+    quick(&m,0,7900); quick(&m,2,8000); assert(m.page==KP_FORGET && !m.selected);
     quick(&m,2,8100); assert(m.page==KP_SETTINGS && !count[KP_CLEAR_BOND]);
-    quick(&m,1,8200); quick(&m,2,8300); quick(&m,1,8400); quick(&m,2,8500);
+    quick(&m,0,8200); quick(&m,2,8300); quick(&m,1,8400); quick(&m,2,8500);
     assert(count[KP_CLEAR_BOND]==1 && m.page==KP_SETTINGS);
     // Each physical gesture maps independently; OK hold remains outside the configurable slots.
     for(unsigned slot=0;slot<KP_BINDINGS;slot++) {
@@ -170,5 +171,31 @@ int main(void) {
     assert(!kp_text_valid("\xc0\xaf",16,false));assert(!kp_text_valid("\xed\xa0\x80",16,false));
     assert(!kp_text_valid("a\nb",16,false)&&kp_text_valid("a\nb",64,true));
     assert(!kp_text_valid("12345678901234567",16,false));
-    puts("Keypad gestures, navigation, busy input and feedback: PASS");
+    // Screen edit previews are drafts; cancel/failure never replaces committed settings.
+    kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));m.page=KP_SETTINGS;
+    quick(&m,2,0);assert(m.page==KP_SCREEN);quick(&m,2,50);assert(m.page==KP_SCREEN_EDIT);
+    quick(&m,0,100);assert(m.screen_draft.brightness==85&&m.screen_config.brightness==80&&kp_screen_level(&m)==85);
+    press(&m,2,200);kp_tick(&m,700);release(&m,2,710);
+    assert(m.page==KP_SCREEN&&m.screen_config.brightness==80&&!count[KP_SAVE_SCREEN]);
+    quick(&m,2,800);quick(&m,0,850);quick(&m,2,900);
+    assert(m.screen_saving&&count[KP_SAVE_SCREEN]==1);
+    quick(&m,0,950);assert(m.screen_draft.brightness==85); // Cannot edit during a commit.
+    kp_screen_saved(&m,false);assert(m.page==KP_SCREEN_EDIT&&m.screen_save_failed&&m.screen_config.brightness==80);
+    quick(&m,2,1000);kp_screen_saved(&m,true);assert(m.page==KP_SCREEN&&m.screen_config.brightness==85);
+    quick(&m,1,1100);quick(&m,1,1150);quick(&m,2,1200);assert(m.screen_setting==KP_SCREEN_DIM_BRIGHTNESS);
+    quick(&m,1,1250);assert(kp_screen_level(&m)==15&&m.screen_config.dim_brightness==20);
+    kp_tick(&m,300000);assert(m.screen.state==KP_SCREEN_ACTIVE); // Editing stays visible.
+    // Sleeping on a hold-only shortcut or long OK consumes the entire first gesture.
+    kp_defaults(&c);assert(kp_binding_set(&c,0,0,"",NULL,0));
+    for(unsigned key=0;key<3;key++){
+        kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));kp_tick(&m,30000);
+        assert(m.screen.state==KP_SCREEN_OFF);press(&m,key,30100);kp_tick(&m,32000);release(&m,key,32100);
+        assert(m.page==KP_CONSOLE&&!count[KP_TAP]&&!count[KP_HOLD]&&!count[KP_RELEASE]&&!m.blocked);
+        quick(&m,key,32200);kp_tick(&m,32500);
+        assert(count[KP_TAP]+count[KP_HOLD]==1);
+    }
+    // Background link transitions preserve the idle deadline and current page.
+    kp_init(&m,&c,effect,NULL);kp_tick(&m,10000);kp_link_changed(&m,20000);kp_tick(&m,30000);
+    assert(m.screen.state==KP_SCREEN_OFF&&m.page==KP_CONSOLE);
+    puts("Keypad gestures, navigation, screen drafts, wake consumption and feedback: PASS");
 }

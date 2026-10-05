@@ -241,6 +241,23 @@ void kp_init(kp_model_t *m, const kp_config_t *c, kp_emit_t cb, void *u) {
     memset(m, 0, sizeof(*m));
     if (kp_config_valid(c)) m->config = *c; else kp_defaults(&m->config);
     m->emit = cb; m->user = u; m->page = KP_CONSOLE;
+    kp_screen_defaults(&m->screen_config);
+    kp_screen_init(&m->screen, &m->screen_config, 0);
+}
+void kp_screen_saved(kp_model_t *m, bool success) {
+    if (!m->screen_saving) return;
+    m->screen_saving = false; m->screen_save_failed = !success;
+    if (success) {
+        m->screen_config = m->screen_draft;
+        page(m, KP_SCREEN); m->selected = m->screen_setting;
+    }
+    ++m->config_revision;
+}
+uint8_t kp_screen_level(const kp_model_t *m) {
+    if (m->page == KP_SCREEN_EDIT &&
+        (m->screen_setting == KP_SCREEN_BRIGHTNESS || m->screen_setting == KP_SCREEN_DIM_BRIGHTNESS))
+        return kp_screen_value(&m->screen_draft, m->screen_setting);
+    return m->screen.level;
 }
 void kp_hotspot_exit(kp_model_t *m) {
     if (m->page != KP_HOTSPOT) return;
@@ -253,6 +270,10 @@ static void back(kp_model_t *m) {
     case KP_HOTSPOT: kp_hotspot_exit(m); break;
     case KP_FORGET: case KP_AP_CONFIRM: page(m, KP_SETTINGS); break;
     case KP_PROFILES: page(m, KP_MENU); break;
+    case KP_SCREEN: page(m, KP_SETTINGS); break;
+    case KP_SCREEN_EDIT:
+        if (!m->screen_saving) { page(m, KP_SCREEN); m->selected = m->screen_setting; }
+        break;
     case KP_MENU: kp_cancel(m); break;
     }
 }
@@ -266,8 +287,19 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
     }
     if (m->page == KP_HOTSPOT) {
         // Only long OK exits; short keys cannot accidentally stop configuration.
+    } else if (m->page == KP_SCREEN_EDIT) {
+        if (m->screen_saving) return;
+        if (key < 2) {
+            if (kp_screen_adjust(&m->screen_draft, m->screen_setting, key == 0 ? 1 : -1)) {
+                m->screen_save_failed = false; ++m->config_revision;
+            }
+        } else {
+            m->screen_saving = true; ++m->config_revision;
+            emit(m, KP_SAVE_SCREEN, NULL);
+        }
     } else if (key < 2) {
-        unsigned count = m->page == KP_MENU ? 3 : m->page == KP_PROFILES ? m->config.profile_count : 2;
+        unsigned count = m->page == KP_MENU || m->page == KP_SETTINGS ? 3 :
+                         m->page == KP_SCREEN ? KP_SCREEN_SETTING_COUNT : m->page == KP_PROFILES ? m->config.profile_count : 2;
         m->selected = (m->selected + (key == 0 ? count - 1 : 1)) % count;
     } else if (m->page == KP_MENU) {
         kp_page_t target = m->selected == 0 ? KP_CONSOLE : m->selected == 1 ? KP_PROFILES : KP_SETTINGS;
@@ -275,8 +307,12 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
         if (target == KP_PROFILES) m->selected = m->config.active_profile;
     } else if (m->page == KP_PROFILES) emit(m, KP_SELECT_PROFILE, NULL);
     else if (m->page == KP_SETTINGS) {
-        bool ap = m->selected == 0;
-        page(m, ap ? KP_AP_CONFIRM : KP_FORGET);
+        kp_page_t target = m->selected == 0 ? KP_SCREEN : m->selected == 1 ? KP_AP_CONFIRM : KP_FORGET;
+        page(m, target);
+    } else if (m->page == KP_SCREEN) {
+        m->screen_setting = m->selected;
+        m->screen_draft = m->screen_config; m->screen_save_failed = false;
+        page(m, KP_SCREEN_EDIT);
     } else if (m->page == KP_AP_CONFIRM) {
         bool confirm = m->selected == 1;
         page(m, confirm ? KP_HOTSPOT : KP_SETTINGS);
@@ -303,6 +339,8 @@ static void hold(kp_model_t *m, unsigned key) {
     }
 }
 void kp_tick(kp_model_t *m, uint32_t now) {
+    kp_screen_tick(&m->screen, &m->screen_config, now,
+                   m->page == KP_SCREEN || m->page == KP_SCREEN_EDIT || m->executing);
     if (m->feedback.visible && !m->executing && (int32_t)(now - m->feedback.until) >= 0) m->feedback.visible = false;
     if (m->blocked) return;
     for (unsigned i = 0; i < 3; ++i) {
@@ -321,6 +359,13 @@ void kp_tick(kp_model_t *m, uint32_t now) {
 }
 void kp_input(kp_model_t *m, unsigned key, bool down, uint32_t now) {
     if (key >= 3) return;
+    if (!kp_screen_input(&m->screen, key, down, now)) {
+        // A wake must not become a click, a shortcut hold, or a system back.
+        memset(m->key, 0, sizeof(m->key));
+        m->down_mask = m->screen.down_mask; m->blocked = m->down_mask != 0;
+        kp_tick(m, now);
+        return;
+    }
     kp_tick(m, now);
     uint8_t bit = 1U << key;
     bool was_down = (m->down_mask & bit) != 0;

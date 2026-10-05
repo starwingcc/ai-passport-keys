@@ -30,6 +30,7 @@ static atomic_bool s_overflow;
 static kp_model_t s_model;
 static char s_message[96] = "准备连接 Passport Keys";
 static bool s_ap_start, s_ap_stop, s_forget, s_ap_active, s_select_profile;
+static bool s_save_screen;
 static unsigned s_target_profile;
 static kp_runner_t s_runner;
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
@@ -64,6 +65,7 @@ static void effect(void *user, kp_effect_t event, const kp_action_t *action) {
     case KP_RELEASE: kp_runner_release(&s_runner, now_ms()); break;
     case KP_CANCEL: if (s_runner.running) message("已取消"); kp_runner_cancel(&s_runner); release(); break;
     case KP_SELECT_PROFILE: s_target_profile = s_model.selected; s_select_profile = true; break;
+    case KP_SAVE_SCREEN: s_save_screen = true; break;
     case KP_AP_START: s_ap_start = true; break;
     case KP_AP_STOP: s_ap_stop = true; break;
     case KP_CLEAR_BOND: s_forget = true; break;
@@ -102,7 +104,11 @@ static void sync_physical_input(void) {
     // Drop all queued events on mode/link transitions. Synchronize the physical
     // state as well, including a release that could have been lost on overflow.
     xQueueReset(s_queue);
-    s_model.down_mask = atomic_load(&s_physical);
+    unsigned physical = atomic_load(&s_physical);
+    if (physical != s_model.screen.down_mask) s_model.screen.last_activity = now_ms();
+    s_model.down_mask = physical;
+    s_model.screen.down_mask = s_model.down_mask;
+    if (!physical) s_model.screen.waking = false;
 }
 static void resync_input(void) {
     sync_physical_input();
@@ -124,10 +130,13 @@ void app_main(void) {
     kp_config_t *config = malloc(sizeof(*config));
     if (!config) { ESP_LOGE("keypad", "Configuration allocation failed"); return; }
     kp_store_get(config); kp_init(&s_model, config, effect, NULL); free(config);
+    kp_store_screen_get(&s_model.screen_config);
+    kp_screen_init(&s_model.screen, &s_model.screen_config, now_ms());
     s_model.page = KP_MENU;
     kp_home_config_t home; kp_store_home_get(&home);
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) { ESP_LOGE("keypad", "Display unavailable"); return; }
-    bsp_display_backlight(80);
+    uint8_t backlight = s_model.screen_config.brightness;
+    bsp_display_backlight(backlight);
     bool battery_ok = bsp_battery_init() == ESP_OK;
     kp_ui_init();
     s_queue = xQueueCreate(24, sizeof(input_t));
@@ -136,8 +145,7 @@ void app_main(void) {
     rc = kp_ble_init();
     if (rc != ESP_OK) message("蓝牙启动失败，请重启");
     memory_log("startup");
-    uint32_t last_ui = 0, last_battery = 0, last_activity = now_ms(), generation = 0;
-    bool dimmed = false;
+    uint32_t last_ui = 0, last_battery = 0, generation = 0;
     int battery = -1;
     for (;;) {
         uint32_t now = now_ms();
@@ -153,14 +161,19 @@ void app_main(void) {
             // Consume timestamped releases before advancing the hold timer to
             // wall time, so a delayed worker cannot invent a long press.
             do {
-                last_activity = now_ms();
-                if ((uint32_t)(last_activity - input.at) > 250) { resync_input(); break; }
+                if ((uint32_t)(now_ms() - input.at) > 250) { resync_input(); break; }
                 kp_input(&s_model, input.key, input.down, input.at);
             } while (xQueueReceive(s_queue, &input, 0) == pdTRUE);
         }
         now = now_ms();
         kp_tick(&s_model, now);
         advance_runner();
+        if (s_save_screen) {
+            s_save_screen = false;
+            bool saved = kp_store_screen_save(&s_model.screen_draft) == ESP_OK;
+            kp_screen_saved(&s_model, saved);
+            message(saved ? "屏幕设置已保存" : "保存失败，请重试");
+        }
         if (s_select_profile) {
             s_select_profile = false; resync_input();
             uint8_t previous = s_model.config.active_profile;
@@ -212,8 +225,8 @@ void app_main(void) {
         // never block keys or access LVGL. STA releases Wi-Fi before AP startup.
         if (!s_ap_active && !s_runner.running && !s_model.down_mask) kp_network_tick(now);
         if (s_ap_active) kp_wifi_setup_poll(now);
-        bool dim = (uint32_t)(now - last_activity) >= 60000;
-        if (dim != dimmed) { dimmed = dim; bsp_display_backlight(dim ? 12 : 80); }
+        uint8_t level = kp_screen_level(&s_model);
+        if (level != backlight) { backlight = level; bsp_display_backlight(level); }
         if (battery_ok && (!last_battery || (uint32_t)(now - last_battery) >= 30000)) {
             battery = bsp_battery_soc(); last_battery = now;
         }

@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "keypad_screen.h"
 
 #define KP_BINDINGS 11
 #define KP_LEGACY_BINDINGS 8
@@ -42,9 +43,10 @@ _Static_assert(sizeof(kp_binding_t) == 4, "v4 binding layout");
 _Static_assert(offsetof(kp_config_t, data) == 392, "v4 disk header");
 _Static_assert(sizeof(kp_step_t) == 12, "persisted step layout");
 
-typedef enum { KP_CONSOLE, KP_MENU, KP_SETTINGS, KP_HOTSPOT, KP_FORGET, KP_PROFILES, KP_AP_CONFIRM } kp_page_t;
+typedef enum { KP_CONSOLE, KP_MENU, KP_SETTINGS, KP_HOTSPOT, KP_FORGET, KP_PROFILES, KP_AP_CONFIRM,
+               KP_SCREEN, KP_SCREEN_EDIT } kp_page_t;
 typedef enum { KP_TAP, KP_HOLD, KP_RELEASE, KP_AP_START, KP_AP_STOP,
-               KP_CLEAR_BOND, KP_CANCEL, KP_SELECT_PROFILE } kp_effect_t;
+               KP_CLEAR_BOND, KP_CANCEL, KP_SELECT_PROFILE, KP_SAVE_SCREEN } kp_effect_t;
 typedef void (*kp_emit_t)(void *user, kp_effect_t effect, const kp_action_t *action);
 typedef struct {
     bool down, pending, long_sent, ignored;
@@ -67,6 +69,10 @@ typedef struct {
     uint8_t down_mask;
     bool blocked, executing;
     kp_feedback_t feedback;
+    kp_screen_config_t screen_config, screen_draft;
+    kp_screen_t screen;
+    kp_screen_setting_t screen_setting;
+    bool screen_saving, screen_save_failed;
     kp_emit_t emit;
     void *user;
 } kp_model_t;
@@ -101,3 +107,5 @@ void kp_cancel(kp_model_t *model);
 void kp_link_changed(kp_model_t *model, uint32_t now);
 void kp_set_busy(kp_model_t *model, bool busy);
 void kp_hotspot_exit(kp_model_t *model);
+void kp_screen_saved(kp_model_t *model, bool success);
+uint8_t kp_screen_level(const kp_model_t *model);

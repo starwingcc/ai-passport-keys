@@ -18,6 +18,8 @@ LV_FONT_DECLARE(passport_font_28);
 static lv_obj_t *s_title, *s_state, *s_battery, *s_panels[3], *s_keys[3], *s_lines[3][4];
 static lv_obj_t *s_body, *s_footer, *s_message, *s_profile_rows[4];
 static lv_obj_t *s_command_title, *s_command_keys, *s_command_band, *s_command_status, *s_command_progress, *s_command_separator;
+static lv_obj_t *s_screen_values[4], *s_screen_range, *s_screen_fill;
+static const char *screen_names[] = {"正常亮度", "自动变暗", "变暗亮度", "自动息屏"};
 static lv_obj_t *label(lv_obj_t *parent, int x, int y, int w, const lv_font_t *font) {
     lv_obj_t *l = lv_label_create(parent);
     lv_obj_set_pos(l, x, y); lv_obj_set_width(l, w);
@@ -38,6 +40,7 @@ static lv_obj_t *menu_row(unsigned index, bool selected) {
     lv_obj_set_height(row, MENU_HEIGHT);
     lv_obj_set_style_text_font(row, &passport_font_20_menu, 0);
     lv_obj_set_style_text_line_space(row, 0, 0);
+    lv_obj_set_style_text_align(row, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_color(row, lv_color_hex(selected ? ACCENT : INK), 0);
     return row;
 }
@@ -57,6 +60,7 @@ void kp_ui_init(void) {
     s_title = label(screen, 18, 20, 151, &passport_font_20);
     lv_obj_set_height(s_title, 24);
     s_battery = label(screen, 178, 24, 45, &passport_font_16);
+    lv_obj_set_height(s_battery, passport_font_16.line_height);
     lv_obj_set_style_text_align(s_battery, LV_TEXT_ALIGN_RIGHT, 0);
     s_state = label(screen, 18, 46, 206, &passport_font_16);
     lv_obj_set_height(s_state, 22);
@@ -87,6 +91,9 @@ void kp_ui_init(void) {
     lv_label_set_long_mode(s_body, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_line_space(s_body, 2, 0);
     for (int i = 0; i < 4; ++i) { s_profile_rows[i] = label(screen, 20, MENU_TOP + i * MENU_PITCH, 200, &passport_font_20_menu); lv_obj_set_height(s_profile_rows[i], MENU_HEIGHT); }
+    // Reuse the first control card's labels for settings columns, leaving RAM
+    // for the font decoder and the large numeric glyph's temporary bitmap.
+    for (int i = 0; i < 4; ++i) s_screen_values[i] = s_lines[0][i];
     s_message = label(screen, 18, 264, 204, &passport_font_16);
     lv_obj_set_height(s_message, 22);
     s_footer = label(screen, 18, 289, 204, &passport_font_16);
@@ -102,7 +109,7 @@ void kp_ui_init(void) {
     s_command_title = label(s_command_band, 18, 0, 204, &passport_font_28);
     lv_obj_set_style_text_color(s_command_title, lv_color_hex(PAPER), 0);
     // The body and footer are mutually exclusive with their detail-page roles.
-    // Reuse them to leave room for compressed glyph decoding in the 24 KiB pool.
+    // Reuse them to leave room for compressed glyph decoding in the LVGL pool.
     s_command_keys = s_body;
     s_command_separator = lv_obj_create(screen);
     lv_obj_set_pos(s_command_separator, 18, 271); lv_obj_set_size(s_command_separator, 204, 1);
@@ -111,6 +118,14 @@ void kp_ui_init(void) {
     lv_obj_set_style_border_width(s_command_separator, 0, 0);
     lv_obj_set_style_pad_all(s_command_separator, 0, 0);
     lv_obj_remove_flag(s_command_separator, LV_OBJ_FLAG_SCROLLABLE);
+    s_screen_range = s_command_separator;
+    s_screen_fill = lv_obj_create(s_screen_range);
+    lv_obj_set_pos(s_screen_fill, 0, 0); lv_obj_set_height(s_screen_fill, 3);
+    lv_obj_set_style_bg_color(s_screen_fill, lv_color_hex(ACCENT), 0);
+    lv_obj_set_style_bg_opa(s_screen_fill, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_screen_fill, 0, 0); lv_obj_set_style_pad_all(s_screen_fill, 0, 0);
+    lv_obj_set_style_radius(s_screen_fill, 0, 0); lv_obj_remove_flag(s_screen_fill, LV_OBJ_FLAG_SCROLLABLE);
+    hidden(s_screen_fill, true);
     s_command_status = s_footer;
     s_command_progress = label(screen, 166, 288, 56, &passport_font_16);
     lv_obj_set_height(s_command_progress, 24);
@@ -148,7 +163,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     snprintf(previous_message, sizeof(previous_message), "%s", message);
     snprintf(previous_ssid, sizeof(previous_ssid), "%s", ssid);
     snprintf(previous_password, sizeof(previous_password), "%s", password);
-    const char *titles[] = {"开始控制", "Passport", "设置", "热点配置", "清除配对", "情景列表", "热点配置"};
+    const char *titles[] = {"开始控制", "Passport", "设置", "热点配置", "清除配对", "情景列表", "热点配置", "屏幕", "屏幕"};
     bool command = m->page == KP_CONSOLE && m->feedback.visible;
     hidden(s_title, false);
     lv_obj_set_pos(s_title, 18, 20); lv_obj_set_width(s_title, 151);
@@ -161,6 +176,18 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
                       ble.connected ? (!ble.handles_ready ? "键盘服务未就绪" :
                           !ble.secure ? "等待配对完成" : "等待电脑启用键盘") :
                       "等待电脑连接");
+    for (unsigned i = 0; i < 4; ++i) {
+        lv_obj_t *value = s_screen_values[i];
+        bool column = m->page == KP_SCREEN;
+        lv_obj_t *parent = column ? lv_screen_active() : s_panels[0];
+        if (lv_obj_get_parent(value) != parent) lv_obj_set_parent(value, parent);
+        lv_obj_set_pos(value, column ? 156 : 48, column ? MENU_TOP + i * MENU_PITCH : i * 20);
+        lv_obj_set_size(value, column ? 64 : 157, column ? MENU_HEIGHT : 20);
+        lv_obj_set_style_text_font(value, column ? &passport_font_20_menu : &passport_font_16, 0);
+        lv_obj_set_style_text_align(value, column ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_set_style_bg_opa(value, !column && i == 2 ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        lv_label_set_recolor(value, !column);
+    }
     for (int i = 0; i < 3; ++i) {
         hidden(s_panels[i], true);
         // Hidden macro titles can otherwise retain almost 1 KiB while a large
@@ -171,17 +198,25 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     hidden(s_body, true);
     for (int i = 0; i < 4; ++i) {
         hidden(s_profile_rows[i], true); lv_label_set_text(s_profile_rows[i], "");
+        hidden(s_screen_values[i], m->page != KP_CONSOLE || command); lv_label_set_text(s_screen_values[i], "");
     }
+    hidden(s_screen_fill, true);
     hidden(s_message, m->page == KP_CONSOLE); hidden(s_footer, false);
     hidden(s_command_band, !command); hidden(s_command_title, !command); hidden(s_command_keys, !command);
     hidden(s_command_progress, !command); hidden(s_command_separator, !command);
     if (!command) lv_label_set_text(s_command_title, "");
+    lv_obj_set_pos(s_command_band, 0, 86); lv_obj_set_size(s_command_band, 240, 94);
+    lv_obj_set_style_text_font(s_command_title, &passport_font_28, 0);
+    lv_obj_set_style_text_align(s_command_title, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_pos(s_command_separator, 18, 271); lv_obj_set_size(s_command_separator, 204, 1);
+    lv_obj_set_style_bg_color(s_command_separator, lv_color_hex(0x617467), 0);
     if (m->page == KP_CONSOLE && !command) lv_label_set_text(s_body, "");
     lv_obj_set_pos(s_command_progress, 166, 288); lv_obj_set_size(s_command_progress, 56, 24);
     lv_obj_set_style_text_color(s_command_progress, lv_color_hex(INK), 0);
     lv_obj_set_style_text_align(s_command_progress, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_style_text_font(s_message, &passport_font_16, 0);
     lv_obj_set_style_text_color(s_message, lv_color_hex(INK), 0);
+    lv_obj_set_style_text_align(s_message, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_pos(s_message, 18, 264); lv_obj_set_size(s_message, 204, 22);
     lv_label_set_text(s_footer, "长按 OK 返回上一层");
     lv_obj_set_pos(s_footer, 18, 289);
@@ -195,6 +230,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     lv_obj_set_height(s_body, command ? 52 : LV_SIZE_CONTENT);
     lv_obj_set_style_text_font(s_body, &passport_font_16, 0);
     lv_obj_set_style_text_color(s_body, lv_color_hex(INK), 0);
+    lv_obj_set_style_text_align(s_body, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_pos(s_state, 18, 46);
     lv_obj_set_width(s_state, 206);
     lv_obj_set_height(s_state, 22);
@@ -204,7 +240,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         // Reuse labels from mutually exclusive pages, leaving room for glyph
         // decoding in the existing 24 KiB pool. Art is drawn without layers.
         lv_obj_set_pos(s_title, 20, 20); lv_obj_set_width(s_title, 130);
-        lv_obj_set_pos(s_battery, 184, 23); lv_obj_set_width(s_battery, 37);
+        lv_obj_set_pos(s_battery, 180, 23); lv_obj_set_width(s_battery, 44);
         lv_obj_set_style_text_align(s_battery, LV_TEXT_ALIGN_LEFT, 0);
         lv_obj_t *user = s_command_progress;
         hidden(user, false); lv_obj_set_pos(user, 98, 59); lv_obj_set_size(user, 122, passport_font_16.line_height);
@@ -241,6 +277,62 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
             lv_obj_set_style_text_color(rows[i], lv_color_hex(m->selected == i ? PAPER : INK), 0);
             lv_label_set_text(rows[i], menu[i]);
         }
+    } else if (m->page == KP_SCREEN) {
+        lv_label_set_text(s_state, "");
+        for (unsigned i = 0; i < KP_SCREEN_SETTING_COUNT; ++i) {
+            lv_obj_t *row = menu_row(i, i == m->selected);
+            lv_obj_set_width(row, 132);
+            lv_label_set_text_fmt(row, "%s %s", i == m->selected ? ">" : " ", screen_names[i]);
+            lv_obj_t *value = s_screen_values[i]; hidden(value, false);
+            lv_obj_set_style_text_color(value, lv_color_hex(i == m->selected ? ACCENT : INK), 0);
+            unsigned number = kp_screen_value(&m->screen_config, i);
+            bool brightness = i == KP_SCREEN_BRIGHTNESS || i == KP_SCREEN_DIM_BRIGHTNESS;
+            if (!brightness && !number) lv_label_set_text(value, "关闭");
+            else lv_label_set_text_fmt(value, brightness ? "%u%%" : "%u 秒", number);
+        }
+        hidden(s_message, true); lv_label_set_text(s_message, "");
+        lv_label_set_text(s_footer, "上下选择，OK 调整");
+    } else if (m->page == KP_SCREEN_EDIT) {
+        lv_label_set_text(s_title, screen_names[m->screen_setting]);
+        bool brightness = m->screen_setting == KP_SCREEN_BRIGHTNESS || m->screen_setting == KP_SCREEN_DIM_BRIGHTNESS;
+        unsigned number = kp_screen_value(&m->screen_draft, m->screen_setting);
+        if (m->screen_setting == KP_SCREEN_BRIGHTNESS) lv_label_set_text(s_state, "操作时使用的亮度");
+        else if (m->screen_setting == KP_SCREEN_DIM_BRIGHTNESS) lv_label_set_text(s_state, "自动变暗后的亮度");
+        else lv_label_set_text(s_state, "从最后一次操作起计时");
+        hidden(s_command_band, false); hidden(s_command_title, false);
+        lv_obj_set_pos(s_command_band, 0, 89); lv_obj_set_height(s_command_band, 85);
+        lv_obj_set_style_text_align(s_command_title, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(s_command_title, !brightness && !number ? &passport_font_28 : &lv_font_montserrat_48, 0);
+        if (!brightness && !number) lv_label_set_text(s_command_title, "关闭");
+        else lv_label_set_text_fmt(s_command_title, brightness ? "%u%%" : "%u", number);
+        lv_obj_set_height(s_command_title, LV_SIZE_CONTENT); lv_obj_update_layout(s_command_title);
+        lv_obj_set_y(s_command_title, (85 - lv_obj_get_height(s_command_title)) / 2);
+        if (brightness) {
+            unsigned min = m->screen_setting == KP_SCREEN_BRIGHTNESS ? 10 : 5;
+            unsigned max = m->screen_setting == KP_SCREEN_BRIGHTNESS ? 100 : m->screen_draft.brightness;
+            hidden(s_screen_range, false); hidden(s_screen_fill, false);
+            lv_obj_set_pos(s_screen_range, 24, 195); lv_obj_set_size(s_screen_range, 192, 3);
+            lv_obj_set_style_bg_color(s_screen_range, lv_color_hex(0x405344), 0);
+            lv_obj_set_width(s_screen_fill, 192 * (number - min) / (max - min));
+            for (unsigned i = 0; i < 2; ++i) {
+                lv_obj_t *limit = s_profile_rows[i]; hidden(limit, false);
+                lv_obj_set_pos(limit, i ? 156 : 24, 209); lv_obj_set_size(limit, 60, 24);
+                lv_obj_set_style_text_font(limit, &passport_font_16, 0);
+                lv_obj_set_style_text_align(limit, i ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT, 0);
+                lv_obj_set_style_text_color(limit, lv_color_hex(0xa3b5a5), 0);
+                lv_label_set_text_fmt(limit, "%u%%", i ? max : min);
+            }
+        } else {
+            hidden(s_body, false); lv_obj_set_pos(s_body, 18, 194); lv_obj_set_width(s_body, 204);
+            lv_obj_set_style_text_align(s_body, LV_TEXT_ALIGN_CENTER, 0);
+            lv_label_set_text(s_body, number ? "秒" : "保持当前亮度");
+        }
+        lv_obj_set_pos(s_message, 18, 242); lv_obj_set_height(s_message, 40);
+        lv_obj_set_style_text_align(s_message, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(s_message, lv_color_hex(0xa3b5a5), 0);
+        lv_label_set_text(s_message, m->screen_save_failed ? "保存失败，请重试" :
+            brightness ? "实时预览亮度" : "可设置为关闭");
+        lv_label_set_text(s_footer, m->screen_saving ? "正在保存" : "上下调整，OK 保存");
     } else if (command) {
         const kp_binding_t *b = kp_binding(&m->config, m->feedback.slot);
         char title[128], sequence[512];
@@ -309,11 +401,11 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         } else if (m->page == KP_MENU || m->page == KP_SETTINGS || m->page == KP_FORGET || m->page == KP_AP_CONFIRM) {
             hidden(s_body, true);
             const char *menu[] = {"开始控制", "情景列表", "设置"};
-            const char *settings[] = {"热点配置", "清除蓝牙配对"};
+            const char *settings[] = {"屏幕", "热点配置", "清除蓝牙配对"};
             const char *forget[] = {"取消", "确认清除"};
             const char *ap[] = {"取消", "开启"};
             const char **entries = m->page == KP_MENU ? menu : m->page == KP_SETTINGS ? settings : m->page == KP_FORGET ? forget : ap;
-            unsigned count = m->page == KP_MENU ? 3 : 2;
+            unsigned count = m->page == KP_MENU || m->page == KP_SETTINGS ? 3 : 2;
             for (unsigned i = 0; i < count; ++i) {
                 lv_obj_t *row = menu_row(i, i == m->selected);
                 lv_label_set_text_fmt(row, "%s %s", i == m->selected ? ">" : " ", entries[i]);
@@ -328,7 +420,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         }
         lv_label_set_text(s_body, text);
     }
-    if (!home_page) lv_label_set_text(s_message, message);
+    if (!home_page && m->page != KP_SCREEN && m->page != KP_SCREEN_EDIT) lv_label_set_text(s_message, message);
     if (!home_page) lv_obj_set_style_text_align(s_battery, LV_TEXT_ALIGN_RIGHT, 0);
     bsp_lvgl_unlock();
 }
