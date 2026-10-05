@@ -45,6 +45,15 @@ int main(int argc,char **argv){
     cJSON_AddStringToObject(binding,"description","discarded");assert(!decode(root,&decoded));
     cJSON_DeleteItemFromObject(binding,"description");
     cJSON_SetNumberValue(cJSON_GetObjectItem(root,"version"),2);assert(!decode(root,&decoded));
+    cJSON_SetNumberValue(cJSON_GetObjectItem(root,"version"),KP_VERSION);
+    cJSON_AddNumberToObject(step,"logical_modifiers",3);assert(decode(root,&decoded));
+    kp_step_t logical;assert(kp_binding_step(&decoded,kp_binding(&decoded,0),0,&logical)&&logical.action.logical_modifiers==3);
+    for(unsigned flags=4;flags<=256;flags+=252){cJSON_SetNumberValue(cJSON_GetObjectItem(step,"logical_modifiers"),flags);assert(!decode(root,&decoded));}
+    cJSON_SetNumberValue(cJSON_GetObjectItem(step,"logical_modifiers"),1);
+    cJSON_SetNumberValue(cJSON_GetObjectItem(step,"consumer"),1);assert(!decode(root,&decoded));
+    cJSON_SetNumberValue(cJSON_GetObjectItem(step,"consumer"),0);
+    cJSON_SetNumberValue(cJSON_GetObjectItem(root,"version"),4);assert(!decode(root,&decoded));
+    cJSON_DeleteItemFromObject(step,"logical_modifiers");assert(decode(root,&decoded)&&decoded.version==KP_VERSION);
     cJSON_Delete(root);
     assert(!kp_config_decode_string("{}",&decoded));assert(!kp_config_decode_string("{\"version\":02}",&decoded));
     char *trailing=malloc(strlen(encoded)+4);assert(trailing);sprintf(trailing,"%s {}",encoded);assert(!kp_config_decode_string(trailing,&decoded));free(trailing);

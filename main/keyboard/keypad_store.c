@@ -11,9 +11,10 @@ static kp_config_t s_config;
 static kp_home_config_t s_home;
 static kp_wifi_config_t s_wifi;
 static kp_screen_config_t s_screen;
+static kp_system_t s_system;
 static kp_clock_t s_clock;
 static esp_err_t persist(nvs_handle_t nvs, const kp_config_t *c) {
-    esp_err_t rc = nvs_set_blob(nvs, "config_v4", c, kp_config_size(c));
+    esp_err_t rc = nvs_set_blob(nvs, "config_v5", c, kp_config_size(c));
     return rc == ESP_OK ? nvs_commit(nvs) : rc;
 }
 esp_err_t kp_store_init(void) {
@@ -23,6 +24,7 @@ esp_err_t kp_store_init(void) {
     kp_home_defaults(&s_home); s_clock = (kp_clock_t){0};
     kp_wifi_defaults(&s_wifi);
     kp_screen_defaults(&s_screen);
+    s_system = KP_SYSTEM_MACOS;
     nvs_handle_t nvs;
     esp_err_t rc = nvs_open("passport_keys", NVS_READWRITE, &nvs);
     if (rc != ESP_OK) return rc;
@@ -33,18 +35,35 @@ esp_err_t kp_store_init(void) {
     kp_screen_config_t screen = {0}; size_t screen_size = sizeof(screen);
     if (nvs_get_blob(nvs, "screen_v1", &screen, &screen_size) == ESP_OK &&
         screen_size == sizeof(screen) && kp_screen_valid(&screen)) s_screen = screen;
+    uint8_t system[2] = {0}; size_t system_size = sizeof(system);
+    if (nvs_get_blob(nvs, "system_v1", system, &system_size) == ESP_OK &&
+        system_size == sizeof(system) && system[0] == 1 && system[1] < KP_SYSTEM_COUNT)
+        s_system = system[1];
     size_t size = 0;
-    rc = nvs_get_blob(nvs, "config_v4", NULL, &size);
+    rc = nvs_get_blob(nvs, "config_v5", NULL, &size);
     kp_config_t *saved = NULL;
     if (rc == ESP_OK && size >= offsetof(kp_config_t, data) + 1 && size <= KP_CONFIG_BYTES) {
         saved = calloc(1, sizeof(*saved));
         if (!saved) { nvs_close(nvs); return ESP_ERR_NO_MEM; }
-        rc = nvs_get_blob(nvs, "config_v4", saved, &size);
+        rc = nvs_get_blob(nvs, "config_v5", saved, &size);
         if (rc == ESP_OK && kp_config_valid(saved) && size == kp_config_size(saved)) {
             s_config = *saved; free(saved); nvs_close(nvs); return ESP_OK;
         }
     }
     free(saved);
+    size = 0;
+    rc = nvs_get_blob(nvs, "config_v4", NULL, &size);
+    if (rc == ESP_OK && size >= offsetof(kp_config_t, data) + 1 && size <= KP_CONFIG_BYTES) {
+        saved = calloc(1, sizeof(*saved));
+        if (!saved) { nvs_close(nvs); return ESP_ERR_NO_MEM; }
+        rc = nvs_get_blob(nvs, "config_v4", saved, &size);
+        bool migrated = rc == ESP_OK && kp_migrate_v4(saved, size);
+        if (migrated) s_config = *saved;
+        free(saved);
+        if (migrated) {
+            (void)persist(nvs, &s_config); nvs_close(nvs); return ESP_OK;
+        }
+    }
     size = 0;
     rc = nvs_get_blob(nvs, "config_v3", NULL, &size);
     if (rc == ESP_OK && size >= offsetof(kp_v3_config_t, data) + 1 && size <= KP_CONFIG_BYTES) {
@@ -154,6 +173,23 @@ bool kp_store_time_sync(uint64_t epoch, uint64_t now) {
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool result = kp_clock_sync(&s_clock, epoch, now);
     xSemaphoreGive(s_lock); return result;
+}
+void kp_store_system_get(kp_system_t *out) {
+    xSemaphoreTake(s_lock, portMAX_DELAY); *out = s_system; xSemaphoreGive(s_lock);
+}
+esp_err_t kp_store_system_save(kp_system_t system) {
+    if ((unsigned)system >= KP_SYSTEM_COUNT) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    nvs_handle_t nvs;
+    esp_err_t rc = nvs_open("passport_keys", NVS_READWRITE, &nvs);
+    if (rc == ESP_OK) {
+        uint8_t record[] = {1, system};
+        rc = nvs_set_blob(nvs, "system_v1", record, sizeof(record));
+        if (rc == ESP_OK) rc = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    if (rc == ESP_OK) s_system = system;
+    xSemaphoreGive(s_lock); return rc;
 }
 uint64_t kp_store_time_read(uint64_t now) {
     xSemaphoreTake(s_lock, portMAX_DELAY);

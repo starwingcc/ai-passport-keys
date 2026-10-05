@@ -38,7 +38,7 @@ static void menu_layout(unsigned expected){
         if(lv_obj_check_type(o,&lv_label_class)&&!lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)&&lv_obj_get_x(o)==20&&
            lv_obj_get_style_text_font(o,LV_PART_MAIN)==&passport_font_20_menu){
             assert(lv_obj_get_x(o)==20&&lv_obj_get_y(o)==86+(int)rows*42);
-            assert(lv_obj_get_width(o)==200&&lv_obj_get_height(o)==32);
+            assert((lv_obj_get_width(o)==200||(rows==1&&lv_obj_get_width(o)==113))&&lv_obj_get_height(o)==32);
             assert(lv_obj_get_style_text_line_space(o,LV_PART_MAIN)==0);
             assert(lv_label_get_long_mode(o)==LV_LABEL_LONG_DOT);
             ++rows;
@@ -142,12 +142,35 @@ int main(int argc,char **argv){
     uint64_t epoch=1791167040;
     kp_ble_status_t ble={.connected=true,.ready=true,.secure=true,.keyboard_subscribed=true,.handles_ready=true};kp_ui_init();
     const char *names[]={"console","menu","settings","hotspot","forget","profiles","ap_confirm"};
-    const unsigned row_counts[]={0,0,3,0,2,1,2};
+    const unsigned row_counts[]={0,0,4,0,2,1,2};
     for(unsigned p=0;p<7;p++){m.page=p;kp_ble_status_t state=ble;if(p==KP_HOTSPOT){state.paused=true;state.ready=state.connected=state.secure=state.keyboard_subscribed=false;}kp_ui_update(&m,state,85,"","Passport-Keys-ABCD","12345678",&home,epoch);save(d,argv[1],names[p]);menu_layout(row_counts[p]);}
     m.screen_draft=m.screen_config;
-    for(unsigned p=0;p<=KP_SCREEN_EDIT;p++){
+    for(unsigned p=0;p<=KP_SYSTEM;p++){
         m.page=p;kp_ui_update(&m,ble,100,"","Passport-Keys-ABCD","12345678",&home,epoch);lv_refr_now(d);battery_layout();
         if(p==KP_MENU||p==KP_SETTINGS)save(d,argv[1],p==KP_MENU?"home_full_battery":"settings_full_battery");
+    }
+    // Render the production system page, including saved/preview/failure states.
+    const char *system_images[]={"system_mac","system_pending_windows","system_windows","system_save_failed"};
+    for(unsigned state=0;state<4;state++){
+        m.page=KP_SYSTEM;m.system=state>=2?KP_SYSTEM_WINDOWS:KP_SYSTEM_MACOS;m.selected=state==0||state==3?0:1;
+        m.system_saved=state==2;m.system_save_failed=state==3;++m.config_revision;
+        kp_ui_update(&m,ble,100,"","","",&home,epoch);save(d,argv[1],system_images[state]);screen_layout(&m);menu_layout(2);battery_layout();
+        // Every single line must fit at its actual selected font, without wrapping.
+        lv_obj_t *screen=lv_screen_active();
+        for(unsigned i=0;i<lv_obj_get_child_count(screen);i++){
+            lv_obj_t *o=lv_obj_get_child(screen,i);
+            if(lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)||!lv_obj_check_type(o,&lv_label_class))continue;
+            const char *text=lv_label_get_text(o);lv_point_t size;
+            lv_text_get_size(&size,text,lv_obj_get_style_text_font(o,0),0,0,LV_COORD_MAX,LV_TEXT_FLAG_NONE);
+            assert(!strchr(text,'\n')&&size.x<=lv_obj_get_width(o));
+        }
+    }
+    m.system=KP_SYSTEM_WINDOWS;m.page=KP_SETTINGS;m.selected=1;++m.config_revision;
+    kp_ui_update(&m,ble,100,"","","",&home,epoch);save(d,argv[1],"settings_windows");menu_layout(4);screen_layout(&m);
+    // Repeated recreation of mutually exclusive label roles stays in the 28 KiB pool.
+    for(unsigned i=0;i<100;i++){
+        m.page=i%3==0?KP_SYSTEM:i%3==1?KP_SETTINGS:KP_CONSOLE;++m.config_revision;
+        kp_ui_update(&m,ble,100,"","","",&home,epoch);lv_refr_now(d);
     }
     m.page=KP_SCREEN;m.selected=2;kp_ui_update(&m,ble,85,"","","",&home,epoch);save(d,argv[1],"screen_settings");screen_layout(&m);
     const char *edit_names[]={"screen_normal","screen_dim_time","screen_dim_level","screen_off_time"};

@@ -31,3 +31,5 @@ _Static_assert(sizeof(kp_legacy_config_t) == 84, "v1 disk budget");
 _Static_assert(sizeof(((kp_config_t *)0)->data) >= sizeof(((kp_v3_config_t *)0)->data), "v3 migration capacity");
 _Static_assert(sizeof(((kp_config_t *)0)->data) >= sizeof(((kp_v2_config_t *)0)->data), "v2 migration capacity");
 bool kp_migrate_v3(const kp_v3_config_t *old, size_t size, kp_config_t *out);
+// v4 has the same header and 12-byte steps, but keyboard payloads must be zero.
+bool kp_migrate_v4(kp_config_t *config, size_t size);

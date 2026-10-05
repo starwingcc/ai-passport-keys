@@ -75,6 +75,23 @@ int main(void) {
     assert(!request(&r,18,0,0));assert(request(&r,19,0,0));kp_runner_result(&r,true,19);
     assert(request(&r,19,0,0x4c));kp_runner_result(&r,true,19);assert(request(&r,59,0,0));kp_runner_result(&r,true,59);
     assert(!r.running&&r.completed==2);
+    // Resolve every macro step at the send boundary, preserving its stored action.
+    kp_step_t adaptive[KP_MAX_STEPS];
+    for(unsigned i=0;i<KP_MAX_STEPS;i++)adaptive[i]=(kp_step_t){.action={.type=KP_KEYBOARD,.logical_modifiers=(i%3)+1,.modifiers=2,.keys={4+i%26}},.delay_ms=0};
+    assert(kp_binding_set(&c,0,0,"",adaptive,KP_MAX_STEPS));
+    for(unsigned system=0;system<KP_SYSTEM_COUNT;system++){
+        assert(kp_runner_start(&r,&c,kp_binding(&c,0),false));
+        for(unsigned i=0;i<KP_MAX_STEPS;i++){
+            kp_action_t source,resolved;uint8_t keyboard[8],consumer[2];
+            assert(kp_runner_request(&r,i*40,&source)&&kp_action_resolve(&source,system,&resolved));
+            kp_report(&resolved,keyboard,consumer);
+            unsigned flags=(i%3)+1,expected=2|(flags&1?(system==0?8:1):0)|(flags&2?(system==0?128:16):0);
+            assert(keyboard[0]==expected&&keyboard[2]==4+i%26&&!consumer[0]&&source.logical_modifiers==flags);
+            kp_runner_result(&r,true,i*40);assert(kp_runner_request(&r,(i+1)*40,&source));
+            assert(source.type==KP_NONE);kp_runner_result(&r,true,(i+1)*40);
+        }
+        assert(!r.running&&r.completed==KP_MAX_STEPS);
+    }
     integration();
     puts("Keypad macro timing, acknowledgement, hold, cancellation and failure: PASS");
 }

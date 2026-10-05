@@ -6,6 +6,7 @@ typedef struct {
     kp_json_read_t read; void *user;
     char buffer[256]; size_t pos, size, total;
     bool failed;
+    bool logical_steps;
 } parser_t;
 static int peek(parser_t *p) {
     if (p->failed) return -1;
@@ -103,12 +104,13 @@ static int more(parser_t *p, int end) {
     return c == ',' ? 1 : -1;
 }
 static bool step(parser_t *p, kp_step_t *out) {
-    const char *const names[] = {"type", "modifiers", "keys", "consumer", "delay_ms"};
+    const char *const names[] = {"type", "modifiers", "keys", "consumer", "delay_ms", "logical_modifiers"};
     unsigned seen = 0, f, value; int next;
+    unsigned consumer = 0, logical = 0;
     memset(out, 0, sizeof(*out));
     if (!token(p, '{')) return false;
     do {
-        if (!field(p, names, 5, &seen, &f)) return false;
+        if (!field(p, names, 6, &seen, &f)) return false;
         if (f == 2) {
             if (!token(p, '[')) return false;
             space(p);
@@ -120,15 +122,21 @@ static bool step(parser_t *p, kp_step_t *out) {
             } while ((next = more(p, ']')) == 1);
             if (next < 0) return false;
         } else {
-            unsigned max = f == 0 ? KP_MEDIA : f == 1 ? 255 : f == 3 ? 65535 : KP_MAX_DELAY_MS;
+            unsigned max = f == 0 ? KP_MEDIA : f == 1 ? 255 : f == 3 ? 65535 : f == 5 ? 3 : KP_MAX_DELAY_MS;
             if (!number(p, max, &value)) return false;
             if (f == 0) out->action.type = value;
             else if (f == 1) out->action.modifiers = value;
-            else if (f == 3) out->action.consumer = value;
+            else if (f == 3) consumer = value;
+            else if (f == 5) logical = value;
             else out->delay_ms = value;
         }
     } while ((next = more(p, '}')) == 1);
-    return next == 0 && seen == 31 && kp_action_valid(&out->action, false);
+    if (next != 0 || (seen != 31 && seen != 63) ||
+        (out->action.type == KP_KEYBOARD ? consumer != 0 : logical != 0)) return false;
+    if (seen == 63) p->logical_steps = true;
+    if (out->action.type == KP_KEYBOARD) out->action.logical_modifiers = logical;
+    else out->action.consumer = consumer;
+    return kp_action_valid(&out->action, false);
 }
 static bool binding(parser_t *p, kp_config_t *c, unsigned profile, unsigned slot) {
     const char *const names[] = {"title", "steps"};
@@ -191,6 +199,8 @@ bool kp_config_decode(kp_json_read_t read, void *user, kp_config_t *out) {
         }
     } while ((next = more(&p, '}')) == 1);
     if (next != 0 || seen != 7) return false;
+    if (out->version == 4 && !p.logical_steps) out->version = KP_VERSION;
+    else if (out->version != KP_VERSION) return false;
     space(&p);
     return peek(&p) < 0 && !p.failed && kp_config_valid(out);
 }
@@ -337,7 +347,13 @@ bool kp_config_encode(const kp_config_t *c, kp_json_write_t write, void *user) {
                 for (unsigned k = 0; k < 6; ++k) if (s.action.keys[k]) {
                     snprintf(number_text, sizeof(number_text), "%s%u", comma ? "," : "", s.action.keys[k]); output(&w, number_text); comma = true;
                 }
-                snprintf(number_text, sizeof(number_text), "],\"consumer\":%u,\"delay_ms\":%u}", s.action.consumer, s.delay_ms); output(&w, number_text);
+                snprintf(number_text, sizeof(number_text), "],\"consumer\":%u,\"delay_ms\":%u",
+                         s.action.type == KP_MEDIA ? s.action.consumer : 0, s.delay_ms); output(&w, number_text);
+                if (s.action.type == KP_KEYBOARD && s.action.logical_modifiers) {
+                    snprintf(number_text, sizeof(number_text), ",\"logical_modifiers\":%u", s.action.logical_modifiers);
+                    output(&w, number_text);
+                }
+                output(&w, "}");
             }
             output(&w, "]}");
         }

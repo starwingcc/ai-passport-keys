@@ -173,7 +173,7 @@ int main(void) {
     httpd_req_t req={.uri="/api/config",.method=HTTP_GET,.host="192.168.4.1"};
     reset_response(); fail_alloc=true; unsigned before=allocations;
     assert(api(&req)==ESP_OK && allocations==before && finished==1 && !reading);
-    assert(strstr(response,"\"version\":4") && strstr(response,"\"session\":") && largest_send<=256);
+    assert(strstr(response,"\"version\":5") && strstr(response,"\"session\":") && largest_send<=256);
     kp_step_t steps[KP_MAX_STEPS];
     for(unsigned i=0;i<KP_MAX_STEPS;++i)
         steps[i]=(kp_step_t){{.type=KP_KEYBOARD,.keys={4}},i+1==KP_MAX_STEPS?0:5000};

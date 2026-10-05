@@ -2,7 +2,7 @@ const assert=require('node:assert/strict');
 require('../main/web/charset.js');require('../main/web/app.js');
 const K=globalThis.Keypad;
 const {capture,defaults,keys,validate}=K;
-const c=defaults();assert.equal(c.profiles[0].bindings.length,11);assert.equal(c.version,4);assert(validate(c));
+const c=defaults();assert.equal(c.profiles[0].bindings.length,11);assert.equal(c.version,5);assert(validate(c));
 assert.equal(K.capacity(c),480);assert(!('description' in c.profiles[0].bindings[0]));
 assert.deepEqual(c.profiles[0].bindings[0].steps[0].keys,[41]);
 assert.equal(c.profiles[0].bindings[3].steps[0].modifiers,4);
@@ -63,7 +63,7 @@ assert.throws(()=>K.applyImport(target,single,{mode:'replace'}));assert.throws((
 assert.throws(()=>K.applyImport(c,single));assert.equal(c.profiles.length,8);
 // Every former slot, including both holds and OK double, lands in its correct v4 slot.
 const oldSlots=[0,1,3,4,5,7,8,9],legacy={version:3,active_profile:1,profiles:shared.profiles.map((p,i)=>({name:p.name,bindings:oldSlots.map((_,n)=>({title:'旧'+n,steps:[{type:1,modifiers:i,keys:[4+n],consumer:0,delay_ms:0}]}))}))};
-const upgraded=K.parseImport(JSON.stringify(legacy));assert.equal(upgraded.config.version,4);assert.equal(upgraded.config.active_profile,1);
+const upgraded=K.parseImport(JSON.stringify(legacy));assert.equal(upgraded.config.version,5);assert.equal(upgraded.config.active_profile,1);
 for(const [i,p] of upgraded.config.profiles.entries()){
   for(const [old,slot] of oldSlots.entries())assert.deepEqual(p.bindings[slot],legacy.profiles[i].bindings[old]);
   for(const slot of [2,6,10])assert.deepEqual(p.bindings[slot],{title:'',steps:[]});
@@ -89,17 +89,27 @@ for(const alter of [
 ]){const f=JSON.parse(allFile);alter(f);invalidFiles.push(JSON.stringify(f));}
 for(const file of invalidFiles){assert.throws(()=>K.parseImport(file));assert.equal(JSON.stringify(target),snapshot);}
 // The exact 6144-byte limit survives all-file export/import, including 64-step arrays.
-const boundary={version:4,active_profile:0,profiles:[{name:'A',bindings:Array.from({length:11},()=>({title:'',steps:[]}))}]};
+const boundary={version:5,active_profile:0,profiles:[{name:'A',bindings:Array.from({length:11},()=>({title:'',steps:[]}))}]};
 for(let b=0;b<7;b++)for(let n=0;n<64;n++)K.addStep(boundary.profiles[0].bindings[b]);
 for(let n=0;n<30;n++)K.addStep(boundary.profiles[0].bindings[7]);boundary.profiles[0].bindings[0].title='12345678901';
 assert.equal(K.capacity(boundary),6144);assert(validate(boundary));assert.deepEqual(K.parseImport(K.exportFile(boundary,'configuration')).config,boundary);
 const over=copy(boundary);over.profiles[0].bindings[10].title='A';assert.throws(()=>validate(over));
-const overImport={kind:'scenario',config:{version:4,active_profile:0,profiles:[{name:'追加',bindings:defaults().profiles[0].bindings}]}};
+const overImport={kind:'scenario',config:{version:5,active_profile:0,profiles:[{name:'追加',bindings:defaults().profiles[0].bindings}]}};
 const before=JSON.stringify(boundary);assert.throws(()=>K.applyImport(boundary,overImport));assert.equal(JSON.stringify(boundary),before);
 assert.equal(K.sequenceLabel({title:'',steps:[]}),'无');
+// The logical extension is independent of HID bits and migrates v4 without rewriting mappings.
+const adaptive=defaults();const adaptiveStep=adaptive.profiles[0].bindings[5].steps[0];
+adaptiveStep.modifiers=2;adaptiveStep.logical_modifiers=3;assert(validate(adaptive));
+assert.equal(K.actionLabel(adaptiveStep),'Cmd/Ctrl+RCmd/Ctrl+Shift+A');
+assert.deepEqual(K.parseImport(K.exportFile(adaptive,'configuration')).config,adaptive);
+const oldV4=defaults();oldV4.version=4;assert.deepEqual(K.parseImport(JSON.stringify(oldV4)).config,defaults());
+oldV4.profiles[0].bindings[5].steps[0].logical_modifiers=1;assert.throws(()=>K.parseImport(JSON.stringify(oldV4)));
+for(const flags of [-1,4,256,1.5,'1',null]){const bad=copy(adaptive);bad.profiles[0].bindings[5].steps[0].logical_modifiers=flags;assert.throws(()=>validate(bad));}
+const logicalOnly=copy(adaptive);Object.assign(logicalOnly.profiles[0].bindings[5].steps[0],{keys:[],modifiers:0,logical_modifiers:2});assert(validate(logicalOnly));
+const logicalMedia=copy(adaptive);Object.assign(logicalMedia.profiles[0].bindings[5].steps[0],{type:2,keys:[],modifiers:0,consumer:233});assert.throws(()=>validate(logicalMedia));
 if(process.env.KP_CONFIG_TEST){
   const {spawnSync}=require('node:child_process');
-  for(const config of [defaults(),all.config,added.config,renamed.config,replaced.config,upgraded.config,boundary]){
+  for(const config of [defaults(),all.config,added.config,renamed.config,replaced.config,upgraded.config,boundary,adaptive,logicalOnly]){
     const run=spawnSync(process.env.KP_CONFIG_TEST,['--stdin'],{input:JSON.stringify(config),encoding:'utf8'});
     assert.equal(run.status,0,run.stderr);const decoded=JSON.parse(run.stdout);
     assert.deepEqual(decoded.config,config);assert.equal(decoded.bytes,K.capacity(config));

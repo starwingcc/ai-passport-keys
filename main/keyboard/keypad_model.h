@@ -6,7 +6,7 @@
 
 #define KP_BINDINGS 11
 #define KP_LEGACY_BINDINGS 8
-#define KP_VERSION 4
+#define KP_VERSION 5
 #define KP_MAX_PROFILES 8
 #define KP_MAX_STEPS 64
 #define KP_CONFIG_BYTES 6144
@@ -20,7 +20,16 @@
 #define KP_MAX_DELAY_MS 5000U
 
 typedef enum { KP_NONE, KP_KEYBOARD, KP_MEDIA } kp_action_type_t;
-typedef struct { uint8_t type, modifiers, keys[6]; uint16_t consumer; } kp_action_t;
+#define KP_CMD_CTRL_LEFT 1U
+#define KP_CMD_CTRL_RIGHT 2U
+typedef enum { KP_SYSTEM_MACOS, KP_SYSTEM_WINDOWS, KP_SYSTEM_COUNT } kp_system_t;
+// Keyboard logical flags share the type-specific payload with media usage,
+// never the eight standard HID modifier bits. Keep every persisted step 12 bytes
+// so even a full v4 arena migrates without dropping user data.
+typedef struct {
+    uint8_t type, modifiers, keys[6];
+    union { uint16_t consumer; uint16_t logical_modifiers; };
+} kp_action_t;
 // v1 is permanently eight slots, regardless of the current mapping count.
 typedef struct { uint32_t version; kp_action_t bindings[KP_LEGACY_BINDINGS]; } kp_legacy_config_t;
 typedef struct { kp_action_t action; uint16_t delay_ms; } kp_step_t;
@@ -44,9 +53,9 @@ _Static_assert(offsetof(kp_config_t, data) == 392, "v4 disk header");
 _Static_assert(sizeof(kp_step_t) == 12, "persisted step layout");
 
 typedef enum { KP_CONSOLE, KP_MENU, KP_SETTINGS, KP_HOTSPOT, KP_FORGET, KP_PROFILES, KP_AP_CONFIRM,
-               KP_SCREEN, KP_SCREEN_EDIT } kp_page_t;
+               KP_SCREEN, KP_SCREEN_EDIT, KP_SYSTEM } kp_page_t;
 typedef enum { KP_TAP, KP_HOLD, KP_RELEASE, KP_AP_START, KP_AP_STOP,
-               KP_CLEAR_BOND, KP_CANCEL, KP_SELECT_PROFILE, KP_SAVE_SCREEN } kp_effect_t;
+               KP_CLEAR_BOND, KP_CANCEL, KP_SELECT_PROFILE, KP_SAVE_SCREEN, KP_SAVE_SYSTEM } kp_effect_t;
 typedef void (*kp_emit_t)(void *user, kp_effect_t effect, const kp_action_t *action);
 typedef struct {
     bool down, pending, long_sent, ignored;
@@ -73,6 +82,8 @@ typedef struct {
     kp_screen_t screen;
     kp_screen_setting_t screen_setting;
     bool screen_saving, screen_save_failed;
+    kp_system_t system;
+    bool system_saving, system_save_failed, system_saved;
     kp_emit_t emit;
     void *user;
 } kp_model_t;
@@ -91,6 +102,7 @@ bool kp_text_valid(const char *text, unsigned max_chars, bool multiline);
 bool kp_text_utf8_valid(const char *text, unsigned max_chars, bool multiline);
 bool kp_codepoint_supported(uint32_t codepoint);
 bool kp_action_valid(const kp_action_t *action, bool allow_none);
+bool kp_action_resolve(const kp_action_t *action, kp_system_t system, kp_action_t *out);
 bool kp_legacy_valid(const kp_legacy_config_t *config);
 bool kp_migrate(const kp_legacy_config_t *legacy, kp_config_t *config);
 void kp_defaults(kp_config_t *config);
@@ -108,4 +120,5 @@ void kp_link_changed(kp_model_t *model, uint32_t now);
 void kp_set_busy(kp_model_t *model, bool busy);
 void kp_hotspot_exit(kp_model_t *model);
 void kp_screen_saved(kp_model_t *model, bool success);
+void kp_system_saved(kp_model_t *model, bool success);
 uint8_t kp_screen_level(const kp_model_t *model);

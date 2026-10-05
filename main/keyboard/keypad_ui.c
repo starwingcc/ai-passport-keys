@@ -163,12 +163,13 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     snprintf(previous_message, sizeof(previous_message), "%s", message);
     snprintf(previous_ssid, sizeof(previous_ssid), "%s", ssid);
     snprintf(previous_password, sizeof(previous_password), "%s", password);
-    const char *titles[] = {"开始控制", "Passport", "设置", "热点配置", "清除配对", "情景列表", "热点配置", "屏幕", "屏幕"};
+    const char *titles[] = {"开始控制", "Passport", "设置", "热点配置", "清除配对", "情景列表", "热点配置", "屏幕", "屏幕", "配对系统"};
     bool command = m->page == KP_CONSOLE && m->feedback.visible;
     hidden(s_title, false);
     lv_obj_set_pos(s_title, 18, 20); lv_obj_set_width(s_title, 151);
     lv_obj_set_pos(s_battery, 178, 24); lv_obj_set_width(s_battery, 45);
     lv_obj_set_style_text_font(s_title, command ? &passport_font_16 : &passport_font_20, 0);
+    if (m->page == KP_SYSTEM) lv_obj_set_style_text_font(s_title, &passport_font_20_menu, 0);
     lv_label_set_text(s_title, command ? kp_text(&m->config, m->config.profiles[m->config.active_profile].name) : titles[m->page]);
     if (battery >= 0) lv_label_set_text_fmt(s_battery, "%d%%", battery);
     else lv_label_set_text(s_battery, "--");
@@ -178,7 +179,8 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
                       "等待电脑连接");
     for (unsigned i = 0; i < 4; ++i) {
         lv_obj_t *value = s_screen_values[i];
-        bool column = m->page == KP_SCREEN;
+        bool system_value = m->page == KP_SETTINGS && i == 0;
+        bool column = m->page == KP_SCREEN || system_value;
         lv_obj_t *parent = column ? lv_screen_active() : s_panels[0];
         if (lv_obj_get_parent(value) != parent) lv_obj_set_parent(value, parent);
         lv_obj_set_pos(value, column ? 156 : 48, column ? MENU_TOP + i * MENU_PITCH : i * 20);
@@ -187,6 +189,11 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         lv_obj_set_style_text_align(value, column ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT, 0);
         lv_obj_set_style_bg_opa(value, !column && i == 2 ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
         lv_label_set_recolor(value, !column);
+        if (system_value) {
+            lv_obj_set_pos(value, 137, MENU_TOP + MENU_PITCH);
+            lv_obj_set_size(value, 83, MENU_HEIGHT);
+            lv_obj_set_style_text_font(value, &passport_font_16, 0);
+        }
     }
     for (int i = 0; i < 3; ++i) {
         hidden(s_panels[i], true);
@@ -277,6 +284,21 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
             lv_obj_set_style_text_color(rows[i], lv_color_hex(m->selected == i ? PAPER : INK), 0);
             lv_label_set_text(rows[i], menu[i]);
         }
+    } else if (m->page == KP_SYSTEM) {
+        lv_label_set_text_fmt(s_state, "当前：%s", m->system == KP_SYSTEM_MACOS ? "macOS" : "Windows");
+        const char *systems[] = {"macOS", "Windows"};
+        for (unsigned i = 0; i < KP_SYSTEM_COUNT; ++i) {
+            lv_obj_t *row = menu_row(i, i == m->selected);
+            lv_label_set_text_fmt(row, "%s %s%s", i == m->selected ? ">" : " ", systems[i], i == m->system ? " *" : "");
+        }
+        hidden(s_body, false); lv_obj_set_pos(s_body, 20, 195); lv_obj_set_size(s_body, 200, 24);
+        lv_obj_set_style_text_color(s_body, lv_color_hex(0xa3b5a5), 0);
+        lv_obj_set_style_text_line_space(s_body, 0, 0); lv_label_set_long_mode(s_body, LV_LABEL_LONG_DOT);
+        lv_label_set_text_fmt(s_body, "Cmd/Ctrl键 对应 %s", m->selected == KP_SYSTEM_MACOS ? "Cmd" : "Ctrl");
+        lv_label_set_text(s_message, m->system_saving ? "正在保存" : m->system_save_failed ? "保存失败，请重试" :
+                          m->system_saved ? "已保存" : "长按 OK 返回");
+        lv_obj_set_style_text_color(s_message, lv_color_hex(m->system_save_failed || m->system_saved ? ACCENT : 0xa3b5a5), 0);
+        lv_label_set_text(s_footer, "上下选择，OK 保存");
     } else if (m->page == KP_SCREEN) {
         lv_label_set_text(s_state, "");
         for (unsigned i = 0; i < KP_SCREEN_SETTING_COUNT; ++i) {
@@ -401,14 +423,20 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         } else if (m->page == KP_MENU || m->page == KP_SETTINGS || m->page == KP_FORGET || m->page == KP_AP_CONFIRM) {
             hidden(s_body, true);
             const char *menu[] = {"开始控制", "情景列表", "设置"};
-            const char *settings[] = {"屏幕", "热点配置", "清除蓝牙配对"};
+            const char *settings[] = {"屏幕", "配对系统", "热点配置", "清除蓝牙配对"};
             const char *forget[] = {"取消", "确认清除"};
             const char *ap[] = {"取消", "开启"};
             const char **entries = m->page == KP_MENU ? menu : m->page == KP_SETTINGS ? settings : m->page == KP_FORGET ? forget : ap;
-            unsigned count = m->page == KP_MENU || m->page == KP_SETTINGS ? 3 : 2;
+            unsigned count = m->page == KP_SETTINGS ? 4 : m->page == KP_MENU ? 3 : 2;
             for (unsigned i = 0; i < count; ++i) {
                 lv_obj_t *row = menu_row(i, i == m->selected);
                 lv_label_set_text_fmt(row, "%s %s", i == m->selected ? ">" : " ", entries[i]);
+                if (m->page == KP_SETTINGS && i == 1) lv_obj_set_width(row, 113);
+            }
+            if (m->page == KP_SETTINGS) {
+                lv_obj_t *value = s_screen_values[0]; hidden(value, false);
+                lv_obj_set_style_text_color(value, lv_color_hex(m->selected == 1 ? ACCENT : INK), 0);
+                lv_label_set_text(value, m->system == KP_SYSTEM_MACOS ? "macOS" : "Windows");
             }
             if (m->page == KP_FORGET || m->page == KP_AP_CONFIRM) {
                 hidden(s_body, false); lv_obj_set_pos(s_body, 20, 195);
@@ -420,7 +448,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         }
         lv_label_set_text(s_body, text);
     }
-    if (!home_page && m->page != KP_SCREEN && m->page != KP_SCREEN_EDIT) lv_label_set_text(s_message, message);
+    if (!home_page && m->page != KP_SCREEN && m->page != KP_SCREEN_EDIT && m->page != KP_SYSTEM) lv_label_set_text(s_message, message);
     if (!home_page) lv_obj_set_style_text_align(s_battery, LV_TEXT_ALIGN_RIGHT, 0);
     bsp_lvgl_unlock();
 }

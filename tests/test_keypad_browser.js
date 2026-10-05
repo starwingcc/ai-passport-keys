@@ -168,6 +168,20 @@ async function main(){
   const beforeFull=clone(device);await upload(K.exportFile(K.defaults(),'configuration'));
   assert((await page.locator('#import-warning').textContent()).includes('替换'));await page.locator('#import-apply').click();
   assert.equal(await page.locator('#profile option').count(),1);assert.equal(posts,2);assert.deepEqual(device,beforeFull);
+  // Manual columns keep every left/right modifier on its side and save logical flags.
+  await page.locator('.tab[data-key="0"]').click();
+  const manual=page.locator('.action').first().locator('.manual').first();await manual.locator('summary').click();
+  assert.deepEqual(await manual.locator('.modifier-column').nth(0).locator('label').allTextContents(),['左 Cmd/Ctrl','左 Ctrl','左 Shift','左 Option','左 Command']);
+  assert.deepEqual(await manual.locator('.modifier-column').nth(1).locator('label').allTextContents(),['右 Cmd/Ctrl','右 Ctrl','右 Shift','右 Option','右 Command']);
+  await manual.getByLabel('左 Cmd/Ctrl',{exact:true}).check();await manual.getByLabel('右 Cmd/Ctrl',{exact:true}).check();
+  await manual.getByLabel('左 Shift',{exact:true}).check();
+  assert.equal(await page.locator('.action').first().locator('.step-chord').first().textContent(),'Cmd/Ctrl+RCmd/Ctrl+Shift+Esc');
+  await page.locator('#save').click();await page.waitForFunction(()=>document.getElementById('dirty').textContent==='已保存到设备');
+  assert.equal(device.profiles[0].bindings[0].steps[0].logical_modifiers,3);assert.equal(device.profiles[0].bindings[0].steps[0].modifiers,2);
+  await page.reload();await page.waitForFunction(()=>!document.getElementById('editor').disabled);
+  await page.locator('.manual').first().locator('summary').click();
+  assert(await page.locator('.manual').first().getByLabel('左 Cmd/Ctrl',{exact:true}).isChecked());
+  assert(await page.locator('.manual').first().getByLabel('右 Cmd/Ctrl',{exact:true}).isChecked());
   if(process.env.KP_BROWSER_OUTPUT){fs.mkdirSync(process.env.KP_BROWSER_OUTPUT,{recursive:true});await page.screenshot({path:path.join(process.env.KP_BROWSER_OUTPUT,'web-desktop.png'),fullPage:true});}
   await page.setViewportSize({width:390,height:844});
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));

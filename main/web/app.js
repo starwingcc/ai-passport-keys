@@ -22,13 +22,13 @@
   const usageNames={40:'Enter',41:'Esc',42:'Backspace',43:'Tab',44:'Space',76:'Delete',79:'Right',80:'Left',81:'Down',82:'Up'};
   function actionLabel(a){
     if(a.type===2)return media.find(m=>m[0]===a.consumer)?.[1].replaceAll(' / ','')||'媒体键';
-    const names=modNames.filter((_,i)=>a.modifiers&(1<<i));
+    const names=[];if(a.logical_modifiers&1)names.push('Cmd/Ctrl');if(a.logical_modifiers&2)names.push('RCmd/Ctrl');names.push(...modNames.filter((_,i)=>a.modifiers&(1<<i)));
     for(const v of a.keys){let name;if(v>=4&&v<=29)name=String.fromCharCode(65+v-4);else if(v>=30&&v<=39)name=String((v-29)%10);else if(v>=58&&v<=69)name='F'+(v-57);else if(v>=104&&v<=115)name='F'+(v-104+13);else name=usageNames[v]||'Key'+v.toString(16).toUpperCase().padStart(2,'0');names.push(name);}
     return names.join('+');
   }
   const sequenceLabel=b=>b.steps.length?b.steps.map(actionLabel).join(' → '):'无';
   const titleLabel=b=>b.title||(b.steps.length>1?'组合指令':sequenceLabel(b));
-  function defaults(){const bindings=Array.from({length:11},empty);[[0,0,41],[3,4,0],[4,0,42],[5,8,4],[7,0,81],[8,0,40]].forEach(([slot,mod,key])=>{bindings[slot].steps=[{type:1,modifiers:mod,keys:key?[key]:[],consumer:0,delay_ms:0}];});bindings[8].title='回车';return{version:4,active_profile:0,profiles:[{name:'默认',bindings}]};}
+  function defaults(){const bindings=Array.from({length:11},empty);[[0,0,41],[3,4,0],[4,0,42],[5,8,4],[7,0,81],[8,0,40]].forEach(([slot,mod,key])=>{bindings[slot].steps=[{type:1,modifiers:mod,keys:key?[key]:[],consumer:0,delay_ms:0}];});bindings[8].title='回车';return{version:5,active_profile:0,profiles:[{name:'默认',bindings}]};}
   function capture(events){
     let modifiers=0;const pressed=new Set();
     for(const e of events){
@@ -68,7 +68,7 @@
   }
   function validate(c,stored=false){
     fields(c,['version','active_profile','profiles']);
-    if(c.version!==4||!Array.isArray(c.profiles)||!c.profiles.length||c.profiles.length>8||!Number.isInteger(c.active_profile)||c.active_profile<0||c.active_profile>=c.profiles.length)throw Error('情景配置无效。');
+    if(c.version!==5||!Array.isArray(c.profiles)||!c.profiles.length||c.profiles.length>8||!Number.isInteger(c.active_profile)||c.active_profile<0||c.active_profile>=c.profiles.length)throw Error('情景配置无效。');
     const names=new Set();for(const p of c.profiles){
       fields(p,['name','bindings']);validateText(p.name,16,!stored);
       if(!p.name||names.has(p.name))throw Error('情景名称不能为空或重复。');names.add(p.name);
@@ -77,11 +77,12 @@
         fields(b,['title','steps']);validateText(b.title,16,!stored);
         if(!Array.isArray(b.steps)||b.steps.length>64)throw Error('每个动作最多 64 步。');
         for(const [i,a] of b.steps.entries()){
-          fields(a,['type','modifiers','keys','consumer','delay_ms']);
+          fields(a,Object.hasOwn(a,'logical_modifiers')?['type','modifiers','keys','consumer','delay_ms','logical_modifiers']:['type','modifiers','keys','consumer','delay_ms']);
+          if(Object.hasOwn(a,'logical_modifiers')&&(!Number.isInteger(a.logical_modifiers)||a.logical_modifiers<0||a.logical_modifiers>3))throw Error('Cmd/Ctrl 修饰键无效。');
           if(!Number.isInteger(a.delay_ms)||a.delay_ms<0||a.delay_ms>5000||(i===b.steps.length-1&&a.delay_ms!==0))throw Error('步骤间隔必须为 0–5000ms，最后一步为 0。');
           if(!Number.isInteger(a.modifiers)||a.modifiers<0||a.modifiers>255||!Array.isArray(a.keys)||a.keys.length>6||new Set(a.keys).size!==a.keys.length||a.keys.some(k=>!Number.isInteger(k)||!keys.some(v=>v.usage===k)))throw Error('组合键无效或包含重复按键。');
-          if(a.type===1){if(a.consumer!==0||(!a.modifiers&&!a.keys.length))throw Error('键盘步骤至少需要一个按键或修饰键。');}
-          else if(a.type===2){if(a.modifiers||a.keys.length||!media.some(m=>m[0]===a.consumer))throw Error('媒体步骤无效。');}
+          if(a.type===1){if(a.consumer!==0||(!a.modifiers&&!a.logical_modifiers&&!a.keys.length))throw Error('键盘步骤至少需要一个按键或修饰键。');}
+          else if(a.type===2){if(a.modifiers||a.logical_modifiers||a.keys.length||!media.some(m=>m[0]===a.consumer))throw Error('媒体步骤无效。');}
           else throw Error('步骤类型无效。');
         }
       }
@@ -95,26 +96,27 @@
     validate(c,true);
     if(kind==='scenario'){
       if(!Number.isInteger(index)||index<0||index>=c.profiles.length)throw Error('请选择要导出的情景。');
-      return JSON.stringify({format:fileFormat,version:4,kind,profile:clone(c.profiles[index])});
+      return JSON.stringify({format:fileFormat,version:5,kind,profile:clone(c.profiles[index])});
     }
     if(kind!=='configuration')throw Error('导出类型无效。');
-    return JSON.stringify({format:fileFormat,version:4,kind,active_profile:c.active_profile,profiles:clone(c.profiles)});
+    return JSON.stringify({format:fileFormat,version:5,kind,active_profile:c.active_profile,profiles:clone(c.profiles)});
   }
   function upgradeProfiles(profiles,version){
     if(!Array.isArray(profiles)||!profiles.length||profiles.length>8)throw Error('文件情景数量无效。');
     return profiles.map(p=>{
       fields(p,['name','bindings']);
-      if(!Array.isArray(p.bindings)||p.bindings.length!==(version===4?11:8))throw Error('文件动作槽位数量无效。');
+      if(!Array.isArray(p.bindings)||p.bindings.length!==(version>=4?11:8))throw Error('文件动作槽位数量无效。');
       const bindings=p.bindings.map(b=>{
+        const steps=()=>{if(!Array.isArray(b.steps))throw Error('文件步骤无效。');return b.steps.map(a=>{fields(a,version===5&&Object.hasOwn(a,'logical_modifiers')?['type','modifiers','keys','consumer','delay_ms','logical_modifiers']:['type','modifiers','keys','consumer','delay_ms']);return clone(a);});};
         if(version===2){
           fields(b,['title','description','steps']);
           if(typeof b.description!=='string'||Array.from(b.description).length>64)throw Error('旧版动作说明无效。');
           for(const line of b.description.split('\n'))validateText(line,64);
-          return {title:b.title,steps:clone(b.steps)};
+          return {title:b.title,steps:steps()};
         }
-        fields(b,['title','steps']);return clone(b);
+        fields(b,['title','steps']);return {title:b.title,steps:steps()};
       });
-      if(version===4)return {name:p.name,bindings};
+      if(version>=4)return {name:p.name,bindings};
       // v2/v3: UP single/double/hold, DOWN single/double/hold, OK single/double.
       return {name:p.name,bindings:[bindings[0],bindings[1],empty(),bindings[2],bindings[3],bindings[4],empty(),bindings[5],bindings[6],bindings[7],empty()]};
     });
@@ -122,7 +124,7 @@
   function parseImport(text){
     if(typeof text!=='string'||utf8(text)>fileLimit)throw Error('文件过大，最多 64 KiB。');
     let file;try{file=JSON.parse(text);}catch{throw Error('文件不是有效的 JSON。');}
-    if(!file||![2,3,4].includes(file.version))throw Error('不支持该配置文件版本。');
+    if(!file||![2,3,4,5].includes(file.version))throw Error('不支持该配置文件版本。');
     let kind,profiles,active;
     if(Object.hasOwn(file,'format')){
       if(file.format!==fileFormat)throw Error('文件格式不匹配。');kind=file.kind;
@@ -132,7 +134,7 @@
     }else{
       fields(file,['version','active_profile','profiles']);kind='configuration';profiles=file.profiles;active=file.active_profile;
     }
-    const config={version:4,active_profile:active,profiles:upgradeProfiles(profiles,file.version)};
+    const config={version:5,active_profile:active,profiles:upgradeProfiles(profiles,file.version)};
     validate(config);return {kind,config};
   }
   function applyImport(current,payload,options={}){
@@ -215,7 +217,14 @@
         if(a.type===2){const ms=select(media,a.consumer,v=>{a.consumer=v;changed();render();});ms.className='type';ms.setAttribute('aria-label','媒体动作');panel.append(ms);}
         else{
           const rec=button('录制这一步','record',()=>{if(recording?.slot===slot&&recording.index===index){cancelRecording();return;}cancelRecording(false);recording={slot,index,events:[],down:new Set(),button:rec,timer:null};rec.textContent='请按一组组合键… 点击取消';rec.classList.add('recording');status('按下一组组合键后松开。多组操作请分别添加步骤；系统拦截时可手动配置。');});panel.append(rec);
-          const manual=element('details',undefined,'manual');manual.append(element('summary','手动选择按键'));const mods=element('div',undefined,'modifiers');modLabels.forEach((label,i)=>{const wrap=element('label');const input=element('input');input.type='checkbox';input.checked=!!(a.modifiers&(1<<i));input.addEventListener('change',()=>{a.modifiers^=1<<i;changed();chord.textContent=actionLabel(a);card.querySelector('.preview-keys').textContent=sequenceLabel(b);card.querySelector('.preview-title').textContent=titleLabel(b);});wrap.append(input,document.createTextNode(label));mods.append(wrap);});manual.append(mods);
+          const manual=element('details',undefined,'manual');manual.append(element('summary','手动选择按键'));const mods=element('div',undefined,'modifiers');
+          for(let side=0;side<2;side++){
+            const column=element('div',undefined,'modifier-column');column.setAttribute('aria-label',side?'右修饰键':'左修饰键');
+            const choices=[[side?'右 Cmd/Ctrl':'左 Cmd/Ctrl','logical_modifiers',1<<side],...modLabels.slice(side*4,side*4+4).map((label,i)=>[label,'modifiers',1<<(side*4+i)])];
+            for(const [label,field,bit] of choices){const wrap=element('label'),input=element('input');input.type='checkbox';input.checked=!!(a[field]&bit);input.addEventListener('change',()=>{a[field]=input.checked?a[field]|bit:a[field]&~bit;if(field==='logical_modifiers'&&!a[field])delete a[field];changed();chord.textContent=actionLabel(a);card.querySelector('.preview-keys').textContent=sequenceLabel(b);card.querySelector('.preview-title').textContent=titleLabel(b);});wrap.append(input,document.createTextNode(label));column.append(wrap);}
+            mods.append(column);
+          }
+          manual.append(mods);
           a.keys.forEach((v,i)=>{const row=element('div',undefined,'key-choice');const choice=select(keys.map(k=>[k.usage,k.label]),v,value=>{if(a.keys.includes(value)){status('组合键不能包含重复按键。',true);choice.value=v;return;}a.keys[i]=value;changed();render();});choice.setAttribute('aria-label','第'+(index+1)+'步第'+(i+1)+'个按键');row.append(choice,button('移除','',()=>{a.keys.splice(i,1);changed();render();}));manual.append(row);});if(a.keys.length<6)manual.append(button('+ 添加普通按键','add',()=>{a.keys.push(keys.find(k=>!a.keys.includes(k.usage)).usage);changed();render();}));panel.append(manual);
         }
         const delay=element('label',index===b.steps.length-1?'最后一步，无额外等待':'释放后等待','step-delay');const input=element('input');input.type='number';input.min=0;input.max=5000;input.step=1;input.value=a.delay_ms;input.disabled=index===b.steps.length-1;input.setAttribute('aria-label','第'+(index+1)+'步后等待毫秒');input.addEventListener('input',()=>{a.delay_ms=Number(input.value);changed();});delay.append(input,document.createTextNode('ms'));panel.append(delay);card.append(panel);

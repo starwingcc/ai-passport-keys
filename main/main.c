@@ -30,7 +30,7 @@ static atomic_bool s_overflow;
 static kp_model_t s_model;
 static char s_message[96] = "准备连接 Passport Keys";
 static bool s_ap_start, s_ap_stop, s_forget, s_ap_active, s_select_profile;
-static bool s_save_screen;
+static bool s_save_screen, s_save_system;
 static unsigned s_target_profile;
 static kp_runner_t s_runner;
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
@@ -66,6 +66,7 @@ static void effect(void *user, kp_effect_t event, const kp_action_t *action) {
     case KP_CANCEL: if (s_runner.running) message("已取消"); kp_runner_cancel(&s_runner); release(); break;
     case KP_SELECT_PROFILE: s_target_profile = s_model.selected; s_select_profile = true; break;
     case KP_SAVE_SCREEN: s_save_screen = true; break;
+    case KP_SAVE_SYSTEM: s_save_system = true; break;
     case KP_AP_START: s_ap_start = true; break;
     case KP_AP_STOP: s_ap_stop = true; break;
     case KP_CLEAR_BOND: s_forget = true; break;
@@ -74,7 +75,9 @@ static void effect(void *user, kp_effect_t event, const kp_action_t *action) {
 static void advance_runner(void) {
     kp_action_t action;
     if (!kp_runner_request(&s_runner, now_ms(), &action)) return;
-    esp_err_t sent = kp_ble_send(action.type == KP_NONE ? NULL : &action);
+    kp_action_t resolved;
+    esp_err_t sent = kp_action_resolve(&action, s_model.system, &resolved) ?
+                     kp_ble_send(resolved.type == KP_NONE ? NULL : &resolved) : ESP_ERR_INVALID_ARG;
     uint32_t now = now_ms();
     kp_runner_result(&s_runner, sent == ESP_OK, now);
     s_model.feedback.completed = s_runner.completed;
@@ -131,6 +134,7 @@ void app_main(void) {
     if (!config) { ESP_LOGE("keypad", "Configuration allocation failed"); return; }
     kp_store_get(config); kp_init(&s_model, config, effect, NULL); free(config);
     kp_store_screen_get(&s_model.screen_config);
+    kp_store_system_get(&s_model.system);
     kp_screen_init(&s_model.screen, &s_model.screen_config, now_ms());
     s_model.page = KP_MENU;
     kp_home_config_t home; kp_store_home_get(&home);
@@ -168,6 +172,11 @@ void app_main(void) {
         now = now_ms();
         kp_tick(&s_model, now);
         advance_runner();
+        if (s_save_system) {
+            s_save_system = false; resync_input();
+            bool saved = kp_store_system_save(s_model.selected) == ESP_OK;
+            kp_system_saved(&s_model, saved);
+        }
         if (s_save_screen) {
             s_save_screen = false;
             bool saved = kp_store_screen_save(&s_model.screen_draft) == ESP_OK;

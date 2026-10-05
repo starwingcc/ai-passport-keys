@@ -19,7 +19,7 @@
 
 应用嵌入四份只读 LVGL 字库：动态文字使用 16/20/28px、2bpp、无损 RLE 压缩，
 固定界面使用未压缩 20px、4bpp。`passport-codepoints.txt` 列出 3,886 个动态字形，
-`passport-ui-codepoints.txt` 列出 253 个固定字形。控件显式绑定字体；动态情景名称
+`passport-ui-codepoints.txt` 列出 257 个固定字形。控件显式绑定字体；动态情景名称
 与所有菜单行均使用 `passport_font_20_menu`。开始控制仍使用 16px 映射文字及固定
 20px 实体键标签。压缩后的 16/28px 字库保留原来的像素和度量。
 全部子集的位图偏移均在 20 位以内；`CONFIG_LV_FONT_FMT_TXT_LARGE=n`
@@ -35,7 +35,7 @@ SIL Open Font License 保存在 [fonts/OFL.txt](fonts/OFL.txt)。子集更名为
 清单包含 GB2312 一级的 3,755 个汉字、可打印 ASCII、常用中文标点、省略号、
 方向箭头及全部固定界面字符。可复现的选择规则位于 `tools/keypad_font_inventory.py`。
 共享 C／JavaScript 覆盖表拒绝新输入的不支持字符，包括生僻字及 emoji。
-更改清单后，已有 v2／v3／v4 配置的名称及快捷键仍会保留：UTF-8 原文保持完整，设备
+更改清单后，已有 v2／v3／v4／v5 配置的名称及快捷键仍会保留：UTF-8 原文保持完整，设备
 以可见占位符显示缺字，浏览器显示原名供修改。通过浏览器保存前，需要替换名称中
 不支持的字符。这份清单不代表全部中文或全部 Unicode。
 

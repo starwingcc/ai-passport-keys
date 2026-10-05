@@ -2,7 +2,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-static unsigned count[KP_SAVE_SCREEN + 1];
+static unsigned count[KP_SAVE_SYSTEM + 1];
 static kp_action_t last;
 static void effect(void *ctx, kp_effect_t e, const kp_action_t *a) { (void)ctx; ++count[e]; if (a) last = *a; }
 static void press(kp_model_t *m, unsigned k, uint32_t t) { kp_input(m,k,true,t); }
@@ -33,13 +33,13 @@ int main(void) {
     click(&m,2,4100); assert(count[KP_SELECT_PROFILE]==1 && m.page==KP_PROFILES);
     press(&m,2,4400); kp_tick(&m,4900); release(&m,2,5000); assert(m.page==KP_MENU);
     click(&m,0,5100); click(&m,2,5400); assert(m.page==KP_SETTINGS); // UP wraps to third entry.
-    quick(&m,1,5500); // Hotspot is the second settings entry.
+    quick(&m,1,5450);quick(&m,1,5500); // Hotspot is the second settings entry.
     quick(&m,2,5700); assert(m.page==KP_AP_CONFIRM && !m.selected && !count[KP_AP_START]);
     quick(&m,2,5800); assert(m.page==KP_SETTINGS && !count[KP_AP_START] && !count[KP_AP_STOP]);
-    quick(&m,1,5850); quick(&m,2,5900); assert(m.page==KP_AP_CONFIRM);
+    quick(&m,1,5825);quick(&m,1,5850); quick(&m,2,5900); assert(m.page==KP_AP_CONFIRM);
     press(&m,2,6000); kp_tick(&m,6499); assert(m.page==KP_AP_CONFIRM);
     kp_tick(&m,6500);release(&m,2,6510);assert(m.page==KP_SETTINGS&&!count[KP_AP_START]&&!count[KP_AP_STOP]);
-    quick(&m,1,6550);quick(&m,2,6600);quick(&m,0,6700);assert(m.selected==1);quick(&m,1,6800);assert(m.selected==0);
+    quick(&m,1,6525);quick(&m,1,6550);quick(&m,2,6600);quick(&m,0,6700);assert(m.selected==1);quick(&m,1,6800);assert(m.selected==0);
     quick(&m,1,6900);quick(&m,2,7000);assert(m.page==KP_HOTSPOT&&count[KP_AP_START]==1);
     quick(&m,2,7100); assert(m.page==KP_HOTSPOT);
     press(&m,2,7200); kp_tick(&m,7700); release(&m,2,7800);
@@ -197,5 +197,33 @@ int main(void) {
     // Background link transitions preserve the idle deadline and current page.
     kp_init(&m,&c,effect,NULL);kp_tick(&m,10000);kp_link_changed(&m,20000);kp_tick(&m,30000);
     assert(m.screen.state==KP_SCREEN_OFF&&m.page==KP_CONSOLE);
+    // Manual system selection previews only; commit failure and back retain the saved value.
+    kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));m.page=KP_SETTINGS;
+    quick(&m,1,0);quick(&m,2,50);assert(m.page==KP_SYSTEM&&m.system==KP_SYSTEM_MACOS&&m.selected==0);
+    quick(&m,1,100);assert(m.selected==1&&m.system==KP_SYSTEM_MACOS&&!count[KP_SAVE_SYSTEM]);
+    press(&m,2,200);kp_tick(&m,700);release(&m,2,710);assert(m.page==KP_SETTINGS&&m.system==KP_SYSTEM_MACOS);
+    quick(&m,1,800);quick(&m,2,850);quick(&m,0,900);assert(m.selected==1);
+    m.executing=true;unsigned canceled=count[KP_CANCEL];quick(&m,2,950);
+    assert(m.system_saving&&count[KP_SAVE_SYSTEM]==1&&count[KP_CANCEL]==canceled+1&&!m.executing);
+    quick(&m,1,1000);assert(m.selected==1);kp_system_saved(&m,false);
+    assert(m.system==KP_SYSTEM_MACOS&&m.system_save_failed&&!m.system_saved);
+    quick(&m,2,1050);kp_system_saved(&m,true);assert(m.system==KP_SYSTEM_WINDOWS&&m.system_saved&&!m.system_save_failed);
+    quick(&m,1,1100);assert(m.selected==0&&m.system==KP_SYSTEM_WINDOWS&&!m.system_saved);
+    press(&m,2,1200);kp_tick(&m,1700);release(&m,2,1710);assert(m.page==KP_SETTINGS&&m.system==KP_SYSTEM_WINDOWS);
+    // All logical sides combine with every fixed HID modifier without changing originals.
+    for(unsigned system=0;system<KP_SYSTEM_COUNT;system++)for(unsigned flags=0;flags<4;flags++)for(unsigned mods=0;mods<256;mods++){
+        kp_action_t source={.type=KP_KEYBOARD,.modifiers=mods,.logical_modifiers=flags,.keys={4}},resolved;
+        assert(kp_action_valid(&source,false)&&kp_action_resolve(&source,system,&resolved));
+        unsigned expected=mods|(flags&1?(system==KP_SYSTEM_MACOS?8:1):0)|(flags&2?(system==KP_SYSTEM_MACOS?128:16):0);
+        kp_report(&resolved,keys,media);assert(keys[0]==expected&&keys[2]==4&&!media[0]&&!resolved.logical_modifiers);
+        assert(source.modifiers==mods&&source.logical_modifiers==flags);
+    }
+    a=(kp_action_t){.type=KP_KEYBOARD,.logical_modifiers=1};assert(kp_action_valid(&a,false));
+    kp_action_label(&a,text,sizeof(text));assert(!strcmp(text,"Cmd/Ctrl"));
+    a.logical_modifiers=2;kp_action_label(&a,text,sizeof(text));assert(!strcmp(text,"RCmd/Ctrl"));
+    kp_report(&a,keys,media);for(unsigned i=0;i<8;i++)assert(!keys[i]);
+    a.logical_modifiers=4;assert(!kp_action_valid(&a,false));
+    assert(!kp_action_resolve(&a,KP_SYSTEM_COUNT,&last));
+    puts("System preview/save/back and exhaustive left/right Cmd/Ctrl HID resolution: PASS");
     puts("Keypad gestures, navigation, screen drafts, wake consumption and feedback: PASS");
 }

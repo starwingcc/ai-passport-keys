@@ -12,7 +12,8 @@ static bool binding_valid(const uint8_t *data, unsigned used, unsigned title, un
         steps + count * sizeof(kp_step_t) > used) return false;
     for (unsigned i = 0; i < count; ++i) {
         kp_step_t step; memcpy(&step, data + steps + i * sizeof(step), sizeof(step));
-        if (!kp_action_valid(&step.action, false) || step.delay_ms > KP_MAX_DELAY_MS ||
+        if (!kp_action_valid(&step.action, false) ||
+            (step.action.type == KP_KEYBOARD && step.action.consumer) || step.delay_ms > KP_MAX_DELAY_MS ||
             (i + 1 == count && step.delay_ms)) return false;
     }
     return true;
@@ -73,4 +74,21 @@ bool kp_migrate_v3(const kp_v3_config_t *c, size_t size, kp_config_t *out) {
         }
     }
     return true;
+}
+bool kp_migrate_v4(kp_config_t *c, size_t size) {
+    if (!c || c->version != 4 || size < offsetof(kp_config_t, data) + 1 ||
+        size > sizeof(*c) || size != kp_config_size(c)) return false;
+    c->version = KP_VERSION;
+    bool valid = kp_config_valid(c);
+    for (unsigned p = 0; valid && p < c->profile_count; ++p)
+        for (unsigned i = 0; valid && i < KP_BINDINGS; ++i) {
+            const kp_binding_t *b = &c->profiles[p].bindings[i];
+            for (unsigned j = 0; valid && j < b->count; ++j) {
+                kp_step_t step;
+                valid = kp_binding_step(c, b, j, &step) &&
+                        (step.action.type != KP_KEYBOARD || !step.action.consumer);
+            }
+        }
+    if (!valid) c->version = 4;
+    return valid;
 }

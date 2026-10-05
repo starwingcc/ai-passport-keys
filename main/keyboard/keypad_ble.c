@@ -230,6 +230,8 @@ static esp_err_t notify(uint16_t handle, const uint8_t *data, unsigned size) {
     return ble_gatts_notify_custom(s_conn, handle, buf) == 0 ? ESP_OK : ESP_FAIL;
 }
 static esp_err_t send_report(const kp_action_t *action) {
+    if (action && (!kp_action_valid(action, true) ||
+        (action->type == KP_KEYBOARD && action->logical_modifiers))) return ESP_ERR_INVALID_ARG;
     if (!kp_ble_status().ready) return ESP_ERR_INVALID_STATE;
     if (action && action->type == KP_MEDIA && (s_boot_mode || !s_notify[1])) return ESP_ERR_NOT_SUPPORTED;
     uint8_t keyboard[8], consumer[2];

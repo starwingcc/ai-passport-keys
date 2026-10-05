@@ -40,13 +40,26 @@ bool kp_action_valid(const kp_action_t *a, bool allow_none) {
         any = true;
         for (unsigned j = 0; j < i; ++j) if (a->keys[j] == a->keys[i]) return false;
     }
-    if (a->type == KP_KEYBOARD) return any && !a->consumer;
+    if (a->type == KP_KEYBOARD)
+        return (any || a->logical_modifiers) && !(a->logical_modifiers & ~3U);
     if (a->type == KP_MEDIA) {
         for (unsigned i = 0; i < sizeof(media) / sizeof(media[0]); ++i)
             if (a->consumer == media[i]) return !any;
         return false;
     }
     return allow_none && !any && !a->consumer;
+}
+bool kp_action_resolve(const kp_action_t *a, kp_system_t system, kp_action_t *out) {
+    if (!out || (unsigned)system >= KP_SYSTEM_COUNT || !kp_action_valid(a, true)) return false;
+    *out = *a;
+    if (a->type == KP_KEYBOARD) {
+        if (a->logical_modifiers & KP_CMD_CTRL_LEFT)
+            out->modifiers |= system == KP_SYSTEM_MACOS ? 0x08 : 0x01;
+        if (a->logical_modifiers & KP_CMD_CTRL_RIGHT)
+            out->modifiers |= system == KP_SYSTEM_MACOS ? 0x80 : 0x10;
+        out->logical_modifiers = 0;
+    }
+    return true;
 }
 bool kp_binding_set(kp_config_t *c, unsigned profile, unsigned slot,
                     const char *title, const kp_step_t *steps, unsigned count) {
@@ -104,7 +117,9 @@ bool kp_config_valid(const kp_config_t *c) {
 }
 bool kp_legacy_valid(const kp_legacy_config_t *c) {
     if (!c || c->version != 1) return false;
-    for (unsigned i = 0; i < KP_LEGACY_BINDINGS; ++i) if (!kp_action_valid(&c->bindings[i], true)) return false;
+    for (unsigned i = 0; i < KP_LEGACY_BINDINGS; ++i)
+        if (!kp_action_valid(&c->bindings[i], true) ||
+            (c->bindings[i].type == KP_KEYBOARD && c->bindings[i].consumer)) return false;
     return true;
 }
 bool kp_migrate(const kp_legacy_config_t *old, kp_config_t *c) {
@@ -136,6 +151,7 @@ void kp_report(const kp_action_t *a, uint8_t keyboard[8], uint8_t consumer[2]) {
     memset(consumer, 0, 2);
     if (!a) return;
     if (a->type == KP_KEYBOARD) {
+        if (a->logical_modifiers) return; // Only resolved actions reach HID.
         keyboard[0] = a->modifiers;
         memcpy(keyboard + 2, a->keys, 6);
     } else if (a->type == KP_MEDIA) {
@@ -157,6 +173,8 @@ void kp_action_label(const kp_action_t *a, char *out, size_t size) {
         return;
     }
     const char *mods[] = {"Control", "Shift", "Option", "Command", "RControl", "RShift", "ROption", "RCommand"};
+    if (a->logical_modifiers & KP_CMD_CTRL_LEFT) append(out, size, "Cmd/Ctrl");
+    if (a->logical_modifiers & KP_CMD_CTRL_RIGHT) append(out, size, "RCmd/Ctrl");
     for (unsigned i = 0; i < 8; ++i) if (a->modifiers & (1U << i)) append(out, size, mods[i]);
     for (unsigned i = 0; i < 6; ++i) {
         unsigned k = a->keys[i];
@@ -259,6 +277,12 @@ uint8_t kp_screen_level(const kp_model_t *m) {
         return kp_screen_value(&m->screen_draft, m->screen_setting);
     return m->screen.level;
 }
+void kp_system_saved(kp_model_t *m, bool success) {
+    if (!m->system_saving) return;
+    m->system_saving = false; m->system_save_failed = !success; m->system_saved = success;
+    if (success) m->system = m->selected;
+    ++m->config_revision;
+}
 void kp_hotspot_exit(kp_model_t *m) {
     if (m->page != KP_HOTSPOT) return;
     page(m, KP_SETTINGS);
@@ -271,6 +295,9 @@ static void back(kp_model_t *m) {
     case KP_FORGET: case KP_AP_CONFIRM: page(m, KP_SETTINGS); break;
     case KP_PROFILES: page(m, KP_MENU); break;
     case KP_SCREEN: page(m, KP_SETTINGS); break;
+    case KP_SYSTEM:
+        if (!m->system_saving) page(m, KP_SETTINGS);
+        break;
     case KP_SCREEN_EDIT:
         if (!m->screen_saving) { page(m, KP_SCREEN); m->selected = m->screen_setting; }
         break;
@@ -287,6 +314,16 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
     }
     if (m->page == KP_HOTSPOT) {
         // Only long OK exits; short keys cannot accidentally stop configuration.
+    } else if (m->page == KP_SYSTEM) {
+        if (m->system_saving) return;
+        if (key < 2) {
+            m->selected = (m->selected + 1) % KP_SYSTEM_COUNT;
+            m->system_saved = m->system_save_failed = false;
+        } else {
+            // Cancel the macro and release keys before requesting persistence.
+            kp_cancel(m); m->system_saving = true; ++m->config_revision;
+            emit(m, KP_SAVE_SYSTEM, NULL);
+        }
     } else if (m->page == KP_SCREEN_EDIT) {
         if (m->screen_saving) return;
         if (key < 2) {
@@ -298,7 +335,7 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
             emit(m, KP_SAVE_SCREEN, NULL);
         }
     } else if (key < 2) {
-        unsigned count = m->page == KP_MENU || m->page == KP_SETTINGS ? 3 :
+        unsigned count = m->page == KP_SETTINGS ? 4 : m->page == KP_MENU ? 3 :
                          m->page == KP_SCREEN ? KP_SCREEN_SETTING_COUNT : m->page == KP_PROFILES ? m->config.profile_count : 2;
         m->selected = (m->selected + (key == 0 ? count - 1 : 1)) % count;
     } else if (m->page == KP_MENU) {
@@ -307,8 +344,13 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
         if (target == KP_PROFILES) m->selected = m->config.active_profile;
     } else if (m->page == KP_PROFILES) emit(m, KP_SELECT_PROFILE, NULL);
     else if (m->page == KP_SETTINGS) {
-        kp_page_t target = m->selected == 0 ? KP_SCREEN : m->selected == 1 ? KP_AP_CONFIRM : KP_FORGET;
+        kp_page_t target = m->selected == 0 ? KP_SCREEN : m->selected == 1 ? KP_SYSTEM :
+                           m->selected == 2 ? KP_AP_CONFIRM : KP_FORGET;
         page(m, target);
+        if (target == KP_SYSTEM) {
+            m->selected = m->system;
+            m->system_saved = m->system_save_failed = false;
+        }
     } else if (m->page == KP_SCREEN) {
         m->screen_setting = m->selected;
         m->screen_draft = m->screen_config; m->screen_save_failed = false;
