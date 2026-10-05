@@ -93,8 +93,7 @@ write only the verified application at **`0x10000`**:
 
 For **first installation or an intentional complete refresh**, use the same command
 with `0x0 build/FoloToy-AI-Passport-full.bin`. **This resets saved badge, scenario,
-network and pairing data.** Never write the application-only image at `0x0`.
-After flashing, reconnect Bluetooth and check the home, keys and scenario switching.
+network and pairing data.**
 
 ## For agents
 

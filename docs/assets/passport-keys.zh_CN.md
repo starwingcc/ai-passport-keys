@@ -80,7 +80,6 @@ PASSPORT_PORT=/dev/cu.usbmodem1201
 
 **首次安装或有意完整刷新**：使用同一命令，将末行换为
 `0x0 build/FoloToy-AI-Passport-full.bin`。**这会重置已保存的工牌、情景、网络和配对数据。**
-切勿把单独的应用镜像写入 `0x0`。刷写后重新连接蓝牙，检查首页、按键和情景切换。
 
 ## Agent 开发入口
 
