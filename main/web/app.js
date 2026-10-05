@@ -49,6 +49,19 @@
   const utf8=s=>new TextEncoder().encode(s).length;
   function supported(cp){const ranges=root.KeypadCharset;let lo=0,hi=ranges.length;while(lo<hi){const mid=(lo+hi)>>1;if(cp<ranges[mid][0])hi=mid;else if(cp>ranges[mid][1])lo=mid+1;else return true;}return false;}
   function validateText(s,max,displayCoverage=true){if(typeof s!=='string'||Array.from(s).length>max)throw Error('名称和标题最多 16 字。');for(const ch of s){const cp=ch.codePointAt(0);if(cp<32||(cp>=127&&cp<=159)||(cp>=0xD800&&cp<=0xDFFF)||(displayCoverage&&!supported(cp)))throw Error('设备不支持字符“'+ch+'”（U+'+cp.toString(16).toUpperCase()+'），请替换。');}}
+  const homeDefaults=()=>({version:1,name:'USER',badge:'',avatar:0,timezone_minutes:480,hour12:0});
+  function validateHome(h,stored=false){
+    fields(h,['version','name','badge','avatar','timezone_minutes','hour12']);
+    validateText(h.name,16,!stored);validateText(h.badge,16,!stored);
+    if(h.version!==1||!h.name||!Number.isInteger(h.avatar)||h.avatar<0||h.avatar>3||
+      !Number.isInteger(h.timezone_minutes)||h.timezone_minutes< -720||h.timezone_minutes>840||h.timezone_minutes%15||
+      ![0,1].includes(h.hour12))throw Error('工牌名称、头像或时间设置无效。');return true;
+  }
+  function timePayload(milliseconds=Date.now()){
+    const epoch=Math.floor(milliseconds/1000);
+    if(!Number.isSafeInteger(epoch)||epoch<1577836800||epoch>4102444799)throw Error('请检查手机或电脑的系统时间（支持 2020–2099 年）。');
+    return {epoch};
+  }
   function capacity(c){let used=1;const put=s=>{if(s)used+=utf8(s)+1;};for(const p of c.profiles){put(p.name);for(const b of p.bindings){put(b.title);if(b.steps.length){used=(used+1)&~1;used+=b.steps.length*12;}}}return 392+used;}
   function fields(value,names){
     if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length!==names.length||names.some(n=>!Object.hasOwn(value,n)))throw Error('文件结构或字段无效。');
@@ -142,21 +155,45 @@
   function moveStep(b,index,delta){const to=index+delta;if(to<0||to>=b.steps.length)return;const last=b.steps.at(-1);[b.steps[index],b.steps[to]]=[b.steps[to],b.steps[index]];if(b.steps.at(-1)!==last)last.delay_ms=80;b.steps.at(-1).delay_ms=0;}
   function addProfile(c,name,copy=-1){if(c.profiles.length>=8)throw Error('最多 8 个情景。');validateText(name,16);if(!name||c.profiles.some(p=>p.name===name))throw Error('情景名称不能为空或重复。');c.profiles.push(copy<0?{name,bindings:Array.from({length:11},empty)}:{...clone(c.profiles[copy]),name});return c.profiles.length-1;}
   function removeProfile(c,index){if(c.profiles.length===1)throw Error('至少保留一个情景。');c.profiles.splice(index,1);if(c.active_profile===index)c.active_profile=0;else if(c.active_profile>index)--c.active_profile;}
-  root.Keypad={exportFile,parseImport,applyImport,fileLimit,keys,modCodes,media,defaults,capture,actionLabel,sequenceLabel,titleLabel,capacity,validate,validateText,addStep,removeStep,moveStep,addProfile,removeProfile};
+  function wifiPayload(ssid,password,keep_password=false){
+    if(typeof ssid!=='string'||typeof password!=='string'||typeof keep_password!=='boolean'||new TextEncoder().encode(ssid).length>32||
+      [...ssid].some(c=>{const n=c.codePointAt(0);return n<32||(n>=127&&n<=159)||(n>=0xd800&&n<=0xdfff);})||
+      !/^[\x20-\x7e]{0,63}$/.test(password)||(password.length>0&&password.length<8)||(!ssid&&(password||keep_password))||(keep_password&&password))
+      throw Error('网络名称最多 32 字节；密码应为 8–63 位英文、数字或符号。无密码网络可留空。');
+    return {ssid,password,keep_password};
+  }
+  function wifiJobMessage(job){
+    const messages=['尚未测试','正在准备','正在扫描附近 Wi-Fi','正在连接，请保持连接 Passport 热点','Wi-Fi 已连接，正在校时','扫描完成','连接成功，认证通过且已校时。请保存网络设置。','认证失败，请检查密码或路由器设置。','未找到网络，请检查名称、距离和 2.4 GHz 设置。','连接超时，请检查路由器和信号。','Wi-Fi 认证通过，但网络校时失败。请检查外网连接，密码可正常使用。','连接或扫描失败，请重试。','网络安全方式不兼容，请检查路由器设置。'];
+    return messages[job.state]||'设备返回了未知结果，请重试。';
+  }
+  root.Keypad={wifiJobMessage,wifiPayload,homeDefaults,validateHome,timePayload,exportFile,parseImport,applyImport,fileLimit,keys,modCodes,media,defaults,capture,actionLabel,sequenceLabel,titleLabel,capacity,validate,validateText,addStep,removeStep,moveStep,addProfile,removeProfile};
   if(typeof document==='undefined')return;
   let pendingImport=null;
   let config,session='',selected=0,editing=0,dirty=false,busy=false,recording=null;
+  let home,homeDirty=false,wifi,wifiDirty=false,wifiNetworks=[],wifiRevision=0;
   const $=id=>document.getElementById(id);
   function status(text,error=false){$('status').textContent=text;$('status').className=error?'error':'';}
   function metrics(){if(!config)return;const used=capacity(config);$('capacity').textContent=used+' / 6144 B · '+config.profiles.length+' / 8 情景';$('capacity').classList.toggle('error',used>6144);$('current-profile').textContent='当前：'+config.profiles[config.active_profile].name;}
   function changed(){dirty=true;$('dirty').textContent='有未保存的修改';metrics();}
+  function homeChanged(){homeDirty=true;$('home-saved').textContent='工牌有未保存的修改';}
+  function homeRender(){
+    $('home-name').value=home.name;$('home-badge').value=home.badge;
+    $('home-avatar').value=home.avatar;$('home-timezone').value=home.timezone_minutes;$('home-hour12').value=home.hour12;
+  }
+  for(let offset=-720;offset<=840;offset+=15){
+    const absolute=Math.abs(offset),text='UTC'+(offset<0?'-':'+')+String(Math.floor(absolute/60)).padStart(2,'0')+':'+String(absolute%60).padStart(2,'0');
+    const option=document.createElement('option');option.value=offset;option.textContent=text;$('home-timezone').append(option);
+  }
+  for(const [id,field] of [['home-name','name'],['home-badge','badge'],['home-avatar','avatar'],['home-timezone','timezone_minutes'],['home-hour12','hour12']]){
+    $(id).addEventListener(field==='name'||field==='badge'?'input':'change',()=>{home[field]=field==='name'||field==='badge'?$(id).value:Number($(id).value);homeChanged();});
+  }
   function element(tag,text,cls){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(cls)el.className=cls;return el;}
   function button(text,cls,fn){const b=element('button',text,cls);b.type='button';b.addEventListener('click',()=>{try{fn();}catch(e){status(e.message,true);}});return b;}
   function select(options,value,fn){const s=element('select');for(const [v,label] of options){const o=element('option',label);o.value=v;s.append(o);}s.value=value;s.addEventListener('change',()=>fn(Number(s.value)));return s;}
   function preview(b,gesture){const frame=element('div',undefined,'device-preview');frame.setAttribute('aria-label','设备详情预览');const band=element('div',undefined,'preview-band');band.append(element('div',titleLabel(b),'preview-title'));frame.append(element('div',config.profiles[editing].name,'preview-profile'),element('div','--%','preview-battery'),element('div',['上','下','OK'][selected]+' · '+gesture,'preview-state'),band,element('div',sequenceLabel(b),'preview-keys'),element('div','已完成','preview-status'),element('div',b.steps.length>1?b.steps.length+' / '+b.steps.length:'','preview-progress'));return frame;}
   function metadata(card,b,name){const wrap=element('label','动作标题','text-field'),input=element('input');input.value=b.title;input.maxLength=16;input.setAttribute('aria-label',name+'动作标题');input.placeholder='留空则自动命名';let frame;input.addEventListener('input',()=>{b.title=input.value;changed();frame.querySelector('.preview-title').textContent=titleLabel(b);});wrap.append(input);card.append(wrap);const details=element('details',undefined,'preview-details');details.append(element('summary','查看设备全屏预览'));frame=preview(b,name);details.append(frame);card.append(details);}
   function render(){
-    $('editor').disabled=busy||!config;$('forget').disabled=busy||!config;if(!config)return;
+    $('editor').disabled=busy||!config;$('forget').disabled=busy||!config;$('wifi-fields').disabled=busy||!wifi;if(!config)return;
     metrics();$('profile').replaceChildren(...config.profiles.map((p,i)=>{const o=element('option',p.name+(i===config.active_profile?' · 当前':''));o.value=i;return o;}));$('profile').value=editing;$('profile-name').value=config.profiles[editing].name;
     $('activate-profile').disabled=editing===config.active_profile;$('delete-profile').disabled=config.profiles.length===1;$('new-profile').disabled=$('copy-profile').disabled=config.profiles.length>=8;
     $('actions').replaceChildren();
@@ -201,6 +238,104 @@
   $('activate-profile').addEventListener('click',()=>{config.active_profile=editing;changed();render();status('已设为当前情景，保存后生效。');});
   async function request(path,body){const response=await fetch(path,{method:'POST',headers:{'X-Session':session,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(8000)});if(!response.ok)throw Error(await response.text());return response.json();}
   async function operation(fn){if(busy||!config)return;cancelRecording(false);busy=true;render();try{await fn();}catch(e){status('操作未完成：'+e.message,true);}finally{busy=false;render();}}
+  $('save-home').addEventListener('click',()=>operation(async()=>{
+    validateHome(home);await request('/api/home',home);homeDirty=false;$('home-saved').textContent='工牌已保存';
+    status('工牌设置已保存，退出热点后可在首页查看。');
+  }));
+  $('sync-time').addEventListener('click',()=>operation(async()=>{
+    await request('/api/time',timePayload());$('clock-status').textContent='已同步当前手机／电脑时间。配置 Wi-Fi 后，下次开机可自动校时。';
+    status(homeDirty?'校时成功。工牌和时区仍有修改，请保存工牌设置。':'校时成功，退出热点后可查看时间。');
+  }));
+  function wifiRender(password=''){
+    $('wifi-ssid').value=wifi.ssid;$('wifi-password').value=password;
+    $('wifi-password').placeholder=wifi.has_password?'密码已保存，留空保持不变':'无密码网络可留空';
+    $('wifi-saved').textContent=wifi.ssid?'已保存自动校时网络':'尚未配置自动校时';
+    $('wifi-status').textContent=(wifi.clock_valid?'设备已有有效时间。':'设备尚未校时。')+'配置热点开启时，自动校时暂停；退出热点后尝试连接。';
+  }
+  async function wifiLoad(password=''){
+    const r=await fetch('/api/wifi',{headers:{'X-Session':session},signal:AbortSignal.timeout(8000)});
+    if(!r.ok)throw Error('读取 Wi-Fi 设置失败');wifi=await r.json();wifiDirty=false;wifiRender(password);render();
+  }
+  $('wifi-show-password').addEventListener('change',()=>{
+    $('wifi-password').type=$('wifi-show-password').checked?'text':'password';
+  });
+  function wifiChanged(){
+    wifiDirty=true;++wifiRevision;$('wifi-saved').textContent='Wi-Fi 有未保存的修改';
+    $('wifi-test-status').textContent='网络或密码已修改，请重新测试。';$('wifi-test-status').className='';
+  }
+  for(const id of ['wifi-ssid','wifi-password'])$(id).addEventListener('input',wifiChanged);
+  $('wifi-networks').addEventListener('change',()=>{
+    if(!$('wifi-networks').value)return;$('wifi-ssid').value=$('wifi-networks').value;wifiChanged();
+  });
+  function wifiCandidate(){
+    const ssid=$('wifi-ssid').value,password=$('wifi-password').value;
+    const network=wifiNetworks.find(n=>n.ssid===ssid);
+    const keep=ssid===wifi.ssid&&wifi.has_password&&!password&&network?.secured!==false;
+    if(network?.secured&&!password&&!keep)throw Error('此网络需要密码，请先填写。');
+    return wifiPayload(ssid,password,keep);
+  }
+  async function wifiJobRead(){
+    const r=await fetch('/api/wifi/job',{headers:{'X-Session':session},signal:AbortSignal.timeout(3000)});
+    if(!r.ok)throw Error(await r.text());return r.json();
+  }
+  function wifiScanRender(job){
+    wifiNetworks=job.networks||[];const first=document.createElement('option');first.value='';first.textContent='请选择网络，也可手动填写';
+    $('wifi-networks').replaceChildren(first);
+    for(const n of wifiNetworks){const o=document.createElement('option');o.value=n.ssid;o.textContent=n.ssid+' · '+n.rssi+' dBm'+(n.secured?'':' · 无密码');$('wifi-networks').append(o);}
+    $('wifi-networks').disabled=!wifiNetworks.length;
+    $('wifi-scan-status').textContent=wifiNetworks.length?'找到 '+wifiNetworks.length+' 个网络；选择后填写密码。':'未发现可显示的网络，可重试扫描或手动填写名称。';
+  }
+  function wifiTestRender(job){
+    $('wifi-test-status').textContent=job.ssid+'：'+wifiJobMessage(job);
+    $('wifi-test-status').className=!job.busy&&!job.connected?'error':'';
+  }
+  async function wifiJobWait(id,revision){
+    const deadline=performance.now()+75000;
+    while(performance.now()<deadline){
+      let job;
+      try{job=await wifiJobRead();}catch(e){
+        $('wifi-test-status').textContent='暂时无法读取结果，请保持连接 Passport 热点，正在重试…';
+        await new Promise(resolve=>setTimeout(resolve,750));continue;
+      }
+      if(job.id!==id)throw Error('扫描或测试已被另一项操作替换，请重试。');
+      if(job.kind===1)$('wifi-scan-status').textContent=wifiJobMessage(job);
+      else if(revision===wifiRevision)wifiTestRender(job);
+      if(!job.busy){
+        if(job.kind===1){if(job.state!==5)throw Error(wifiJobMessage(job));wifiScanRender(job);}
+        return job;
+      }
+      await new Promise(resolve=>setTimeout(resolve,500));
+    }
+    throw Error('等待结果超时，请重新连接 Passport 热点后重试。');
+  }
+  async function wifiJobStart(path,body){
+    const previous=await wifiJobRead();let id;
+    try{id=(await request(path,body)).id;}catch(e){
+      // Connecting STA can briefly move the AP channel. Recover an accepted
+      // job if its POST response was lost, without starting a second test.
+      const current=await wifiJobRead();
+      if(current.id===previous.id||current.kind!==(body?2:1)||(body&&current.ssid!==body.ssid))throw e;
+      id=current.id;
+    }
+    return wifiJobWait(id,wifiRevision);
+  }
+  $('scan-wifi').addEventListener('click',()=>operation(async()=>{
+    $('wifi-scan-status').textContent='正在扫描附近 Wi-Fi…';await wifiJobStart('/api/wifi/scan');
+  }));
+  $('test-wifi').addEventListener('click',()=>operation(async()=>{
+    const candidate=wifiCandidate();if(!candidate.ssid)throw Error('请先选择或填写网络名称。');
+    $('wifi-test-status').textContent='正在开始连接测试…';await wifiJobStart('/api/wifi/test',candidate);
+  }));
+  $('save-wifi').addEventListener('click',()=>operation(async()=>{
+    const candidate=wifiCandidate(),password=$('wifi-password').value;
+    await request('/api/wifi',candidate);await wifiLoad(password);
+    const ssid=candidate.ssid;
+    $('wifi-status').textContent=ssid?'网络已保存，退出热点后开始自动校时。':'自动校时网络已清除。';
+    status('Wi-Fi 设置已保存。');
+  }));
+  $('clear-wifi').addEventListener('click',()=>operation(async()=>{
+    await request('/api/wifi',wifiPayload('',''));await wifiLoad();++wifiRevision;$('wifi-test-status').textContent='网络设置已清除，可选择新网络测试。';status('已清除网络设置；仍可手动同步时间。');
+  }));
   function download(kind){
     const text=exportFile(config,kind,editing),url=URL.createObjectURL(new Blob([text],{type:'application/json'}));
     const link=element('a');link.href=url;link.download='passport-keys-'+(kind==='scenario'?'scenario':'all')+'.json';
@@ -250,8 +385,8 @@
   });
   $('save').addEventListener('click',()=>operation(async()=>{validate(config);await request('/api/config',config);dirty=false;$('dirty').textContent='已保存到设备';status('保存成功。退出热点后，在设备进入“开始控制”即可使用。');}));
   $('defaults').addEventListener('click',()=>{if(!config||!confirm('恢复默认配置会移除当前编辑的全部情景。保存后生效，是否继续？'))return;cancelRecording(false);config=defaults();editing=0;changed();render();});
-  $('exit').addEventListener('click',()=>{if(dirty&&!confirm('尚有未保存的修改，仍要退出热点？'))return;operation(async()=>{await request('/api/exit');status('热点正在关闭。设备返回设置；长按 OK 进入主菜单，再选择“开始控制”。');config=null;dirty=false;$('dirty').textContent='会话已结束';});});
-  $('forget').addEventListener('click',()=>{if(dirty&&!confirm('尚有未保存修改，清除配对将结束网页会话，仍要继续？'))return;if(!confirm('设备将退出热点并显示确认页，请在设备上确认清除配对。'))return;operation(async()=>{await request('/api/forget');status('请在 Passport 确认清除配对。热点正在关闭。');config=null;dirty=false;$('dirty').textContent='请在设备确认';});});
-  window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
-  fetch('/api/config',{signal:AbortSignal.timeout(8000)}).then(async r=>{if(!r.ok)throw Error('读取配置失败');const data=await r.json();validate(data.config,true);config=data.config;session=data.session;editing=config.active_profile;$('dirty').textContent='已读取设备配置';render();}).catch(e=>{status('无法读取配置：'+e.message+'。请确认已连接 Passport 热点，然后刷新。',true);$('dirty').textContent='连接失败';});
+  $('exit').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存的修改，仍要退出热点？'))return;operation(async()=>{await request('/api/exit');status('热点正在关闭。设备返回设置；长按 OK 进入首页，再选择“开始控制”。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='会话已结束';});});
+  $('forget').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存修改，清除配对将结束网页会话，仍要继续？'))return;if(!confirm('设备将退出热点并显示确认页，请在设备上确认清除配对。'))return;operation(async()=>{await request('/api/forget');status('请在 Passport 确认清除配对。热点正在关闭。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='请在设备确认';});});
+  window.addEventListener('beforeunload',e=>{if(dirty||homeDirty||wifiDirty){e.preventDefault();e.returnValue='';}});
+  Promise.all(['/api/config','/api/home'].map(async path=>{const r=await fetch(path,{signal:AbortSignal.timeout(8000)});if(!r.ok)throw Error('读取配置失败');return r.json();})).then(([data,identity])=>{validate(data.config,true);validateHome(identity,true);config=data.config;home=identity;session=data.session;editing=config.active_profile;$('dirty').textContent='已读取设备配置';$('home-saved').textContent='已读取工牌';homeRender();render();wifiLoad().then(async()=>{const job=await wifiJobRead();if(job.kind===1&&job.state===5)wifiScanRender(job);if(job.busy)await operation(()=>wifiJobWait(job.id,wifiRevision));else if(job.kind===2&&job.state!==0)wifiTestRender(job);}).catch(e=>{$('wifi-saved').textContent=e.message;status(e.message+'，请刷新重试。',true);});}).catch(e=>{status('无法读取配置：'+e.message+'。请确认已连接 Passport 热点，然后刷新。',true);$('dirty').textContent='连接失败';});
 })(globalThis);

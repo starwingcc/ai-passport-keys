@@ -32,15 +32,34 @@ __asm__(".data\n"
         ".incbin \"main/web/charset.js\"\n.byte 0\n"
         ".globl _binary_charset_js_end\n_binary_charset_js_end:\n.text\n");
 
+static kp_wifi_job_t setup_job;
+static kp_wifi_config_t tested_wifi;
+static bool fail_setup_start,fail_setup_stop,fail_sta_netif,fail_wifi_start,fail_wifi_stop;
+static unsigned setup_active,netifs;
+esp_err_t kp_wifi_setup_start(void){if(fail_setup_start)return ESP_FAIL;++setup_active;return ESP_OK;}
+esp_err_t kp_wifi_setup_stop(void){if(fail_setup_stop)return ESP_FAIL;setup_active=0;return ESP_OK;}
+void kp_wifi_setup_get(kp_wifi_job_t *out){*out=setup_job;}
+esp_err_t kp_wifi_setup_scan(uint32_t *id){if(setup_job.busy)return ESP_ERR_INVALID_STATE;*id=++setup_job.id;setup_job.kind=KP_WIFI_SCAN;setup_job.busy=true;return ESP_OK;}
+esp_err_t kp_wifi_setup_test(const kp_wifi_config_t *candidate,uint32_t *id){if(setup_job.busy)return ESP_ERR_INVALID_STATE;tested_wifi=*candidate;*id=++setup_job.id;setup_job.kind=KP_WIFI_TEST;setup_job.busy=true;return ESP_OK;}
+static kp_wifi_config_t committed_wifi;
+void kp_store_wifi_get(kp_wifi_config_t *out){*out=committed_wifi;}
+esp_err_t kp_store_wifi_save(const kp_wifi_config_t *wifi){if(fail_alloc)return ESP_FAIL;committed_wifi=*wifi;return ESP_OK;}
+kp_network_status_t kp_network_status(void){return KP_NET_PAUSED;}
+uint64_t kp_store_time_read(uint64_t now){(void)now;return 0;}
 static kp_config_t committed;
+static kp_home_config_t committed_home; static kp_clock_t test_clock;
+int64_t esp_timer_get_time(void){return 1000000;}
+void kp_store_home_get(kp_home_config_t *out){*out=committed_home;}
+esp_err_t kp_store_home_save(const kp_home_config_t *home){if(fail_alloc)return ESP_FAIL;committed_home=*home;return ESP_OK;}
+bool kp_store_time_sync(uint64_t epoch,uint64_t now){return kp_clock_sync(&test_clock,epoch,now);}
 static char response[65536], input[KP_JSON_BYTES + 1];
 static size_t response_size, largest_send;
 static unsigned send_calls, finished, visit_calls, save_calls;
 static unsigned fail_send_at;
 static bool fail_save, reading;
 static const char *status, *content_type;
-static esp_netif_t netif;
-static httpd_uri_t routes[9];
+static esp_netif_t netif, station_netif;
+static httpd_uri_t routes[16];
 static unsigned route_count, wifi_started, wifi_initialized;
 static bool fail_http_start;
 
@@ -104,24 +123,26 @@ esp_err_t kp_store_save(const kp_config_t *c) {
     committed=*c; return ESP_OK;
 }
 esp_err_t httpd_start(httpd_handle_t *out, const httpd_config_t *c) {
-    assert(c->max_open_sockets==3 && c->stack_size==6144 && c->lru_purge_enable);
+    assert(c->max_uri_handlers==16 && c->max_open_sockets==3 && c->stack_size==6144 && c->lru_purge_enable);
     if (fail_http_start) return ESP_FAIL;
     *out=routes; route_count=0; return ESP_OK;
 }
 esp_err_t httpd_stop(httpd_handle_t h) { assert(h==routes); route_count=0; return ESP_OK; }
 esp_err_t httpd_register_uri_handler(httpd_handle_t h, const httpd_uri_t *route) {
-    assert(h==routes && route_count<9); routes[route_count++]=*route; return ESP_OK;
+    assert(h==routes && route_count<16); routes[route_count++]=*route; return ESP_OK;
 }
-esp_netif_t *esp_netif_create_default_wifi_ap(void) { return &netif; }
-void esp_netif_destroy_default_wifi(esp_netif_t *n) { assert(n==&netif); }
+esp_netif_t *esp_netif_create_default_wifi_ap(void) { ++netifs;return &netif; }
+esp_netif_t *esp_netif_create_default_wifi_sta(void) { if(fail_sta_netif)return NULL;++netifs;return &station_netif; }
+void esp_netif_destroy_default_wifi(esp_netif_t *n) { assert((n==&netif||n==&station_netif)&&netifs);--netifs; }
 esp_err_t esp_wifi_init(const wifi_init_config_t *c) { (void)c; ++wifi_initialized; return ESP_OK; }
 esp_err_t esp_wifi_deinit(void) { assert(wifi_initialized==1); --wifi_initialized; return ESP_OK; }
-esp_err_t esp_wifi_start(void) { ++wifi_started; return ESP_OK; }
-esp_err_t esp_wifi_stop(void) { assert(wifi_started==1); --wifi_started; return ESP_OK; }
+esp_err_t esp_wifi_start(void) { if(fail_wifi_start)return ESP_FAIL;++wifi_started; return ESP_OK; }
+esp_err_t esp_wifi_stop(void) { assert(wifi_started==1);if(fail_wifi_stop)return ESP_FAIL; --wifi_started; return ESP_OK; }
 esp_err_t esp_wifi_set_storage(int mode) { assert(mode==WIFI_STORAGE_RAM); return ESP_OK; }
-esp_err_t esp_wifi_set_mode(int mode) { assert(mode==WIFI_MODE_AP); return ESP_OK; }
+esp_err_t esp_wifi_set_mode(int mode) { assert(mode==WIFI_MODE_APSTA); return ESP_OK; }
 esp_err_t esp_wifi_set_config(int mode, const wifi_config_t *c) {
-    assert(mode==WIFI_IF_AP && c->ap.max_connection==1 && c->ap.authmode==WIFI_AUTH_WPA2_PSK);
+    if(mode==WIFI_IF_AP)assert(c->ap.max_connection==1 && c->ap.authmode==WIFI_AUTH_WPA2_PSK);
+    else assert(mode==WIFI_IF_STA&&!c->sta.ssid[0]&&!c->sta.password[0]);
     return ESP_OK;
 }
 uint32_t esp_random(void) { return 1; }
@@ -130,8 +151,10 @@ size_t heap_caps_get_free_size(unsigned caps) { (void)caps; return 1000; }
 size_t heap_caps_get_largest_free_block(unsigned caps) { (void)caps; return 512; }
 
 int main(void) {
+    kp_wifi_defaults(&committed_wifi);
+    kp_home_defaults(&committed_home);
     kp_defaults(&committed);
-    assert(kp_web_start(NULL)==ESP_OK && route_count==8);
+    assert(kp_web_start(NULL)==ESP_OK && route_count==16);
     const struct { const char *uri,*start,*end; } files[]={
         {"/",index_start,index_end},{"/app.css",css_start,css_end},
         {"/app.js",js_start,js_end},{"/charset.js",charset_start,charset_end}
@@ -184,8 +207,57 @@ int main(void) {
     fail_save=false; req.received=0; reset_response();
     assert(api(&req)==ESP_OK && !strcmp(response,"{\"ok\":true}") && save_calls==2);
     assert(!strcmp(kp_text(&committed,committed.profiles[0].name),"Coding"));
+    // New routes use the same Host/session checks and bounded transport.
+    kp_home_config_t home=committed_home;strcpy(home.name,"星翼");home.avatar=2;
+    reset_response();assert(kp_home_encode(&home,collect,NULL));strcpy(input,response);
+    req=(httpd_req_t){.uri="/api/home",.method=HTTP_POST,.host="192.168.4.1",.body=input,.content_len=strlen(input)};
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"403 Forbidden")&&!req.received);
+    req.session=s_session;fail_alloc=true;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"500 Internal Server Error"));assert(!strcmp(committed_home.name,"USER"));
+    fail_alloc=false;req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&!strcmp(committed_home.name,"星翼"));
+    req.method=HTTP_GET;reset_response();assert(api(&req)==ESP_OK&&finished==1&&strstr(response,"星翼"));
+    req=(httpd_req_t){.uri="/api/time",.method=HTTP_POST,.host="192.168.4.1",.session=s_session,.body="{\"epoch\":1791167040}",.content_len=20};
+    req.content_len=strlen(req.body);reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&kp_clock_read(&test_clock,2000)==1791167041);
+    req.body="{\"epoch\":0}";req.content_len=strlen(req.body);req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"400 Bad Request")&&test_clock.epoch==1791167040);
+    req=(httpd_req_t){.uri="/api/wifi",.method=HTTP_GET,.host="192.168.4.1"};
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"403 Forbidden"));
+    req.session=s_session;reset_response();assert(api(&req)==ESP_OK&&finished==1&&strstr(response,"has_password"));
+    req.method=HTTP_POST;req.body="{\"ssid\":\"test-network\",\"password\":\"test-pass\",\"keep_password\":false}";req.content_len=strlen(req.body);
+    fail_alloc=true;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"500 Internal Server Error")&&!committed_wifi.ssid[0]);
+    fail_alloc=false;req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&!strcmp(committed_wifi.password,"test-pass"));
+    req.method=HTTP_GET;reset_response();assert(api(&req)==ESP_OK&&finished==1&&strstr(response,"test-network")&&!strstr(response,"test-pass"));
+    req.method=HTTP_POST;req.body="{\"ssid\":\"test-network\",\"password\":\"\",\"keep_password\":true}";req.content_len=strlen(req.body);req.received=0;
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&!strcmp(committed_wifi.password,"test-pass"));
+    req.body="{\"ssid\":\"other-network\",\"password\":\"\",\"keep_password\":true}";req.content_len=strlen(req.body);req.received=0;
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"400 Bad Request")&&!strcmp(committed_wifi.ssid,"test-network"));
+    req.body="{\"ssid\":\"\",\"password\":\"\",\"keep_password\":false}";req.content_len=strlen(req.body);req.received=0;
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&!committed_wifi.password[0]);
+    // Scan/test are authenticated queued jobs. Neither test nor its GET exposes
+    // credentials or commits a candidate to persistent Wi-Fi configuration.
+    req=(httpd_req_t){.uri="/api/wifi/scan",.method=HTTP_POST,.host="192.168.4.1"};
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"403 Forbidden")&&!setup_job.id);
+    req.session=s_session;req.body="{}";req.content_len=2;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"400 Bad Request"));
+    req.content_len=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&setup_job.busy&&strstr(response,"id"));
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"409 Conflict"));setup_job.busy=false;
+    req=(httpd_req_t){.uri="/api/wifi/test",.method=HTTP_POST,.host="192.168.4.1",.session=s_session,.body="{\"ssid\":\"candidate-network\",\"password\":\"test-pass\",\"keep_password\":false}"};req.content_len=strlen(req.body);
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&!strcmp(tested_wifi.password,"test-pass")&&!committed_wifi.ssid[0]);
+    setup_job.state=KP_WIFI_AUTH_FAILED;setup_job.busy=false;strcpy(setup_job.ssid,tested_wifi.ssid);
+    kp_wifi_scan_add(&setup_job,"nearby",-40,true);
+    req.uri="/api/wifi/job";req.method=HTTP_GET;req.session=NULL;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"403 Forbidden"));
+    req.session=s_session;reset_response();assert(api(&req)==ESP_OK&&finished==1&&strstr(response,"candidate-network")&&strstr(response,"nearby")&&!strstr(response,"test-pass")&&largest_send<=256);
+    req.uri="/api/wifi/test";req.method=HTTP_POST;req.body="{\"ssid\":\"\",\"password\":\"\",\"keep_password\":false}";req.content_len=strlen(req.body);req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"400 Bad Request"));
+    // Saved-password testing passes the password internally, without returning it.
+    strcpy(committed_wifi.ssid,"saved-network");strcpy(committed_wifi.password,"saved-test-pass");
+    req.body="{\"ssid\":\"saved-network\",\"password\":\"\",\"keep_password\":true}";req.content_len=strlen(req.body);req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&!strcmp(tested_wifi.password,"saved-test-pass"));
     assert(kp_web_stop()==ESP_OK && !wifi_initialized && !wifi_started && !s_session[0]);
-    fail_http_start=true;
-    assert(kp_web_start(NULL)==ESP_FAIL && !wifi_initialized && !wifi_started);
+    assert(!netifs&&!setup_active);
+    for(unsigned fault=0;fault<4;++fault){
+        fail_http_start=fault==0;fail_sta_netif=fault==1;fail_setup_start=fault==2;fail_wifi_start=fault==3;
+        assert(kp_web_start(NULL)!=ESP_OK&&!wifi_initialized&&!wifi_started&&!netifs&&!setup_active);
+    }
+    fail_http_start=fail_sta_netif=fail_setup_start=fail_wifi_start=false;
+    assert(kp_web_start(NULL)==ESP_OK);fail_setup_stop=true;
+    assert(kp_web_stop()==ESP_FAIL&&wifi_started&&wifi_initialized&&netifs==2);fail_setup_stop=false;
+    fail_wifi_stop=true;assert(kp_web_stop()==ESP_FAIL&&wifi_started&&wifi_initialized&&netifs==2);fail_wifi_stop=false;
+    assert(kp_web_stop()==ESP_OK&&!wifi_started&&!wifi_initialized&&!netifs&&!setup_active);
     puts("Keypad HTTP bounded assets, zero-copy GET, failures and rollback: PASS");
 }

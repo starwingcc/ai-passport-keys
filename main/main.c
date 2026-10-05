@@ -7,6 +7,8 @@
 #include "keypad_web.h"
 #include "keypad_ui.h"
 #include "keypad_runner.h"
+#include "keypad_network.h"
+#include "keypad_wifi_setup_runtime.h"
 #include <stdlib.h>
 #include "esp_event.h"
 #include "esp_heap_caps.h"
@@ -122,6 +124,8 @@ void app_main(void) {
     kp_config_t *config = malloc(sizeof(*config));
     if (!config) { ESP_LOGE("keypad", "Configuration allocation failed"); return; }
     kp_store_get(config); kp_init(&s_model, config, effect, NULL); free(config);
+    s_model.page = KP_MENU;
+    kp_home_config_t home; kp_store_home_get(&home);
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) { ESP_LOGE("keypad", "Display unavailable"); return; }
     bsp_display_backlight(80);
     bool battery_ok = bsp_battery_init() == ESP_OK;
@@ -176,7 +180,9 @@ void app_main(void) {
             rc = kp_web_stop();
             if (rc == ESP_OK) {
                 s_ap_active = false; kp_store_get(&s_model.config); ++s_model.config_revision;
+                kp_store_home_get(&home);
                 kp_ble_pause(false); message("热点已关闭");
+                kp_network_resume();
                 if (request & 2U) { s_model.page = KP_FORGET; s_model.selected = 0; }
             } else { s_model.page = KP_HOTSPOT; message("关闭失败，长按 OK 重试"); }
             resync_input(); memory_log("AP stop");
@@ -184,12 +190,14 @@ void app_main(void) {
         if (s_ap_start) {
             s_ap_start = false; resync_input();
             message("正在开启热点");
-            kp_ui_update(&s_model, kp_ble_status(), battery, s_message, "...", "...");
-            rc = kp_ble_pause(true);
+            kp_ui_update(&s_model, kp_ble_status(), battery, s_message, "...", "...", &home,
+                         kp_store_time_read((uint64_t)esp_timer_get_time() / 1000));
+            rc = kp_network_suspend();
+            if (rc == ESP_OK) rc = kp_ble_pause(true);
             if (rc == ESP_OK) rc = kp_web_start(web_request);
             s_ap_active = rc == ESP_OK;
             if (!s_ap_active) {
-                if (kp_web_stop() == ESP_OK) kp_ble_pause(false);
+                if (kp_web_stop() == ESP_OK) { kp_ble_pause(false); kp_network_resume(); }
                 message("热点启动失败，长按返回");
             }
             else message("配置完成后长按 OK 返回");
@@ -200,6 +208,10 @@ void app_main(void) {
             message(kp_ble_forget() == ESP_OK ? "配对已清除，请重新连接" : "清除失败，请重试");
             resync_input();
         }
+        // Slow radio lifecycle runs in this worker, between actions. Callbacks
+        // never block keys or access LVGL. STA releases Wi-Fi before AP startup.
+        if (!s_ap_active && !s_runner.running && !s_model.down_mask) kp_network_tick(now);
+        if (s_ap_active) kp_wifi_setup_poll(now);
         bool dim = (uint32_t)(now - last_activity) >= 60000;
         if (dim != dimmed) { dimmed = dim; bsp_display_backlight(dim ? 12 : 80); }
         if (battery_ok && (!last_battery || (uint32_t)(now - last_battery) >= 30000)) {
@@ -208,7 +220,8 @@ void app_main(void) {
         if ((uint32_t)(now - last_ui) >= 100) {
             kp_ble_poll();
             kp_ui_update(&s_model, kp_ble_status(), battery, s_message,
-                         s_ap_active ? kp_web_ssid() : "未开启", s_ap_active ? kp_web_password() : "--");
+                         s_ap_active ? kp_web_ssid() : "未开启", s_ap_active ? kp_web_password() : "--", &home,
+                         kp_store_time_read((uint64_t)esp_timer_get_time() / 1000));
             last_ui = now;
         }
     }

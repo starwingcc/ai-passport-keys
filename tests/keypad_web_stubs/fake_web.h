@@ -38,6 +38,7 @@ esp_err_t httpd_register_uri_handler(httpd_handle_t, const httpd_uri_t *);
 
 typedef struct { int unused; } esp_netif_t;
 esp_netif_t *esp_netif_create_default_wifi_ap(void);
+esp_netif_t *esp_netif_create_default_wifi_sta(void);
 void esp_netif_destroy_default_wifi(esp_netif_t *);
 typedef struct { int unused; } wifi_init_config_t;
 #define WIFI_INIT_CONFIG_DEFAULT() ((wifi_init_config_t){0})
@@ -46,8 +47,14 @@ typedef struct {
         uint8_t ssid[32], password[64];
         unsigned ssid_len, channel, max_connection, authmode;
     } ap;
+    struct {
+        uint8_t ssid[32], password[64];
+        struct { unsigned authmode; } threshold;
+    } sta;
 } wifi_config_t;
-enum { WIFI_STORAGE_RAM, WIFI_MODE_AP, WIFI_IF_AP, WIFI_AUTH_WPA2_PSK };
+enum { WIFI_STORAGE_RAM, WIFI_MODE_AP, WIFI_IF_AP, WIFI_AUTH_WPA2_PSK, WIFI_MODE_STA, WIFI_IF_STA, WIFI_AUTH_OPEN, WIFI_MODE_APSTA };
+typedef struct { uint8_t ssid[33]; int8_t rssi; unsigned authmode; } wifi_ap_record_t;
+#define ESP_ERR_WIFI_NOT_CONNECT 4
 esp_err_t esp_wifi_init(const wifi_init_config_t *);
 esp_err_t esp_wifi_deinit(void);
 esp_err_t esp_wifi_start(void);
@@ -55,6 +62,14 @@ esp_err_t esp_wifi_stop(void);
 esp_err_t esp_wifi_set_storage(int);
 esp_err_t esp_wifi_set_mode(int);
 esp_err_t esp_wifi_set_config(int, const wifi_config_t *);
+esp_err_t esp_wifi_connect(void);
+esp_err_t esp_wifi_disconnect(void);
+esp_err_t esp_wifi_scan_start(const void *, bool);
+esp_err_t esp_wifi_scan_stop(void);
+esp_err_t esp_wifi_scan_get_ap_num(uint16_t *);
+esp_err_t esp_wifi_scan_get_ap_record(wifi_ap_record_t *);
+esp_err_t esp_wifi_clear_ap_list(void);
+esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *);
 uint32_t esp_random(void);
 #define ESP_MAC_WIFI_SOFTAP 1
 esp_err_t esp_read_mac(uint8_t *, int);
@@ -63,3 +78,4 @@ size_t heap_caps_get_free_size(unsigned);
 size_t heap_caps_get_largest_free_block(unsigned);
 #define ESP_LOGW(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
+#define ESP_LOGI(...) ((void)0)

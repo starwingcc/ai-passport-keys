@@ -1,5 +1,7 @@
 #pragma once
 #include "keypad_model.h"
+#include "keypad_home.h"
+#include "keypad_wifi.h"
 #include "esp_err.h"
 esp_err_t kp_store_init(void);
 // Copies the active configuration under a mutex. A failed save never replaces it.
@@ -9,3 +11,9 @@ void kp_store_get(kp_config_t *out);
 typedef bool (*kp_store_reader_t)(const kp_config_t *config, void *user);
 bool kp_store_read(kp_store_reader_t reader, void *user);
 esp_err_t kp_store_save(const kp_config_t *config);
+void kp_store_home_get(kp_home_config_t *home);
+esp_err_t kp_store_home_save(const kp_home_config_t *home);
+void kp_store_wifi_get(kp_wifi_config_t *wifi);
+esp_err_t kp_store_wifi_save(const kp_wifi_config_t *wifi);
+bool kp_store_time_sync(uint64_t epoch, uint64_t monotonic_ms);
+uint64_t kp_store_time_read(uint64_t monotonic_ms);

@@ -204,6 +204,68 @@ bool kp_config_decode_string(const char *json, kp_config_t *out) {
     if (!json) return false;
     memory_t m = {.data = json}; return kp_config_decode(memory_read, &m, out);
 }
+bool kp_home_decode(kp_json_read_t read, void *user, kp_home_config_t *out) {
+    if (!read || !out) return false;
+    parser_t p = {.read = read, .user = user};
+    const char *const names[] = {"version", "name", "badge", "avatar", "timezone_minutes", "hour12"};
+    unsigned seen = 0, f, value; int next;
+    kp_home_defaults(out);
+    if (!token(&p, '{')) return false;
+    do {
+        if (!field(&p, names, 6, &seen, &f)) return false;
+        if (f == 1 || f == 2) {
+            if (!string(&p, f == 1 ? out->name : out->badge, sizeof(out->name))) return false;
+        } else {
+            space(&p); bool negative = f == 4 && peek(&p) == '-';
+            if (negative) (void)take(&p);
+            unsigned max = f == 3 ? KP_AVATAR_CHIP : f == 4 ? 840 : 1;
+            if (!number(&p, max, &value)) return false;
+            if (f == 0) out->version = value;
+            else if (f == 3) out->avatar = value;
+            else if (f == 4) out->timezone_minutes = negative ? -(int)value : (int)value;
+            else out->hour12 = value;
+        }
+    } while ((next = more(&p, '}')) == 1);
+    if (next != 0 || seen != 63) return false;
+    space(&p);
+    return peek(&p) < 0 && !p.failed && p.total <= KP_HOME_JSON_BYTES && kp_home_valid(out, false);
+}
+bool kp_wifi_decode(kp_json_read_t read, void *user, const kp_wifi_config_t *saved, kp_wifi_config_t *out) {
+    if (!read || !saved || !out) return false;
+    parser_t p = {.read = read, .user = user};
+    const char *const names[] = {"ssid", "password", "keep_password"};
+    unsigned seen = 0, f; int next; bool keep = false;
+    kp_wifi_defaults(out);
+    if (!token(&p, '{')) return false;
+    do {
+        if (!field(&p, names, 3, &seen, &f)) return false;
+        if (f < 2) {
+            if (!string(&p, f == 0 ? out->ssid : out->password, f == 0 ? sizeof(out->ssid) : sizeof(out->password))) return false;
+        } else {
+            space(&p);
+            if (peek(&p) == 't') { if (take(&p) != 't' || take(&p) != 'r' || take(&p) != 'u' || take(&p) != 'e') return false; keep = true; }
+            else if (take(&p) != 'f' || take(&p) != 'a' || take(&p) != 'l' || take(&p) != 's' || take(&p) != 'e') return false;
+        }
+    } while ((next = more(&p, '}')) == 1);
+    if (next != 0 || seen != 7) return false;
+    space(&p);
+    if (peek(&p) >= 0 || p.failed || p.total > KP_HOME_JSON_BYTES) return false;
+    if (keep) {
+        if (out->password[0] || !out->ssid[0] || strcmp(out->ssid, saved->ssid)) return false;
+        memcpy(out->password, saved->password, sizeof(out->password));
+    }
+    return kp_wifi_valid(out);
+}
+bool kp_time_decode(kp_json_read_t read, void *user, uint64_t *epoch) {
+    if (!read || !epoch) return false;
+    parser_t p = {.read = read, .user = user}; char name[32]; unsigned value;
+    if (!token(&p, '{') || !string(&p, name, sizeof(name)) || strcmp(name, "epoch") ||
+        !token(&p, ':') || !number(&p, (unsigned)KP_TIME_MAX, &value) ||
+        value < KP_TIME_MIN || !token(&p, '}')) return false;
+    space(&p);
+    if (peek(&p) >= 0 || p.failed || p.total > KP_HOME_JSON_BYTES) return false;
+    *epoch = value; return true;
+}
 typedef struct { kp_json_write_t write; void *user; char buffer[256]; size_t used; bool failed; } writer_t;
 static bool flush(writer_t *w) {
     if (w->failed) return false;
@@ -224,6 +286,36 @@ static void quoted(writer_t *w, const char *text) {
         if (byte[0] == '\n') output(w, "\\n"); else output(w, byte);
     }
     output(w, "\"");
+}
+bool kp_wifi_job_encode(const kp_wifi_job_t *job, kp_json_write_t write, void *user) {
+    if (!write || job->count > KP_WIFI_SCAN_RESULTS) return false;
+    writer_t w = {.write = write, .user = user}; char number_text[160];
+    snprintf(number_text, sizeof(number_text), "{\"id\":%lu,\"kind\":%u,\"state\":%u,\"busy\":%s,\"connected\":%s,\"reason\":%u,\"ssid\":",
+             (unsigned long)job->id, job->kind, job->state, job->busy ? "true" : "false", job->connected ? "true" : "false", job->reason);
+    output(&w, number_text); quoted(&w, job->ssid); output(&w, ",\"networks\":[");
+    for (unsigned i = 0; i < job->count; ++i) {
+        if (i) output(&w, ",");
+        output(&w, "{\"ssid\":"); quoted(&w, job->networks[i].ssid);
+        snprintf(number_text, sizeof(number_text), ",\"rssi\":%d,\"secured\":%s}", job->networks[i].rssi, job->networks[i].secured ? "true" : "false");
+        output(&w, number_text);
+    }
+    output(&w, "]}"); return flush(&w);
+}
+bool kp_wifi_encode(const kp_wifi_config_t *wifi, unsigned status, bool clock_valid, kp_json_write_t write, void *user) {
+    if (!write || !kp_wifi_valid(wifi)) return false;
+    writer_t w = {.write = write, .user = user}; char tail[100];
+    output(&w, "{\"ssid\":"); quoted(&w, wifi->ssid);
+    snprintf(tail, sizeof(tail), ",\"has_password\":%s,\"state\":%u,\"clock_valid\":%s}",
+             wifi->password[0] ? "true" : "false", status, clock_valid ? "true" : "false");
+    output(&w, tail); return flush(&w);
+}
+bool kp_home_encode(const kp_home_config_t *h, kp_json_write_t write, void *user) {
+    if (!write || !kp_home_valid(h, true)) return false;
+    writer_t w = {.write = write, .user = user}; char tail[100];
+    output(&w, "{\"version\":1,\"name\":"); quoted(&w, h->name);
+    output(&w, ",\"badge\":"); quoted(&w, h->badge);
+    snprintf(tail, sizeof(tail), ",\"avatar\":%u,\"timezone_minutes\":%d,\"hour12\":%u}", h->avatar, h->timezone_minutes, h->hour12);
+    output(&w, tail); return flush(&w);
 }
 bool kp_config_encode(const kp_config_t *c, kp_json_write_t write, void *user) {
     if (!write || !kp_config_valid(c)) return false;

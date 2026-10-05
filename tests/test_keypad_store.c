@@ -3,6 +3,8 @@
 #include <string.h>
 #include "../main/keyboard/keypad_store.c"
 static uint8_t persisted[KP_CONFIG_BYTES],staged[KP_CONFIG_BYTES];static size_t persisted_size,staged_size;
+static kp_wifi_config_t stored_wifi, staged_wifi; static size_t wifi_size, staged_wifi_size;
+static kp_home_config_t stored_home, staged_home; static size_t home_size, staged_home_size;
 static kp_legacy_config_t legacy;
 static kp_v2_config_t v2;static size_t v2_size;
 static kp_v3_config_t v3;static size_t v3_size;
@@ -11,17 +13,19 @@ static int locked,opened,commits;
 SemaphoreHandle_t xSemaphoreCreateMutex(void){return &locked;}
 int xSemaphoreTake(SemaphoreHandle_t h,int t){(void)t;assert(h==&locked&&!locked);locked=1;return 1;}
 void xSemaphoreGive(SemaphoreHandle_t h){assert(h==&locked&&locked);locked=0;}
-esp_err_t nvs_open(const char *ns,int mode,nvs_handle_t *h){assert(!strcmp(ns,"passport_keys")&&mode==NVS_READWRITE&&!opened);if(fail_open)return ESP_FAIL;opened=1;*h=1;return ESP_OK;}
+esp_err_t nvs_open(const char *ns,int mode,nvs_handle_t *h){assert(!strcmp(ns,"passport_keys")&&mode==NVS_READWRITE&&!opened);if(fail_open)return ESP_FAIL;opened=1;staged_size=staged_home_size=staged_wifi_size=0;*h=1;return ESP_OK;}
 esp_err_t nvs_get_blob(nvs_handle_t h,const char *key,void *out,size_t *size){
     assert(h==1&&opened);const void *data;size_t n;
-    if(!strcmp(key,"config_v1")){if(!legacy_valid)return ESP_FAIL;data=&legacy;n=sizeof(legacy);}
+    if(!strcmp(key,"home_v1")){if(!home_size)return ESP_FAIL;data=&stored_home;n=home_size;}
+    else if(!strcmp(key,"wifi_v1")){if(!wifi_size)return ESP_FAIL;data=&stored_wifi;n=wifi_size;}
+    else if(!strcmp(key,"config_v1")){if(!legacy_valid)return ESP_FAIL;data=&legacy;n=sizeof(legacy);}
     else if(!strcmp(key,"config_v2")){if(!v2_size)return ESP_FAIL;data=&v2;n=v2_size;}
     else if(!strcmp(key,"config_v3")){if(!v3_size)return ESP_FAIL;data=&v3;n=v3_size;}
     else {assert(!strcmp(key,"config_v4"));if(!persisted_size)return ESP_FAIL;data=persisted;n=persisted_size;}
     if(!out){*size=n;return ESP_OK;}if(*size<n)return ESP_FAIL;memcpy(out,data,n);*size=n;return ESP_OK;
 }
-esp_err_t nvs_set_blob(nvs_handle_t h,const char *key,const void *data,size_t n){assert(h==1&&opened&&!strcmp(key,"config_v4")&&n<=sizeof(staged));if(fail_set)return ESP_FAIL;memcpy(staged,data,n);staged_size=n;return ESP_OK;}
-esp_err_t nvs_commit(nvs_handle_t h){assert(h==1&&opened);if(fail_commit)return ESP_FAIL;memcpy(persisted,staged,staged_size);persisted_size=staged_size;++commits;return ESP_OK;}
+esp_err_t nvs_set_blob(nvs_handle_t h,const char *key,const void *data,size_t n){assert(h==1&&opened&&n<=sizeof(staged));if(fail_set)return ESP_FAIL;if(!strcmp(key,"home_v1")){assert(n==sizeof(staged_home));memcpy(&staged_home,data,n);staged_home_size=n;}else if(!strcmp(key,"wifi_v1")){assert(n==sizeof(staged_wifi));memcpy(&staged_wifi,data,n);staged_wifi_size=n;}else{assert(!strcmp(key,"config_v4"));memcpy(staged,data,n);staged_size=n;}return ESP_OK;}
+esp_err_t nvs_commit(nvs_handle_t h){assert(h==1&&opened);if(fail_commit)return ESP_FAIL;if(staged_size){memcpy(persisted,staged,staged_size);persisted_size=staged_size;}if(staged_home_size){stored_home=staged_home;home_size=staged_home_size;}if(staged_wifi_size){stored_wifi=staged_wifi;wifi_size=staged_wifi_size;}++commits;return ESP_OK;}
 void nvs_close(nvs_handle_t h){assert(h==1&&opened);opened=0;}
 static bool read_committed(const kp_config_t *config, void *user){
     assert(locked && config == &s_config);
@@ -156,5 +160,42 @@ int main(void){
     // Shared legacy offsets stay shared: migration does not duplicate live data.
     v3.profiles[1].bindings[0]=v3.profiles[0].bindings[0];assert(kp_migrate_v3(&v3,sizeof(v3),&actual));
     assert(actual.profiles[1].bindings[0].steps==actual.profiles[0].bindings[0].steps&&kp_config_valid(&actual));
+    // Home metadata cannot consume or reset even a full shortcut record.
+    kp_home_config_t home, saved_home;kp_store_home_get(&home);kp_home_defaults(&saved_home);
+    assert(!memcmp(&home,&saved_home,sizeof(home)));
+    strcpy(home.name,"星翼");strcpy(home.badge,"ID / 001");home.avatar=3;home.hour12=1;home.timezone_minutes=-345;
+    assert(kp_store_home_save(&home)==ESP_OK);kp_store_get(&original);
+    assert(kp_store_time_sync(1791167040,1000)&&kp_store_time_read(3000)==1791167042);
+    assert(kp_store_init()==ESP_OK);kp_store_home_get(&saved_home);kp_store_get(&actual);
+    assert(!memcmp(&home,&saved_home,sizeof(home))&&!memcmp(&original,&actual,sizeof(actual)));
+    assert(!kp_store_time_read(1000)); // Reset starts untrusted, never an old saved wall time.
+    for(unsigned fault=0;fault<3;fault++){
+        kp_home_config_t next=home;strcpy(next.name,"Changed");
+        fail_open=fault==0;fail_set=fault==1;fail_commit=fault==2;
+        assert(kp_store_home_save(&next)==ESP_FAIL);kp_store_home_get(&saved_home);
+        assert(!memcmp(&home,&saved_home,sizeof(home)));
+    }
+    fail_open=fail_set=fail_commit=false;
+    home_size=sizeof(home)-1;assert(kp_store_init()==ESP_OK);kp_store_home_get(&home);kp_home_defaults(&saved_home);
+    assert(!memcmp(&home,&saved_home,sizeof(home)));kp_store_get(&actual);assert(!memcmp(&original,&actual,sizeof(actual)));
+    // Network credentials survive a cold boot without affecting home/macros.
+    kp_wifi_config_t wifi, next_wifi;kp_store_wifi_get(&wifi);assert(!wifi.ssid[0]);
+    strcpy(wifi.ssid,"test-network");strcpy(wifi.password,"test-pass");
+    assert(kp_store_wifi_save(&wifi)==ESP_OK);assert(kp_store_init()==ESP_OK);kp_store_wifi_get(&next_wifi);
+    assert(!memcmp(&wifi,&next_wifi,sizeof(wifi)));kp_store_get(&actual);assert(!memcmp(&original,&actual,sizeof(actual)));
+    for(unsigned fault=0;fault<3;fault++){
+        kp_wifi_config_t next=wifi;strcpy(next.ssid,"replacement");
+        fail_open=fault==0;fail_set=fault==1;fail_commit=fault==2;
+        assert(kp_store_wifi_save(&next)==ESP_FAIL);kp_store_wifi_get(&next_wifi);
+        assert(!memcmp(&wifi,&next_wifi,sizeof(wifi)));
+    }
+    fail_open=fail_set=fail_commit=false;
+    assert(kp_store_init()==ESP_OK);kp_store_wifi_get(&next_wifi);assert(!memcmp(&wifi,&next_wifi,sizeof(wifi)));
+    kp_wifi_defaults(&wifi);assert(kp_store_wifi_save(&wifi)==ESP_OK);assert(kp_store_init()==ESP_OK);
+    kp_store_wifi_get(&next_wifi);assert(!next_wifi.ssid[0]&&!next_wifi.password[0]);
+    stored_wifi.version=99;assert(kp_store_init()==ESP_OK);kp_store_wifi_get(&next_wifi);assert(next_wifi.version==1&&!next_wifi.ssid[0]);
+    stored_wifi.version=1;wifi_size--;assert(kp_store_init()==ESP_OK);kp_store_wifi_get(&next_wifi);assert(!next_wifi.ssid[0]);
+    puts("Wi-Fi NVS isolation, cold boot, save failures, clearing and corrupt records: PASS");
+    puts("Home NVS defaults, restart, isolated saves, failed commits and clock invalidation: PASS");
     puts("Keypad NVS v1/v2/v3/v4 migration, profile persistence and failure recovery: PASS");
 }

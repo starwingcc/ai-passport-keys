@@ -107,3 +107,21 @@ if(process.env.KP_CONFIG_TEST){
   assert.notEqual(spawnSync(process.env.KP_CONFIG_TEST,['--stdin'],{input:JSON.stringify(over),encoding:'utf8'}).status,0);
 }
 console.log('Versioned JSON import/export, legacy slots, atomic failures, 6 KiB boundary and C/browser round trips: PASS');
+
+const h=K.homeDefaults();assert(K.validateHome(h));assert.equal(h.timezone_minutes,480);
+for(const avatar of [0,1,2,3])assert(K.validateHome({...h,avatar,name:'星翼',badge:''}));
+for(const patch of [{name:''},{name:'龘'},{name:'😀'},{badge:'a\nb'},{avatar:4},{avatar:'0'},{timezone_minutes:-735},{timezone_minutes:841},{timezone_minutes:1},{hour12:2},{hour12:true}])assert.throws(()=>K.validateHome({...h,...patch}));
+assert(K.validateHome({...h,name:'龘'},true));
+assert.deepEqual(K.timePayload(1791167040999),{epoch:1791167040});
+for(const v of [NaN,Infinity,-1,0,4102444800000])assert.throws(()=>K.timePayload(v));
+console.log('Browser identity validation, avatar presets, fixed UTC offsets and sync payload: PASS');
+
+assert.deepEqual(K.wifiPayload('家庭 WiFi','test-pass'),{ssid:'家庭 WiFi',password:'test-pass',keep_password:false});
+assert(K.wifiPayload('A'.repeat(32),'p'.repeat(63)));assert(K.wifiPayload('test-network','',true));
+assert.deepEqual(K.wifiPayload('',''),{ssid:'',password:'',keep_password:false});
+for(const args of [['中'.repeat(11),'test-pass'],['A'.repeat(33),'test-pass'],['test','short'],['test','密碼密碼'],['test','p'.repeat(64)],['','test-pass'],['','',true],['test','test-pass',true],['a\n',''],['\ud800','']])assert.throws(()=>K.wifiPayload(...args));
+console.log('Browser Wi-Fi UTF-8 byte bounds, password rules, retention and clearing: PASS');
+
+for(const state of [7,8,9,12])assert(!K.wifiJobMessage({state}).includes('密码错误'));
+assert(K.wifiJobMessage({state:6}).includes('连接成功'));assert(K.wifiJobMessage({state:10}).includes('认证通过'));
+console.log('Wi-Fi result messages distinguish authentication, discovery, timeout and time-service failure: PASS');

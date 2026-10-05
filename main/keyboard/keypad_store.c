@@ -8,6 +8,9 @@
 
 static SemaphoreHandle_t s_lock;
 static kp_config_t s_config;
+static kp_home_config_t s_home;
+static kp_wifi_config_t s_wifi;
+static kp_clock_t s_clock;
 static esp_err_t persist(nvs_handle_t nvs, const kp_config_t *c) {
     esp_err_t rc = nvs_set_blob(nvs, "config_v4", c, kp_config_size(c));
     return rc == ESP_OK ? nvs_commit(nvs) : rc;
@@ -16,9 +19,15 @@ esp_err_t kp_store_init(void) {
     s_lock = xSemaphoreCreateMutex();
     if (!s_lock) return ESP_ERR_NO_MEM;
     kp_defaults(&s_config);
+    kp_home_defaults(&s_home); s_clock = (kp_clock_t){0};
+    kp_wifi_defaults(&s_wifi);
     nvs_handle_t nvs;
     esp_err_t rc = nvs_open("passport_keys", NVS_READWRITE, &nvs);
     if (rc != ESP_OK) return rc;
+    kp_home_config_t home = {0}; size_t home_size = sizeof(home);
+    if (nvs_get_blob(nvs, "home_v1", &home, &home_size) == ESP_OK && home_size == sizeof(home) && kp_home_valid(&home, true)) s_home = home;
+    kp_wifi_config_t wifi = {0}; size_t wifi_size = sizeof(wifi);
+    if (nvs_get_blob(nvs, "wifi_v1", &wifi, &wifi_size) == ESP_OK && wifi_size == sizeof(wifi) && kp_wifi_valid(&wifi)) s_wifi = wifi;
     size_t size = 0;
     rc = nvs_get_blob(nvs, "config_v4", NULL, &size);
     kp_config_t *saved = NULL;
@@ -87,4 +96,46 @@ esp_err_t kp_store_save(const kp_config_t *config) {
     if (rc == ESP_OK) { rc = persist(nvs, config); nvs_close(nvs); }
     if (rc == ESP_OK) s_config = *config;
     xSemaphoreGive(s_lock); return rc;
+}
+void kp_store_home_get(kp_home_config_t *out) {
+    xSemaphoreTake(s_lock, portMAX_DELAY); *out = s_home; xSemaphoreGive(s_lock);
+}
+esp_err_t kp_store_home_save(const kp_home_config_t *home) {
+    if (!kp_home_valid(home, false)) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    nvs_handle_t nvs;
+    esp_err_t rc = nvs_open("passport_keys", NVS_READWRITE, &nvs);
+    if (rc == ESP_OK) {
+        rc = nvs_set_blob(nvs, "home_v1", home, sizeof(*home));
+        if (rc == ESP_OK) rc = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    if (rc == ESP_OK) s_home = *home;
+    xSemaphoreGive(s_lock); return rc;
+}
+void kp_store_wifi_get(kp_wifi_config_t *out) {
+    xSemaphoreTake(s_lock, portMAX_DELAY); *out = s_wifi; xSemaphoreGive(s_lock);
+}
+esp_err_t kp_store_wifi_save(const kp_wifi_config_t *wifi) {
+    if (!kp_wifi_valid(wifi)) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    nvs_handle_t nvs;
+    esp_err_t rc = nvs_open("passport_keys", NVS_READWRITE, &nvs);
+    if (rc == ESP_OK) {
+        rc = nvs_set_blob(nvs, "wifi_v1", wifi, sizeof(*wifi));
+        if (rc == ESP_OK) rc = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    if (rc == ESP_OK) s_wifi = *wifi;
+    xSemaphoreGive(s_lock); return rc;
+}
+bool kp_store_time_sync(uint64_t epoch, uint64_t now) {
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool result = kp_clock_sync(&s_clock, epoch, now);
+    xSemaphoreGive(s_lock); return result;
+}
+uint64_t kp_store_time_read(uint64_t now) {
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    uint64_t result = kp_clock_read(&s_clock, now);
+    xSemaphoreGive(s_lock); return result;
 }
