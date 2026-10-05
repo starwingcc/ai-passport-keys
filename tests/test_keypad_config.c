@@ -10,23 +10,31 @@ static bool decode(cJSON *json,kp_config_t *out){char *s=cJSON_PrintUnformatted(
 typedef struct {const char *text;size_t pos;} reader_t;
 static int one_byte(void *user,char *out,size_t max){(void)max;reader_t *r=user;if(!r->text[r->pos])return 0;*out=r->text[r->pos++];return 1;}
 int main(int argc,char **argv){
+    if(argc==2&&!strcmp(argv[1],"--stdin")){
+        size_t n=fread(encoded,1,sizeof(encoded),stdin);if(n>KP_JSON_BYTES)return 1;encoded[n]=0;
+        kp_config_t d;if(!kp_config_decode_string(encoded,&d))return 1;
+        size=0;assert(kp_config_encode(&d,write_json,NULL));printf("{\"bytes\":%zu,\"config\":%s}\n",kp_config_size(&d),encoded);return 0;
+    }
     if(argc==2&&!strcmp(argv[1],"--defaults")){kp_config_t d;kp_defaults(&d);assert(kp_config_encode(&d,write_json,NULL));printf("{\"bytes\":%zu,\"config\":%s}\n",kp_config_size(&d),encoded);return 0;}
+    // Lock the packed v4 word layout independently of migration fixtures.
+    kp_binding_t descriptor={.title=5735,.steps=2868,.count=64};uint32_t word;
+    memcpy(&word,&descriptor,sizeof(word));assert(word==(5735U|(2868U<<13)|(64U<<25)));
     kp_config_t c,decoded;kp_defaults(&c);assert(kp_config_encode(&c,write_json,NULL));
     assert(kp_config_decode_string(encoded,&decoded));
-    assert(decoded.profile_count==1&&decoded.active_profile==0&&kp_binding(&decoded,6)->count==1);
+    assert(decoded.profile_count==1&&decoded.active_profile==0&&kp_binding(&decoded,8)->count==1);
     reader_t reader={encoded,0};assert(kp_config_decode(one_byte,&reader,&decoded));
     cJSON *root=cJSON_Parse(encoded);assert(root);
     cJSON *profiles=cJSON_GetObjectItem(root,"profiles"),*profile=cJSON_GetArrayItem(profiles,0);
     cJSON *bindings=cJSON_GetObjectItem(profile,"bindings"),*binding=cJSON_GetArrayItem(bindings,0);
     cJSON *steps=cJSON_GetObjectItem(binding,"steps"),*step=cJSON_GetArrayItem(steps,0);
-    cJSON_AddItemToArray(bindings,cJSON_Duplicate(binding,true));assert(!decode(root,&decoded));cJSON_DeleteItemFromArray(bindings,8);
+    cJSON_AddItemToArray(bindings,cJSON_Duplicate(binding,true));assert(!decode(root,&decoded));cJSON_DeleteItemFromArray(bindings,11);
     cJSON_SetNumberValue(cJSON_GetObjectItem(step,"modifiers"),256);assert(!decode(root,&decoded));
     cJSON_SetNumberValue(cJSON_GetObjectItem(step,"modifiers"),1.5);assert(!decode(root,&decoded));
     cJSON_SetNumberValue(cJSON_GetObjectItem(step,"modifiers"),0);
     cJSON *keys=cJSON_GetObjectItem(step,"keys");cJSON_AddItemToArray(keys,cJSON_CreateNumber(41));assert(!decode(root,&decoded));cJSON_DeleteItemFromArray(keys,1);
     cJSON_SetNumberValue(cJSON_GetObjectItem(step,"delay_ms"),1);assert(!decode(root,&decoded));cJSON_SetNumberValue(cJSON_GetObjectItem(step,"delay_ms"),0);
     cJSON_AddNumberToObject(step,"extra",1);assert(!decode(root,&decoded));cJSON_DeleteItemFromObject(step,"extra");
-    cJSON_AddNumberToObject(root,"version",3);assert(!decode(root,&decoded));cJSON_DeleteItemFromObject(root,"version");cJSON_DeleteItemFromObject(root,"version");cJSON_AddNumberToObject(root,"version",3);
+    cJSON_AddNumberToObject(root,"version",4);assert(!decode(root,&decoded));cJSON_DeleteItemFromObject(root,"version");cJSON_DeleteItemFromObject(root,"version");cJSON_AddNumberToObject(root,"version",4);
     cJSON_SetNumberValue(cJSON_GetObjectItem(root,"active_profile"),1);assert(!decode(root,&decoded));cJSON_SetNumberValue(cJSON_GetObjectItem(root,"active_profile"),0);
     cJSON_SetValuestring(cJSON_GetObjectItem(binding,"title"),"😀");assert(!decode(root,&decoded));
     cJSON_SetValuestring(cJSON_GetObjectItem(binding,"title"),"12345678901234567");assert(!decode(root,&decoded));
@@ -51,8 +59,8 @@ int main(int argc,char **argv){
     assert(!kp_profile_add(&c,"情景0"));
     // Exactly 6 KiB persists; one more string cannot replace a binding.
     kp_config_empty(&c);assert(kp_profile_add(&c,"A"));
-    for(unsigned i=0;i<7;i++)assert(kp_binding_set(&c,0,i,i?"":"1234567",all,64));
-    all[28].delay_ms=0;assert(kp_binding_set(&c,0,7,"",all,29));
+    for(unsigned i=0;i<7;i++)assert(kp_binding_set(&c,0,i,i?"":"12345678901",all,64));
+    all[29].delay_ms=0;assert(kp_binding_set(&c,0,7,"",all,30));
     assert(kp_config_size(&c)==KP_CONFIG_BYTES&&kp_config_valid(&c));before=c.used;
     assert(!kp_binding_set(&c,0,7,"A",NULL,0)&&c.used==before&&kp_config_valid(&c));
     // The streaming parser admits the exact transport limit and rejects one extra byte.

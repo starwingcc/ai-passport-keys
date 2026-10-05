@@ -56,11 +56,13 @@ bool kp_binding_set(kp_config_t *c, unsigned profile, unsigned slot,
         if (!kp_action_valid(&steps[i].action, false) || steps[i].delay_ms > KP_MAX_DELAY_MS ||
             (i + 1 == count && steps[i].delay_ms)) return false;
     uint16_t before = c->used; kp_binding_t b = {0};
-    if (!put_text(c, title, &b.title)) goto fail;
+    uint16_t title_offset;
+    if (!put_text(c, title, &title_offset)) goto fail;
+    b.title = title_offset;
     if (count) {
         unsigned offset = (c->used + 1U) & ~1U;
         if (offset + count * sizeof(*steps) > sizeof(c->data)) goto fail;
-        b.steps = offset; b.count = count;
+        b.steps = offset / 2; b.count = count;
         memcpy(c->data + offset, steps, count * sizeof(*steps)); c->used = offset + count * sizeof(*steps);
     }
     c->profiles[profile].bindings[slot] = b; return true;
@@ -71,8 +73,8 @@ const kp_binding_t *kp_binding(const kp_config_t *c, unsigned slot) {
     return slot < KP_BINDINGS && c->active_profile < c->profile_count ? &c->profiles[c->active_profile].bindings[slot] : NULL;
 }
 bool kp_binding_step(const kp_config_t *c, const kp_binding_t *b, unsigned index, kp_step_t *out) {
-    if (!b || !out || index >= b->count || b->steps + (index + 1) * sizeof(*out) > c->used) return false;
-    memcpy(out, c->data + b->steps + index * sizeof(*out), sizeof(*out)); return true;
+    if (!b || !out || index >= b->count || b->steps * 2U + (index + 1) * sizeof(*out) > c->used) return false;
+    memcpy(out, c->data + b->steps * 2U + index * sizeof(*out), sizeof(*out)); return true;
 }
 static bool stored_text(const kp_config_t *c, unsigned offset, unsigned limit, bool multiline) {
     return offset < c->used && memchr(c->data + offset, 0, c->used - offset) &&
@@ -88,9 +90,9 @@ bool kp_config_valid(const kp_config_t *c) {
             if (!strcmp(kp_text(c, profile->name), kp_text(c, c->profiles[j].name))) return false;
         for (unsigned i = 0; i < KP_BINDINGS; ++i) {
             const kp_binding_t *b = &profile->bindings[i];
-            if (b->count > KP_MAX_STEPS || b->reserved ||
+            if (b->count > KP_MAX_STEPS ||
                 !stored_text(c, b->title, KP_NAME_CHARS, false) ||
-                (!b->count && b->steps) || (b->count && (b->steps & 1))) return false;
+                (!b->count && b->steps) || (b->count && !b->steps)) return false;
             for (unsigned j = 0; j < b->count; ++j) {
                 kp_step_t step;
                 if (!kp_binding_step(c, b, j, &step) || !kp_action_valid(&step.action, false) ||
@@ -102,19 +104,20 @@ bool kp_config_valid(const kp_config_t *c) {
 }
 bool kp_legacy_valid(const kp_legacy_config_t *c) {
     if (!c || c->version != 1) return false;
-    for (unsigned i = 0; i < KP_BINDINGS; ++i) if (!kp_action_valid(&c->bindings[i], true)) return false;
+    for (unsigned i = 0; i < KP_LEGACY_BINDINGS; ++i) if (!kp_action_valid(&c->bindings[i], true)) return false;
     return true;
 }
 bool kp_migrate(const kp_legacy_config_t *old, kp_config_t *c) {
     if (!kp_legacy_valid(old)) return false;
     kp_config_empty(c);
     if (!kp_profile_add(c, "默认")) return false;
-    for (unsigned i = 0; i < KP_BINDINGS; ++i) {
+    for (unsigned i = 0; i < KP_LEGACY_BINDINGS; ++i) {
         kp_step_t step = {.action = old->bindings[i]};
         bool enter = step.action.type == KP_KEYBOARD && !step.action.modifiers && step.action.keys[0] == 0x28;
         for (unsigned j = 1; j < 6; ++j) if (step.action.keys[j]) enter = false;
         const char *title = enter ? "回车" : "";
-        if (!kp_binding_set(c, 0, i, title, &step, step.action.type == KP_NONE ? 0 : 1)) return false;
+        unsigned slot = (i / 3) * 4 + (i % 3 == 2 ? 3 : i % 3);
+        if (!kp_binding_set(c, 0, slot, title, &step, step.action.type == KP_NONE ? 0 : 1)) return false;
     }
     return true;
 }
@@ -147,7 +150,7 @@ static void append(char *out, size_t size, const char *word) {
 void kp_action_label(const kp_action_t *a, char *out, size_t size) {
     if (!size) return;
     out[0] = 0;
-    if (a->type == KP_NONE) { snprintf(out, size, "关闭"); return; }
+    if (a->type == KP_NONE) { snprintf(out, size, "无"); return; }
     if (a->type == KP_MEDIA) {
         const char *labels[] = {"音量加", "音量减", "静音", "播放暂停", "下一首", "上一首"};
         for (unsigned i = 0; i < 6; ++i) if (media[i] == a->consumer) snprintf(out, size, "%s", labels[i]);
@@ -182,7 +185,7 @@ void kp_action_label(const kp_action_t *a, char *out, size_t size) {
 void kp_binding_label(const kp_config_t *c, const kp_binding_t *b, char *out, size_t size) {
     if (!size) return;
     out[0] = 0;
-    if (!b || !b->count) { snprintf(out, size, "关闭"); return; }
+    if (!b || !b->count) { snprintf(out, size, "无"); return; }
     for (unsigned i = 0; i < b->count; ++i) {
         kp_step_t step; char action[192];
         if (!kp_binding_step(c, b, i, &step)) return;
@@ -231,7 +234,7 @@ void kp_set_busy(kp_model_t *m, bool busy) {
     if (!busy) return;
     for (unsigned i = 0; i < 3; ++i) {
         m->key[i].pending = false;
-        if (m->key[i].down && i != m->triggered_slot / 3) m->key[i].ignored = true;
+        if (m->key[i].down && i != m->triggered_slot / 4) m->key[i].ignored = true;
     }
 }
 void kp_init(kp_model_t *m, const kp_config_t *c, kp_emit_t cb, void *u) {
@@ -253,10 +256,10 @@ static void back(kp_model_t *m) {
     case KP_MENU: kp_cancel(m); break;
     }
 }
-static void click(kp_model_t *m, unsigned key, bool doubled) {
+static void click(kp_model_t *m, unsigned key, unsigned clicks) {
     if (m->page == KP_CONSOLE) {
         if (m->executing) return;
-        m->triggered_slot = key * 3 + (doubled ? 1 : 0);
+        m->triggered_slot = key * 4 + clicks - 1;
         kp_step_t step;
         if (kp_binding_step(&m->config, kp_binding(&m->config, m->triggered_slot), 0, &step)) emit(m, KP_TAP, &step.action);
         return;
@@ -290,10 +293,10 @@ static bool bound(const kp_model_t *m, unsigned slot) {
 }
 static void hold(kp_model_t *m, unsigned key) {
     kp_key_t *k = &m->key[key];
-    k->long_sent = true; k->pending = k->doubled = false;
+    k->long_sent = true; k->pending = false; k->clicks = 0;
     if (key == 2) { back(m); return; }
     if (m->page == KP_CONSOLE && !m->executing && !k->ignored) {
-        m->triggered_slot = key * 3 + 2;
+        m->triggered_slot = key * 4 + 3;
         kp_step_t step;
         if (kp_binding_step(&m->config, kp_binding(&m->config, m->triggered_slot), 0, &step))
             emit(m, KP_HOLD, &step.action);
@@ -310,8 +313,9 @@ void kp_tick(kp_model_t *m, uint32_t now) {
             if (i == 2) return;
         }
         if (k->pending && !k->down && (uint32_t)(now - k->released_at) >= KP_CLICK_MS) {
-            k->pending = false;
-            if (!k->ignored) click(m, i, false);
+            unsigned clicks = k->clicks;
+            k->pending = false; k->clicks = 0;
+            if (!k->ignored) click(m, i, clicks);
         }
     }
 }
@@ -325,21 +329,27 @@ void kp_input(kp_model_t *m, unsigned key, bool down, uint32_t now) {
     if (was_down == down) return;
     kp_key_t *k = &m->key[key];
     if (down) {
-        k->doubled = k->pending;
+        if (!k->pending) k->clicks = 0;
         k->pending = false; k->down = true; k->long_sent = false; k->pressed_at = now;
         k->ignored = m->page == KP_CONSOLE && m->executing;
         if (m->page == KP_CONSOLE && key < 2 && !k->ignored &&
-            !bound(m, key * 3) && !bound(m, key * 3 + 1) && bound(m, key * 3 + 2)) hold(m, key);
+            !bound(m, key * 4) && !bound(m, key * 4 + 1) &&
+            !bound(m, key * 4 + 2) && bound(m, key * 4 + 3)) hold(m, key);
     } else {
         k->down = false;
         if (k->ignored) { memset(k, 0, sizeof(*k)); return; }
         if (k->long_sent) {
-            if (m->triggered_slot == key * 3 + 2) emit(m, KP_RELEASE, NULL);
+            if (m->triggered_slot == key * 4 + 3) emit(m, KP_RELEASE, NULL);
             k->long_sent = false;
         }
-        else if (m->page != KP_CONSOLE || k->doubled || !bound(m, key * 3 + 1)) {
-            bool doubled = k->doubled; k->doubled = false;
-            click(m, key, m->page == KP_CONSOLE && doubled);
-        } else { k->pending = true; k->released_at = now; }
+        else {
+            ++k->clicks;
+            unsigned limit = m->page != KP_CONSOLE ? 1 :
+                bound(m, key * 4 + 2) ? 3 : bound(m, key * 4 + 1) ? 2 : 1;
+            if (k->clicks >= limit) {
+                unsigned clicks = k->clicks; k->clicks = 0;
+                click(m, key, clicks);
+            } else { k->pending = true; k->released_at = now; }
+        }
     }
 }

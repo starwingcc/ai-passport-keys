@@ -27,6 +27,34 @@ static void menu_layout(unsigned expected){
     }
     assert(rows==expected&&passport_font_20_menu.line_height<=32);
 }
+static void console_layout(const char *state){
+    lv_obj_t *screen=lv_screen_active();bool found=false,footer=false;unsigned cards=0;
+    for(unsigned i=0;i<lv_obj_get_child_count(screen);i++){
+        lv_obj_t *o=lv_obj_get_child(screen,i);if(lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN))continue;
+        if(lv_obj_check_type(o,&lv_label_class)&&!strcmp(lv_label_get_text(o),state)){
+            assert(lv_obj_get_x(o)==18&&lv_obj_get_y(o)==20&&lv_obj_get_width(o)==151);
+            assert(lv_obj_get_style_text_font(o,LV_PART_MAIN)==&passport_font_16);
+            assert(lv_color_eq(lv_obj_get_style_text_color(o,LV_PART_MAIN),lv_color_hex(0xd8a466)));found=true;
+        }
+        if(lv_obj_check_type(o,&lv_label_class)&&!strcmp(lv_label_get_text(o),"长按 OK 返回")){
+            assert(lv_obj_get_y(o)==296&&lv_obj_get_style_text_font(o,LV_PART_MAIN)==&passport_font_16);footer=true;
+        }
+        if(lv_obj_get_width(o)==212&&lv_obj_get_height(o)==80){
+            assert(lv_obj_get_x(o)==14&&lv_obj_get_y(o)==46+(int)cards*84);unsigned marks=0;
+            const char *gestures[]={"单","双","三","长"};
+            for(unsigned n=0;n<lv_obj_get_child_count(o);n++){
+                lv_obj_t *l=lv_obj_get_child(o,n);
+                if(lv_obj_get_x(l)==48){
+                    char prefix[32];snprintf(prefix,sizeof(prefix),"#%s %s#  ",marks==2?"d8a466":"a3b5a5",gestures[marks]);assert(!strncmp(lv_label_get_text(l),prefix,strlen(prefix)));assert(lv_label_get_recolor(l));assert(lv_obj_get_y(l)==(int)marks*20);
+                    assert(lv_obj_get_style_text_font(l,LV_PART_MAIN)==&passport_font_16);
+                    ++marks;
+                }
+            }
+            assert(marks==4);++cards;
+        }
+    }
+    assert(found&&footer&&cards==3);
+}
 static void save(lv_display_t *display,const char *directory,const char *name){
     lv_refr_now(display);
     lv_obj_t *screen=lv_screen_active();
@@ -67,18 +95,34 @@ int main(int argc,char **argv){
     const char *names[]={"console","menu","settings","hotspot","forget","profiles","ap_confirm"};
     const unsigned row_counts[]={0,3,2,0,2,1,2};
     for(unsigned p=0;p<7;p++){m.page=p;kp_ble_status_t state=ble;if(p==KP_HOTSPOT){state.paused=true;state.ready=state.connected=state.secure=state.keyboard_subscribed=false;}kp_ui_update(&m,state,85,"","Passport-Keys-ABCD","12345678");save(d,argv[1],names[p]);menu_layout(row_counts[p]);}
+    m.page=KP_CONSOLE;kp_ui_update(&m,ble,85,"","","");lv_refr_now(d);console_layout("默认 · 已连接");
+    const char *states[]={"等待电脑连接","等待配对完成","键盘服务未就绪","等待电脑启用键盘","蓝牙异常","蓝牙已暂停"};
+    const char *screens[]={"console_waiting","console_pairing","console_service","console_subscription","console_failed","console_paused"};
+    for(unsigned n=0;n<6;n++){
+        kp_ble_status_t b={0};if(n==1)b.connected=b.handles_ready=true;
+        if(n==2)b.connected=true;if(n==3)b.connected=b.handles_ready=b.secure=true;
+        if(n==4)b.failed=true;if(n==5)b.paused=true;
+        kp_ui_update(&m,b,85,"","","");save(d,argv[1],screens[n]);console_layout(states[n]);
+    }
+    kp_ui_update(&m,ble,85,"","Passport-Keys-ABCD","12345678");
     unsigned locks=lock_count;m.key[0].pressed_at++;m.down_mask=1;kp_ui_update(&m,ble,85,"","Passport-Keys-ABCD","12345678");assert(lock_count==locks);
     m.selected=1;kp_ui_update(&m,ble,85,"","Passport-Keys-ABCD","12345678");assert(lock_count==locks+1);
-    m.page=KP_CONSOLE;m.selected=0;m.feedback=(kp_feedback_t){.visible=true,.slot=6,.completed=1,.total=1,.state=KP_FEEDBACK_DONE,.serial=1};
+    m.page=KP_CONSOLE;m.selected=0;m.feedback=(kp_feedback_t){.visible=true,.slot=8,.completed=1,.total=1,.state=KP_FEEDBACK_DONE,.serial=1};
     kp_ui_update(&m,ble,85,"已完成","","");save(d,argv[1],"command_enter");
+    m.feedback=(kp_feedback_t){.visible=true,.slot=10,.completed=1,.total=1,.state=KP_FEEDBACK_DONE,.serial=10};
+    kp_ui_update(&m,ble,85,"已完成","","");save(d,argv[1],"command_triple");
+    bool triple=false;for(unsigned i=0;i<lv_obj_get_child_count(lv_screen_active());i++){
+        lv_obj_t *o=lv_obj_get_child(lv_screen_active(),i);
+        if(lv_obj_check_type(o,&lv_label_class)&&!lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)&&!strcmp(lv_label_get_text(o),"OK · 三击"))triple=true;
+    }assert(triple);
     kp_step_t steps[2]={{{.type=KP_KEYBOARD,.modifiers=8,.keys={4}},100},{{.type=KP_KEYBOARD,.modifiers=8,.keys={6}},0}};
-    assert(kp_binding_set(&m.config,0,3,"全选后复制",steps,2));++m.config_revision;
-    m.feedback=(kp_feedback_t){.visible=true,.slot=3,.completed=1,.total=2,.state=KP_FEEDBACK_RUNNING,.serial=2};
+    assert(kp_binding_set(&m.config,0,4,"全选后复制",steps,2));++m.config_revision;
+    m.feedback=(kp_feedback_t){.visible=true,.slot=4,.completed=1,.total=2,.state=KP_FEEDBACK_RUNNING,.serial=2};
     kp_ui_update(&m,ble,85,"正在执行","","");save(d,argv[1],"command_macro");
-    m.feedback=(kp_feedback_t){.visible=true,.slot=2,.total=1,.holding=true,.state=KP_FEEDBACK_RUNNING,.serial=3};
+    m.feedback=(kp_feedback_t){.visible=true,.slot=3,.total=1,.holding=true,.state=KP_FEEDBACK_RUNNING,.serial=3};
     kp_ui_update(&m,ble,85,"正在执行","","");save(d,argv[1],"command_hold");
-    m.feedback=(kp_feedback_t){.visible=true,.slot=3,.completed=1,.total=2,.state=KP_FEEDBACK_FAILED,.serial=4};kp_ui_update(&m,ble,85,"发送失败","","");save(d,argv[1],"command_failed");
-    assert(kp_binding_set(&m.config,0,3,"全选后复制并打开新的编辑窗口测试",steps,2));++m.config_revision;
+    m.feedback=(kp_feedback_t){.visible=true,.slot=4,.completed=1,.total=2,.state=KP_FEEDBACK_FAILED,.serial=4};kp_ui_update(&m,ble,85,"发送失败","","");save(d,argv[1],"command_failed");
+    assert(kp_binding_set(&m.config,0,4,"全选后复制并打开新的编辑窗口测试",steps,2));++m.config_revision;
     m.feedback.state=KP_FEEDBACK_DONE;m.feedback.completed=2;
     kp_ui_update(&m,ble,85,"已完成","","");save(d,argv[1],"command_long");
     m.feedback.visible=false;m.page=KP_PROFILES;

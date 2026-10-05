@@ -33,7 +33,7 @@ static void integration(void){
     edge(&rt,2,false,1710);edge(&rt,0,false,1720);assert(!rt.model.blocked&&rt.releases==1);
     // Releasing a completed multi-step hold must not release another physical key's current hold.
     kp_step_t steps[2]={{{.type=KP_KEYBOARD,.keys={4}},0},{{.type=KP_KEYBOARD,.keys={5}},0}};
-    assert(kp_binding_set(&c,0,2,"",steps,2));assert(kp_binding_set(&c,0,3,"",NULL,0));assert(kp_binding_set(&c,0,4,"",NULL,0));
+    assert(kp_binding_set(&c,0,3,"",steps,2));assert(kp_binding_set(&c,0,4,"",NULL,0));assert(kp_binding_set(&c,0,5,"",NULL,0));
     memset(&rt,0,sizeof(rt));kp_init(&rt.model,&c,model_effect,&rt);
     edge(&rt,0,true,0);acknowledged(&rt,0,0,4);acknowledged(&rt,40,0,0);acknowledged(&rt,40,0,5);acknowledged(&rt,80,0,0);
     assert(rt.starts==1&&!rt.runner.running);kp_tick(&rt.model,500);assert(rt.starts==1);
@@ -43,8 +43,8 @@ static void integration(void){
 int main(void) {
     kp_config_t c;kp_defaults(&c);kp_runner_t r={0};
     kp_step_t steps[2]={{{.type=KP_KEYBOARD,.modifiers=8,.keys={4}},100},{{.type=KP_KEYBOARD,.keys={0x4c}},0}};
-    assert(kp_binding_set(&c,0,3,"全选后删除",steps,2));
-    const kp_binding_t *b=kp_binding(&c,3);
+    assert(kp_binding_set(&c,0,4,"全选后删除",steps,2));
+    const kp_binding_t *b=kp_binding(&c,4);
     assert(kp_runner_start(&r,&c,b,false));assert(!kp_runner_start(&r,&c,b,false));
     assert(request(&r,0,8,4));assert(!request(&r,10,0,0)); // one in-flight report
     kp_runner_result(&r,true,25); // deadlines use acknowledgement time, not scheduling time
@@ -59,18 +59,18 @@ int main(void) {
     kp_runner_release(&r,10);assert(!request(&r,39,0,0));assert(request(&r,40,0,0));kp_runner_result(&r,true,40);
     assert(request(&r,140,0,0x4c));kp_runner_result(&r,true,140);assert(request(&r,180,0,0));kp_runner_result(&r,true,180);assert(!r.running);
     // Single-step hold releases only on the physical edge.
-    b=kp_binding(&c,2);assert(kp_runner_start(&r,&c,b,true));assert(request(&r,0,4,0));kp_runner_result(&r,true,0);
+    b=kp_binding(&c,3);assert(kp_runner_start(&r,&c,b,true));assert(request(&r,0,4,0));kp_runner_result(&r,true,0);
     assert(!request(&r,10000,0,0));kp_runner_release(&r,10001);assert(request(&r,10001,0,0));kp_runner_result(&r,true,10001);assert(!r.running);
     // Release arriving in the same input batch as the hold becomes a bounded tap.
     assert(kp_runner_start(&r,&c,b,true));kp_runner_release(&r,0);assert(!r.hold);
     assert(request(&r,0,4,0));kp_runner_result(&r,true,0);assert(request(&r,40,0,0));kp_runner_result(&r,true,40);assert(!r.running);
     // Failure and cancellation never replay completed steps.
-    b=kp_binding(&c,3);assert(kp_runner_start(&r,&c,b,false));assert(request(&r,0,8,4));kp_runner_result(&r,false,1);
+    b=kp_binding(&c,4);assert(kp_runner_start(&r,&c,b,false));assert(request(&r,0,8,4));kp_runner_result(&r,false,1);
     assert(r.failed&&!r.running&&!request(&r,100,0,0));
     assert(kp_runner_start(&r,&c,b,false));assert(request(&r,0,8,4));kp_runner_result(&r,true,0);kp_runner_cancel(&r);
     assert(!request(&r,1000,0,0));
     // Wrap around and zero delay.
-    steps[0].delay_ms=0;assert(kp_binding_set(&c,0,3,"",steps,2));b=kp_binding(&c,3);
+    steps[0].delay_ms=0;assert(kp_binding_set(&c,0,4,"",steps,2));b=kp_binding(&c,4);
     assert(kp_runner_start(&r,&c,b,false));assert(request(&r,UINT32_MAX-20,8,4));kp_runner_result(&r,true,UINT32_MAX-20);
     assert(!request(&r,18,0,0));assert(request(&r,19,0,0));kp_runner_result(&r,true,19);
     assert(request(&r,19,0,0x4c));kp_runner_result(&r,true,19);assert(request(&r,59,0,0));kp_runner_result(&r,true,59);

@@ -14,7 +14,7 @@ LV_FONT_DECLARE(passport_font_28);
 #define MENU_TOP 86
 #define MENU_PITCH 42
 #define MENU_HEIGHT 32
-static lv_obj_t *s_title, *s_state, *s_battery, *s_panels[3], *s_keys[3], *s_lines[3][3];
+static lv_obj_t *s_title, *s_state, *s_battery, *s_panels[3], *s_keys[3], *s_lines[3][4];
 static lv_obj_t *s_body, *s_footer, *s_message, *s_profile_rows[4];
 static lv_obj_t *s_command_title, *s_command_keys, *s_command_band, *s_command_status, *s_command_progress, *s_command_separator;
 static lv_obj_t *label(lv_obj_t *parent, int x, int y, int w, const lv_font_t *font) {
@@ -60,18 +60,24 @@ void kp_ui_init(void) {
     lv_obj_set_style_text_color(s_state, lv_color_hex(ACCENT), 0);
     for (int i = 0; i < 3; ++i) {
         s_panels[i] = lv_obj_create(screen);
-        lv_obj_set_pos(s_panels[i], 14, 73 + i * 62);
-        lv_obj_set_size(s_panels[i], 212, 60);
+        lv_obj_set_pos(s_panels[i], 14, 46 + i * 84);
+        lv_obj_set_size(s_panels[i], 212, 80);
         lv_obj_set_style_bg_color(s_panels[i], lv_color_hex(0x25362d), 0);
         lv_obj_set_style_bg_opa(s_panels[i], LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(s_panels[i], 0, 0);
         lv_obj_set_style_radius(s_panels[i], 5, 0);
         lv_obj_set_style_pad_all(s_panels[i], 0, 0);
         lv_obj_remove_flag(s_panels[i], LV_OBJ_FLAG_SCROLLABLE);
-        s_keys[i] = label(s_panels[i], 8, 19, 36, &passport_font_20);
-        for (int j = 0; j < 3; ++j) {
+        s_keys[i] = label(s_panels[i], 8, 29, 36, &passport_font_20);
+        for (int j = 0; j < 4; ++j) {
             s_lines[i][j] = label(s_panels[i], 48, j * 20, 157, &passport_font_16);
             lv_obj_set_height(s_lines[i][j], 20);
+            // Inline color keeps four rows within the existing 24 KiB LVGL pool.
+            lv_label_set_recolor(s_lines[i][j], true);
+            if (j == 2) {
+                lv_obj_set_style_bg_color(s_lines[i][j], lv_color_hex(0x354a3c), 0);
+                lv_obj_set_style_bg_opa(s_lines[i][j], LV_OPA_COVER, 0);
+            }
         }
     }
     s_body = label(screen, 20, 83, 200, &passport_font_16);
@@ -92,8 +98,9 @@ void kp_ui_init(void) {
     lv_obj_remove_flag(s_command_band, LV_OBJ_FLAG_SCROLLABLE);
     s_command_title = label(s_command_band, 18, 0, 204, &passport_font_28);
     lv_obj_set_style_text_color(s_command_title, lv_color_hex(PAPER), 0);
-    s_command_keys = label(screen, 18, 204, 204, &passport_font_16);
-    lv_obj_set_height(s_command_keys, 52);
+    // The body and footer are mutually exclusive with their detail-page roles.
+    // Reuse them to leave room for compressed glyph decoding in the 24 KiB pool.
+    s_command_keys = s_body;
     s_command_separator = lv_obj_create(screen);
     lv_obj_set_pos(s_command_separator, 18, 271); lv_obj_set_size(s_command_separator, 204, 1);
     lv_obj_set_style_bg_color(s_command_separator, lv_color_hex(0x617467), 0);
@@ -101,9 +108,7 @@ void kp_ui_init(void) {
     lv_obj_set_style_border_width(s_command_separator, 0, 0);
     lv_obj_set_style_pad_all(s_command_separator, 0, 0);
     lv_obj_remove_flag(s_command_separator, LV_OBJ_FLAG_SCROLLABLE);
-    s_command_status = label(screen, 18, 288, 146, &passport_font_16);
-    lv_obj_set_height(s_command_status, 24);
-    lv_obj_set_style_text_color(s_command_status, lv_color_hex(ACCENT), 0);
+    s_command_status = s_footer;
     s_command_progress = label(screen, 166, 288, 56, &passport_font_16);
     lv_obj_set_height(s_command_progress, 24);
     lv_obj_set_style_text_align(s_command_progress, LV_TEXT_ALIGN_RIGHT, 0);
@@ -134,32 +139,42 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     snprintf(previous_password, sizeof(previous_password), "%s", password);
     const char *titles[] = {"开始控制", "Passport", "设置", "热点配置", "清除配对", "情景列表", "热点配置"};
     bool command = m->page == KP_CONSOLE && m->feedback.visible;
+    hidden(s_title, false);
     lv_obj_set_style_text_font(s_title, command ? &passport_font_16 : &passport_font_20, 0);
     lv_label_set_text(s_title, command ? kp_text(&m->config, m->config.profiles[m->config.active_profile].name) : titles[m->page]);
     if (battery >= 0) lv_label_set_text_fmt(s_battery, "%d%%", battery);
     else lv_label_set_text(s_battery, "--");
-    lv_label_set_text(s_state, ble.paused ? "蓝牙已暂停" : ble.ready ? "蓝牙已连接" :
+    lv_label_set_text(s_state, ble.paused ? "蓝牙已暂停" : ble.failed ? "蓝牙异常" : ble.ready ? "蓝牙已连接" :
                       ble.connected ? (!ble.handles_ready ? "键盘服务未就绪" :
                           !ble.secure ? "等待配对完成" : "等待电脑启用键盘") :
-                      ble.failed ? "蓝牙异常" : "等待电脑连接");
+                      "等待电脑连接");
     for (int i = 0; i < 3; ++i) hidden(s_panels[i], true);
     hidden(s_body, true);
     for (int i = 0; i < 4; ++i) hidden(s_profile_rows[i], true);
-    hidden(s_message, m->page == KP_CONSOLE); hidden(s_footer, command);
+    hidden(s_message, m->page == KP_CONSOLE); hidden(s_footer, false);
     hidden(s_command_band, !command); hidden(s_command_title, !command); hidden(s_command_keys, !command);
-    hidden(s_command_status, !command); hidden(s_command_progress, !command); hidden(s_command_separator, !command);
+    hidden(s_command_progress, !command); hidden(s_command_separator, !command);
     lv_label_set_text(s_footer, "长按 OK 返回上一层");
+    lv_obj_set_pos(s_footer, 18, 289);
+    lv_obj_set_size(s_footer, 204, 22);
+    lv_obj_set_style_text_color(s_footer, lv_color_hex(0xa3b5a5), 0);
+    lv_obj_set_style_text_align(s_footer, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_long_mode(s_body, command ? LV_LABEL_LONG_DOT : LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_body, command ? 204 : 200);
+    lv_obj_set_style_text_line_space(s_body, command ? 0 : 2, 0);
+    lv_obj_set_height(s_body, command ? 52 : LV_SIZE_CONTENT);
     lv_obj_set_pos(s_state, 18, 46);
+    lv_obj_set_width(s_state, 206);
     lv_obj_set_style_text_color(s_state, lv_color_hex(ACCENT), 0);
     if (command) {
         const kp_binding_t *b = kp_binding(&m->config, m->feedback.slot);
         char title[128], sequence[512];
         kp_binding_title(&m->config, b, title, sizeof(title));
         kp_binding_label(&m->config, b, sequence, sizeof(sequence));
-        const char *keys[] = {"上", "下", "OK"}; const char *gestures[] = {"单击", "双击", "长按"};
+        const char *keys[] = {"上", "下", "OK"}; const char *gestures[] = {"单击", "双击", "三击", "长按"};
         lv_obj_set_pos(s_state, 18, 56);
         lv_obj_set_style_text_color(s_state, lv_color_hex(0xa3b5a5), 0);
-        lv_label_set_text_fmt(s_state, "%s · %s", keys[m->feedback.slot / 3], gestures[m->feedback.slot % 3]);
+        lv_label_set_text_fmt(s_state, "%s · %s", keys[m->feedback.slot / 4], gestures[m->feedback.slot % 4]);
         lv_label_set_text(s_command_title, title);
         // Use actual font metrics to center either one or two lines in the band.
         lv_obj_set_height(s_command_title, LV_SIZE_CONTENT); lv_obj_update_layout(s_command_title);
@@ -167,22 +182,42 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         if (height > limit) height = limit;
         lv_obj_set_height(s_command_title, height); lv_obj_set_y(s_command_title, (94 - height) / 2);
         lv_label_set_text(s_command_keys, sequence);
+        lv_obj_set_pos(s_command_keys, 18, 204);
+        lv_obj_set_pos(s_command_status, 18, 288);
+        lv_obj_set_size(s_command_status, 146, 24);
+        lv_obj_set_style_text_color(s_command_status, lv_color_hex(ACCENT), 0);
         lv_label_set_text(s_command_status, m->feedback.state == KP_FEEDBACK_FAILED ? "失败" :
             m->feedback.state == KP_FEEDBACK_DONE ? "已完成" : m->feedback.holding ? "保持按下" : "执行中");
         if (m->feedback.total > 1)
             lv_label_set_text_fmt(s_command_progress, "%u / %u", m->feedback.completed, m->feedback.total);
         else lv_label_set_text(s_command_progress, "");
     } else if (m->page == KP_CONSOLE) {
-        lv_label_set_text_fmt(s_state, "%s · %s", kp_text(&m->config, m->config.profiles[m->config.active_profile].name),
-                              ble.ready ? "已连接" : "等待连接");
-        const char *keys[] = {"上", "下", "OK"}; const char *gestures[] = {"单", "双", "长"};
+        hidden(s_title, true);
+        lv_obj_set_pos(s_state, 18, 20); lv_obj_set_width(s_state, 151);
+        if (ble.ready && !ble.paused && !ble.failed) lv_label_set_text_fmt(s_state, "%s · 已连接",
+            kp_text(&m->config, m->config.profiles[m->config.active_profile].name));
+        lv_obj_set_pos(s_footer, 18, 296);
+        lv_obj_set_style_text_align(s_footer, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(s_footer, "长按 OK 返回");
+        const char *keys[] = {"上", "下", "OK"}; const char *gestures[] = {"单", "双", "三", "长"};
         for (int i = 0; i < 3; ++i) {
             hidden(s_panels[i], false); lv_label_set_text(s_keys[i], keys[i]);
-            for (int j = 0; j < 3; ++j) {
-                char action[128], line[144];
-                if (i == 2 && j == 2) snprintf(action, sizeof(action), "返回");
-                else kp_binding_title(&m->config, kp_binding(&m->config, i * 3 + j), action, sizeof(action));
-                snprintf(line, sizeof(line), "%s  %s", gestures[j], action); lv_label_set_text(s_lines[i][j], line);
+            for (int j = 0; j < 4; ++j) {
+                char action[128], escaped[256], line[288];
+                const kp_binding_t *b = kp_binding(&m->config, i * 4 + j);
+                bool fixed = i == 2 && j == 3;
+                if (fixed) snprintf(action, sizeof(action), "返回");
+                else kp_binding_title(&m->config, b, action, sizeof(action));
+                // Literal '#' in user titles must not become a color command.
+                unsigned n = 0;
+                for (unsigned k = 0; action[k]; ++k) {
+                    if (action[k] == '#') escaped[n++] = '#';
+                    escaped[n++] = action[k];
+                }
+                escaped[n] = 0;
+                lv_obj_set_style_text_color(s_lines[i][j], lv_color_hex(fixed || (b && b->count) ? INK : 0x829785), 0);
+                snprintf(line, sizeof(line), "#%s %s#  %s", j == 2 ? "d8a466" : "a3b5a5", gestures[j], escaped);
+                lv_label_set_text(s_lines[i][j], line);
             }
         }
     } else {

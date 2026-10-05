@@ -228,7 +228,7 @@ static void quoted(writer_t *w, const char *text) {
 bool kp_config_encode(const kp_config_t *c, kp_json_write_t write, void *user) {
     if (!write || !kp_config_valid(c)) return false;
     writer_t w = {.write = write, .user = user}; char number_text[128];
-    snprintf(number_text, sizeof(number_text), "{\"version\":3,\"active_profile\":%u,\"profiles\":[", c->active_profile); output(&w, number_text);
+    snprintf(number_text, sizeof(number_text), "{\"version\":%u,\"active_profile\":%u,\"profiles\":[", KP_VERSION, c->active_profile); output(&w, number_text);
     for (unsigned p = 0; p < c->profile_count; ++p) {
         if (p) output(&w, ",");
         output(&w, "{\"name\":"); quoted(&w, kp_text(c, c->profiles[p].name)); output(&w, ",\"bindings\":[");

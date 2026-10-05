@@ -12,11 +12,11 @@ the computer's Bluetooth settings, then press the device buttons to send keys.
 
 Default mappings:
 
-| Button | Single click | Double click | Hold |
-| --- | --- | --- | --- |
-| UP | Esc | Disabled | Hold left Option |
-| DOWN | Backspace | Left Command+A | Hold Down arrow |
-| OK | Enter | Disabled | Open menu / return |
+| Button | Single click | Double click | Triple click | Hold |
+| --- | --- | --- | --- | --- |
+| UP | Esc | None | None | Hold left Option |
+| DOWN | Backspace | Left Command+A | None | Hold Down arrow |
+| OK | Enter | None | None | Open menu / return |
 
 In menus, UP/DOWN select, short OK enters or confirms, and hold OK returns.
 Use **Scenario list** to switch the active scenario. To change computers, use
@@ -35,11 +35,25 @@ To configure actions:
 4. Hold OK on the device or choose **Exit hotspot** on the webpage. Bluetooth
    resumes; return to Start control to use the saved actions.
 
-Up to **8 scenarios** and **64 steps per action** are supported. Scenario names
+Each scenario has **11 configurable actions**. Up to **8 scenarios**, **64 steps per action**,
+and **6 KiB total configuration** are supported. Scenario names
 and action titles allow **16 characters**; the webpage shows total capacity.
 OK hold is reserved for navigation and cancellation. A single-step hold stays
 pressed until release; a multi-step hold runs once. New actions are ignored while
-another runs; hold OK to cancel.
+another runs; hold OK to cancel. UP/DOWN hold uses 200 ms; OK hold uses 500 ms.
+Double/triple clicks use a 180 ms window after release. A bound triple click delays
+the double until that window expires and sends the triple on its third release.
+Without a triple binding, existing single/double response timing is retained.
+
+Use **Export current scenario** to share the scenario selected in the editor, or
+**Export all configuration** to back up every scenario and the current selection.
+**Import JSON** validates the version, text, actions and capacity before loading the
+editor. A single scenario is appended; for duplicate names, choose replacement or
+rename. Full import replaces the editor configuration after confirmation. Review
+it and click **Save to Passport** to write the device; importing alone does not save.
+Older eight-slot v2/v3 files gain three empty triple-click actions. Files contain
+configuration only, without hotspot passwords, session tokens or pairing data.
+Stored v1/v2/v3 configurations also migrate automatically during a data-preserving update.
 
 ## Build and flash
 

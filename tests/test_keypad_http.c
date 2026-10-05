@@ -150,14 +150,14 @@ int main(void) {
     httpd_req_t req={.uri="/api/config",.method=HTTP_GET,.host="192.168.4.1"};
     reset_response(); fail_alloc=true; unsigned before=allocations;
     assert(api(&req)==ESP_OK && allocations==before && finished==1 && !reading);
-    assert(strstr(response,"\"version\":3") && strstr(response,"\"session\":") && largest_send<=256);
+    assert(strstr(response,"\"version\":4") && strstr(response,"\"session\":") && largest_send<=256);
     kp_step_t steps[KP_MAX_STEPS];
     for(unsigned i=0;i<KP_MAX_STEPS;++i)
         steps[i]=(kp_step_t){{.type=KP_KEYBOARD,.keys={4}},i+1==KP_MAX_STEPS?0:5000};
     kp_config_empty(&committed); assert(kp_profile_add(&committed,"A"));
     for(unsigned i=0;i<7;++i)
-        assert(kp_binding_set(&committed,0,i,i?"":"1234567",steps,64));
-    steps[28].delay_ms=0; assert(kp_binding_set(&committed,0,7,"",steps,29));
+        assert(kp_binding_set(&committed,0,i,i?"":"12345678901",steps,64));
+    steps[29].delay_ms=0; assert(kp_binding_set(&committed,0,7,"",steps,30));
     assert(kp_config_size(&committed)==KP_CONFIG_BYTES);
     reset_response();
     assert(api(&req)==ESP_OK && allocations==before && finished==1 && largest_send<=256);

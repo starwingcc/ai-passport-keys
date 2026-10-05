@@ -55,7 +55,7 @@ run_static_checks() {
         -o "${test_dir}/test_keypad_http"
     "${test_dir}/test_keypad_http"
     "${test_dir}/test_keypad_config" --defaults > "${test_dir}/keypad-defaults.json"
-    KP_DEFAULTS_JSON="${test_dir}/keypad-defaults.json" "${NODE:-node}" tests/test_keypad_web.js
+    KP_DEFAULTS_JSON="${test_dir}/keypad-defaults.json" KP_CONFIG_TEST="${test_dir}/test_keypad_config" "${NODE:-node}" tests/test_keypad_web.js
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_keypad_fonts.py
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \

@@ -47,13 +47,13 @@ int main(void) {
     quick(&m,2,8100); assert(m.page==KP_SETTINGS && !count[KP_CLEAR_BOND]);
     quick(&m,1,8200); quick(&m,2,8300); quick(&m,1,8400); quick(&m,2,8500);
     assert(count[KP_CLEAR_BOND]==1 && m.page==KP_SETTINGS);
-    // Each physical gesture maps independently; OK hold is never a ninth binding.
+    // Each physical gesture maps independently; OK hold remains outside the configurable slots.
     for(unsigned slot=0;slot<KP_BINDINGS;slot++) {
         kp_defaults(&c); set(&c,slot,(kp_action_t){.type=KP_KEYBOARD,.keys={4+slot}});
-        kp_init(&m,&c,effect,NULL); memset(count,0,sizeof(count)); unsigned key=slot/3,g=slot%3;
+        kp_init(&m,&c,effect,NULL); memset(count,0,sizeof(count)); unsigned key=slot/4,g=slot%4;
         press(&m,key,0);
-        if(g==2){kp_tick(&m,199);assert(!count[KP_HOLD]);kp_tick(&m,200);release(&m,key,600);assert(count[KP_HOLD]==1&&count[KP_RELEASE]==1);}
-        else {release(&m,key,40);if(g==1){press(&m,key,100);release(&m,key,140);}kp_tick(&m,400);assert(count[KP_TAP]==1);}
+        if(g==3){kp_tick(&m,199);assert(!count[KP_HOLD]);kp_tick(&m,200);release(&m,key,600);assert(count[KP_HOLD]==1&&count[KP_RELEASE]==1);}
+        else {release(&m,key,40);if(g>=1){press(&m,key,100);release(&m,key,140);}if(g==2){assert(!count[KP_TAP]);press(&m,key,200);assert(!count[KP_TAP]);release(&m,key,240);}kp_tick(&m,400);assert(count[KP_TAP]==1);}
         assert(last.keys[0]==4+slot && m.triggered_slot==slot);
     }
     // A second press held to 200ms becomes a hold, never a double tap.
@@ -94,6 +94,51 @@ int main(void) {
     // Inputs begun while busy, including hold-only keys, cannot be replayed after completion.
     kp_set_busy(&m,true);quick(&m,0,600);quick(&m,1,650);kp_set_busy(&m,false);kp_tick(&m,1000);assert(!count[KP_TAP]&&count[KP_HOLD]==1);
     press(&m,0,1100);kp_cancel(&m);assert(m.blocked&&count[KP_CANCEL]);release(&m,0,1200);assert(!m.blocked&&count[KP_RELEASE]==1);
+    // Bound triples suppress both single and double until their respective windows expire.
+    for(unsigned key=0;key<3;key++) {
+        kp_defaults(&c);set(&c,key*4+1,(kp_action_t){.type=KP_KEYBOARD,.keys={5}});
+        set(&c,key*4+2,(kp_action_t){.type=KP_KEYBOARD,.keys={6}});
+        kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
+        quick(&m,key,0);kp_tick(&m,199);assert(!count[KP_TAP]);kp_tick(&m,200);assert(count[KP_TAP]==1&&m.triggered_slot==key*4);
+        quick(&m,key,300);quick(&m,key,350);kp_tick(&m,549);assert(count[KP_TAP]==1);
+        kp_tick(&m,550);assert(count[KP_TAP]==2&&m.triggered_slot==key*4+1&&last.keys[0]==5);
+        quick(&m,key,600);quick(&m,key,650);press(&m,key,829);assert(count[KP_TAP]==2);
+        kp_tick(&m,849);assert(count[KP_TAP]==2);release(&m,key,850);assert(count[KP_TAP]==3&&m.triggered_slot==key*4+2&&last.keys[0]==6);
+        kp_tick(&m,1100);assert(count[KP_TAP]==3);
+        // An exact 180ms gap expires the double before a third press.
+        quick(&m,key,1200);quick(&m,key,1250);press(&m,key,1450);assert(count[KP_TAP]==4&&m.triggered_slot==key*4+1);
+        release(&m,key,1470);kp_tick(&m,1650);assert(count[KP_TAP]==5&&m.triggered_slot==key*4);
+        // Duplicate physical edges do not count as extra clicks.
+        press(&m,key,1700);press(&m,key,1710);release(&m,key,1720);release(&m,key,1730);
+        kp_tick(&m,1900);assert(count[KP_TAP]==6&&m.triggered_slot==key*4);
+        // A third hold cancels all short clicks; OK always navigates at 500ms.
+        quick(&m,key,2000);quick(&m,key,2050);press(&m,key,2100);
+        unsigned threshold=key<2?200:500;kp_tick(&m,2100+threshold-1);assert(count[KP_TAP]==6);
+        kp_tick(&m,2100+threshold);release(&m,key,2700);kp_tick(&m,3000);
+        assert(count[KP_TAP]==6);if(key<2)assert(count[KP_HOLD]==1);else assert(m.page==KP_MENU);
+    }
+    // Triple-only shortcuts still defer singles; an unbound double emits nothing.
+    kp_defaults(&c);set(&c,2,(kp_action_t){.type=KP_KEYBOARD,.keys={6}});
+    kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));quick(&m,0,0);quick(&m,0,50);
+    kp_tick(&m,250);assert(!count[KP_TAP]);
+    for(unsigned i=0;i<7;i++)quick(&m,0,300+i*50);
+    assert(count[KP_TAP]==2&&m.triggered_slot==2);kp_tick(&m,800);assert(count[KP_TAP]==3&&m.triggered_slot==0);
+    // Both first and second pending clicks are dropped on disconnect, busy and page change.
+    for(unsigned n=1;n<=2;n++)for(unsigned cancel=0;cancel<3;cancel++) {
+        kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
+        if(cancel==2)press(&m,2,0);
+        for(unsigned i=0;i<n;i++)quick(&m,0,(cancel==2?350:0)+i*50);
+        if(cancel==0)kp_link_changed(&m,100);else if(cancel==1){kp_set_busy(&m,true);kp_set_busy(&m,false);}
+        else {kp_tick(&m,500);release(&m,2,510);assert(m.page==KP_MENU);}
+        kp_tick(&m,1000);assert(!count[KP_TAP]);
+    }
+    // A triple window across UINT32_MAX uses elapsed time, without premature dispatch.
+    kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
+    quick(&m,0,UINT32_MAX-150);quick(&m,0,UINT32_MAX-100);press(&m,0,90);
+    assert(!count[KP_TAP]);release(&m,0,110);assert(count[KP_TAP]==1&&m.triggered_slot==2);
+    // Triple mapping prevents the hold-only press shortcut, even if single/double are empty.
+    assert(kp_binding_set(&c,0,0,"",NULL,0));kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
+    press(&m,0,0);assert(!count[KP_HOLD]);kp_tick(&m,200);assert(count[KP_HOLD]==1);release(&m,0,220);
     // Feedback expires at exactly 500ms, including wrap; menus cannot be timed out.
     kp_init(&m,&c,effect,NULL);m.feedback=(kp_feedback_t){.visible=true,.until=300};
     kp_tick(&m,299);assert(m.feedback.visible);kp_tick(&m,300);assert(!m.feedback.visible);

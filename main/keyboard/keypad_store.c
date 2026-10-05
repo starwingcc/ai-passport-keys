@@ -9,7 +9,7 @@
 static SemaphoreHandle_t s_lock;
 static kp_config_t s_config;
 static esp_err_t persist(nvs_handle_t nvs, const kp_config_t *c) {
-    esp_err_t rc = nvs_set_blob(nvs, "config_v3", c, kp_config_size(c));
+    esp_err_t rc = nvs_set_blob(nvs, "config_v4", c, kp_config_size(c));
     return rc == ESP_OK ? nvs_commit(nvs) : rc;
 }
 esp_err_t kp_store_init(void) {
@@ -20,17 +20,30 @@ esp_err_t kp_store_init(void) {
     esp_err_t rc = nvs_open("passport_keys", NVS_READWRITE, &nvs);
     if (rc != ESP_OK) return rc;
     size_t size = 0;
-    rc = nvs_get_blob(nvs, "config_v3", NULL, &size);
+    rc = nvs_get_blob(nvs, "config_v4", NULL, &size);
     kp_config_t *saved = NULL;
     if (rc == ESP_OK && size >= offsetof(kp_config_t, data) + 1 && size <= KP_CONFIG_BYTES) {
         saved = calloc(1, sizeof(*saved));
         if (!saved) { nvs_close(nvs); return ESP_ERR_NO_MEM; }
-        rc = nvs_get_blob(nvs, "config_v3", saved, &size);
+        rc = nvs_get_blob(nvs, "config_v4", saved, &size);
         if (rc == ESP_OK && kp_config_valid(saved) && size == kp_config_size(saved)) {
             s_config = *saved; free(saved); nvs_close(nvs); return ESP_OK;
         }
     }
     free(saved);
+    size = 0;
+    rc = nvs_get_blob(nvs, "config_v3", NULL, &size);
+    if (rc == ESP_OK && size >= offsetof(kp_v3_config_t, data) + 1 && size <= KP_CONFIG_BYTES) {
+        kp_v3_config_t *old = calloc(1, sizeof(*old));
+        if (!old) { nvs_close(nvs); return ESP_ERR_NO_MEM; }
+        rc = nvs_get_blob(nvs, "config_v3", old, &size);
+        bool migrated = rc == ESP_OK && kp_migrate_v3(old, size, &s_config);
+        free(old);
+        if (migrated) {
+            // Keep legacy keys; retry a failed migration commit on next boot.
+            (void)persist(nvs, &s_config); nvs_close(nvs); return ESP_OK;
+        }
+    }
     size = 0;
     rc = nvs_get_blob(nvs, "config_v2", NULL, &size);
     if (rc == ESP_OK && size >= offsetof(kp_v2_config_t, data) + 1 && size <= KP_CONFIG_BYTES) {
@@ -40,7 +53,7 @@ esp_err_t kp_store_init(void) {
         bool migrated = rc == ESP_OK && kp_migrate_v2(old, size, &s_config);
         free(old);
         if (migrated) {
-            // Preserve config_v2 even if committing v3 fails. Use the migrated
+            // Preserve config_v2 even if committing v4 fails. Use the migrated
             // values in RAM and retry on the next boot, without erasing bonds.
             (void)persist(nvs, &s_config); nvs_close(nvs); return ESP_OK;
         }
