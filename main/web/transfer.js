@@ -22,12 +22,12 @@
   function announce(){const list=[...files.values()].map(x=>({...x.meta,to:x.to}));if(encoder.encode(JSON.stringify(list)).length>2304)throw Error('文件列表过长，请减少文件或缩短文件名');if(online)signal({type:'files',files:list});}
   function update(){if(rendering)return;rendering=true;setTimeout(()=>{rendering=false;render();},100);}
   function render(){
-    $('lamp').classList.toggle('on',online);$('connection').textContent=online?'局域网会话在线':ended?'流转已关闭':'连接已中断';$('reconnect').hidden=online;
+    $('lamp').classList.toggle('on',online);$('connection').textContent=online?'局域网已连接':ended?'流转已关闭':'连接已中断';$('reconnect').hidden=online;
     $('send-text').disabled=!online||!!rtcIssue; $('files').disabled=!online||!!rtcIssue;
     $('online').textContent=`在线 ${peers.size} 台`;
     const target=$('target').value;$('target').replaceChildren(el('option','所有在线设备'));$('target').firstChild.value='all';
     $('peers').replaceChildren();for(const [id,name] of peers){const item=el('span',name,'peer');item.append(el('small',rtcPeers.get(id)===false?'直传不可用':id===self?'本机':'#'+id));$('peers').append(item);if(id!==self){const o=el('option',name+' · #'+id+(rtcPeers.get(id)===false?' · 直传不可用':''));o.value=String(id);$('target').append(o);}}
-    $('target').value=[...$('target').options].some(o=>o.value===target)?target:'all';if(!peers.size)$('peers').append(el('p','等待另一台设备打开此页','empty'));
+    $('target').value=[...$('target').options].some(o=>o.value===target)?target:'all';if(!peers.size)$('peers').append(el('p','等待其他设备打开此页','empty'));
     $('catalog').replaceChildren();
     const addFile=(owner,f,mine,to)=>{
       if(!mine&&to&&to!==self)return;
@@ -38,7 +38,7 @@
     };
     for(const {meta,to} of files.values())addFile(self,meta,true,to);
     for(const [owner,list] of catalogs)for(const f of list)addFile(owner,f,false,f.to);
-    if(!$('catalog').childElementCount)$('catalog').append(el('p','共享文件会出现在这里','empty'));
+    if(!$('catalog').childElementCount)$('catalog').append(el('p','暂无共享文件','empty'));
     $('texts').replaceChildren();for(const t of texts){const row=el('div',undefined,'received-text'),pre=el('pre',t.text),copy=el('button','复制','quiet');
       row.append(el('small',t.name+' · '+t.status),pre);copy.onclick=async()=>{try{if(!navigator.clipboard)throw Error();await navigator.clipboard.writeText(t.text);copy.textContent='已复制';}catch{const selection=getSelection(),range=document.createRange();range.selectNodeContents(pre);selection.removeAllRanges();selection.addRange(range);notice('文字已选中，请使用系统的复制操作。');}};row.append(copy);$('texts').append(row);
     }
@@ -47,7 +47,7 @@
       row.append(head);const progress=el('progress');progress.max=t.file.size||1;progress.value=t.done&&!t.error?t.file.size||1:t.offset;row.append(progress,el('small',`${t.direction} · ${bytes(t.offset)} / ${bytes(t.file.size)} · ${t.status}`));
       if(t.url){const save=el('a','保存文件','primary');save.href=t.url;save.download=t.file.name;save.onclick=()=>{if(!t.done){t.done=true;t.status='已校验，已交给浏览器保存';try{control(t.link,{type:'complete',id:t.id,saved:'download'});}catch{notice('文件已接收，但发送端已离线。');}if(t.link.rx===t)t.link.rx=null;t.chunks=[];update();}};const actions=el('p');actions.append(save);row.append(actions);}
       $('transfers').append(row);
-    }if(!history.length)$('transfers').append(el('p','还没有传输','empty'));
+    }if(!history.length)$('transfers').append(el('p','暂无传输记录','empty'));
   }
   function record(link,id,file,direction){const t={link,id,file,direction,offset:0,status:'正在连接',done:false,last:Date.now(),hash:new P.SHA256(),chunks:[]};history.unshift(t);while(history.length>20){const i=history.findLastIndex(x=>x.done);if(i<0)break;const [old]=history.splice(i,1);if(old.url)URL.revokeObjectURL(old.url);}update();return t;}
   function releaseMemory(t){t.chunks=[];t.reserved=0;}
@@ -148,7 +148,7 @@
     }catch(e){notice(e.message);update();}};
   $('files').onchange=()=>{try{requireRTC();for(const file of $('files').files){if(files.size>=P.MAX_FILES)throw Error('最多共享 8 个文件，请先取消部分共享');const meta={id:uuid(),name:file.name,size:file.size,mime:file.type};if(!P.validFile(meta))throw Error('文件名过长或尺寸超过 8 GB');const to=$('target').value==='all'?0:Number($('target').value);requireRTC(to||undefined);files.set(meta.id,{meta,file,to});try{const list=[...files.values()].map(x=>({...x.meta,to:x.to}));if(encoder.encode(JSON.stringify(list)).length>2304)throw Error('文件列表过长，请减少文件或缩短文件名');}catch(e){files.delete(meta.id);throw e;}}announce();notice('');}catch(e){notice(e.message);try{announce();}catch{}}finally{$('files').value='';update();}};
   $('clear').onclick=()=>{for(let i=history.length-1;i>=0;i--)if(history[i].done){if(history[i].url)URL.revokeObjectURL(history[i].url);history.splice(i,1);}update();};
-  $('save-mode').textContent=globalThis.isSecureContext&&typeof showSaveFilePicker==='function'?'接收时选择保存位置，分块直接写入文件。':`本浏览器分块接收后下载，接收总容量上限 ${bytes(memoryLimit)}。校验完成后请点击保存；网页无法确认系统下载是否落盘。`;
+  $('save-mode').textContent=globalThis.isSecureContext&&typeof showSaveFilePicker==='function'?'接收时选择保存位置。':`接收总容量上限 ${bytes(memoryLimit)}，校验后点击保存。下载结果请在浏览器中确认。`;
   try{$('name').value=localStorage.getItem('passport-transfer-name')||(mobile?'手机':'电脑');}catch{$('name').value=mobile?'手机':'电脑';}
   setInterval(()=>{for(const link of links.values()){const t=link.rx;if(t&&!t.done&&Date.now()-t.last>(t.url?180000:45000))cancelTransfer(t,t.url?'保存等待超时，请重新接收':'接收超时，请重试');}},5000);
   addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&online)ping(ws);});
