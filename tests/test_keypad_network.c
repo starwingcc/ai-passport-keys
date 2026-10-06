@@ -62,9 +62,10 @@ esp_err_t esp_netif_sntp_init(const esp_sntp_config_t *cfg) {
     ++sntp; sync_cb = cfg->sync_cb; return ESP_OK;
 }
 void esp_netif_sntp_deinit(void) { assert(sntp); --sntp; sync_cb = NULL; }
+esp_err_t esp_netif_get_ip_info(esp_netif_t *n,esp_netif_ip_info_t *out){assert(n==&netif);out->ip.addr=0x3201a8c0U;return ESP_OK;}
 static void tick(uint32_t now) { test_now = now; kp_network_tick(now); }
 static void fresh(void) {
-    fault = stop_fault = 0; assert(kp_network_suspend() == ESP_OK);
+    fault = stop_fault = 0; kp_network_keep_online(false); assert(kp_network_suspend() == ESP_OK);
     kp_network_resume(); kp_wifi_defaults(&settings);
     strcpy(settings.ssid, "test-network"); strcpy(settings.password, "test-pass");
     connects = 0; clock_value = (kp_clock_t){0}; utc = 1791167040;
@@ -117,5 +118,17 @@ int main(void) {
         stop_fault = 0; assert(kp_network_suspend() == ESP_OK && !interfaces && !initialized && !running && !handlers && !sntp);
     }
     fresh(); tick(UINT32_MAX - 100); tick(ATTEMPT_MS - 101); assert(kp_network_status() == KP_NET_FAILED);
+    // Transfer leases keep STA alive after SNTP and without internet. IP loss
+    // hides the address immediately, then DHCP recovery restores it.
+    fresh();kp_network_keep_online(true);connected(0);char ip[16];assert(kp_network_ip(ip)&&!strcmp(ip,"192.168.1.50"));
+    tv.tv_sec=utc;sync_cb(&tv);tick(5);assert(running&&interfaces&&!sntp&&kp_network_status()==KP_NET_SYNCED);
+    tick(ATTEMPT_MS+100);assert(running&&kp_network_ip(ip));
+    ip_cb(NULL,IP_EVENT,IP_EVENT_STA_LOST_IP,NULL);assert(!kp_network_ip(ip));
+    ip_event_got_ip_t stale={.esp_netif=(void *)1};ip_cb(NULL,IP_EVENT,IP_EVENT_STA_GOT_IP,&stale);assert(!kp_network_ip(ip));
+    ip_cb(NULL,IP_EVENT,IP_EVENT_STA_GOT_IP,NULL);assert(kp_network_ip(ip));
+    wifi_cb(NULL,WIFI_EVENT,WIFI_EVENT_STA_DISCONNECTED,NULL);assert(!kp_network_ip(ip)&&!ip[0]);
+    tick(ATTEMPT_MS+101);ip_cb(NULL,IP_EVENT,IP_EVENT_STA_GOT_IP,NULL);tick(ATTEMPT_MS+102);assert(running&&sntp&&kp_network_ip(ip));
+    tick(2*ATTEMPT_MS+200);assert(running&&!sntp&&kp_network_ip(ip)); // SNTP timeout cannot stop transfer.
+    kp_network_keep_online(false);assert(kp_network_suspend()==ESP_OK&&!running&&!interfaces);
     puts("Network time: cold boot, valid SNTP, retry/refresh, wrap, AP handoff and fault cleanup: PASS");
 }

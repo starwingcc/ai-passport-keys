@@ -9,6 +9,7 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <time.h>
+#include <stdio.h>
 
 #define ATTEMPT_MS 60000U
 #define RETRY_MS 300000U
@@ -20,13 +21,19 @@ static esp_event_handler_instance_t s_wifi_handler, s_ip_handler;
 static bool s_initialized, s_started, s_sntp, s_suspended, s_scheduled;
 static uint32_t s_attempt_at, s_next_at, s_connect_at;
 static unsigned s_connects;
+static bool s_keep_online, s_had_ip;
 static atomic_bool s_got_ip, s_reconnect, s_synced;
 static atomic_int s_status;
 
 kp_network_status_t kp_network_status(void) { return atomic_load(&s_status); }
 static void event(void *arg, esp_event_base_t base, int32_t id, void *data) {
-    (void)arg; (void)data;
-    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) atomic_store(&s_got_ip, true);
+    (void)arg;
+    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        const ip_event_got_ip_t *ip = data;
+        if (!ip || ip->esp_netif == s_netif) atomic_store(&s_got_ip, true);
+    } else if (base == IP_EVENT && id == IP_EVENT_STA_LOST_IP) {
+        atomic_store(&s_got_ip, false); atomic_store(&s_reconnect, true);
+    }
     else if (base == WIFI_EVENT && (id == WIFI_EVENT_STA_START || id == WIFI_EVENT_STA_DISCONNECTED)) {
         atomic_store(&s_got_ip, false); atomic_store(&s_reconnect, true);
     }
@@ -45,7 +52,7 @@ static esp_err_t stop(void) {
         s_wifi_handler = NULL;
     }
     if (s_ip_handler) {
-        esp_err_t rc = esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_handler);
+        esp_err_t rc = esp_event_handler_instance_unregister(IP_EVENT, ESP_EVENT_ANY_ID, s_ip_handler);
         if (rc != ESP_OK) return rc;
         s_ip_handler = NULL;
     }
@@ -63,6 +70,17 @@ static esp_err_t stop(void) {
     atomic_store(&s_got_ip, false); atomic_store(&s_reconnect, false); atomic_store(&s_synced, false);
     return ESP_OK;
 }
+void kp_network_keep_online(bool keep) {
+    s_keep_online = keep; s_scheduled = false;
+    if (keep && !s_started) atomic_store(&s_status, KP_NET_DISABLED);
+}
+bool kp_network_ip(char out[16]) {
+    out[0] = 0;
+    if (!s_netif || !atomic_load(&s_got_ip)) return false;
+    esp_netif_ip_info_t info;
+    if (esp_netif_get_ip_info(s_netif, &info) != ESP_OK || !info.ip.addr) return false;
+    snprintf(out, 16, IPSTR, IP2STR(&info.ip)); return true;
+}
 esp_err_t kp_network_suspend(void) {
     s_suspended = true;
     esp_err_t rc = stop();
@@ -78,7 +96,7 @@ static esp_err_t start(const kp_wifi_config_t *wifi, uint32_t now) {
     if (rc != ESP_OK) return rc;
     s_initialized = true;
     rc = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, event, NULL, &s_wifi_handler);
-    if (rc == ESP_OK) rc = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, event, NULL, &s_ip_handler);
+    if (rc == ESP_OK) rc = esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID, event, NULL, &s_ip_handler);
     wifi_config_t cfg = {0};
     // A valid SSID can occupy all 32 bytes; do not truncate with snprintf.
     memcpy(cfg.sta.ssid, wifi->ssid, strlen(wifi->ssid));
@@ -89,7 +107,7 @@ static esp_err_t start(const kp_wifi_config_t *wifi, uint32_t now) {
     if (rc == ESP_OK) rc = esp_wifi_set_config(WIFI_IF_STA, &cfg);
     if (rc == ESP_OK) rc = esp_wifi_start();
     if (rc != ESP_OK) return rc;
-    s_started = true; s_attempt_at = now; s_connect_at = now - CONNECT_RETRY_MS; s_connects = 0;
+    s_started = true; s_had_ip = false; s_attempt_at = now; s_connect_at = now - CONNECT_RETRY_MS; s_connects = 0;
     atomic_store(&s_status, KP_NET_CONNECTING);
     ESP_LOGI("keypad_time", "Network time attempt started");
     return ESP_OK;
@@ -97,13 +115,18 @@ static esp_err_t start(const kp_wifi_config_t *wifi, uint32_t now) {
 static void finish(uint32_t now, bool success) {
     atomic_store(&s_status, success ? KP_NET_SYNCED : KP_NET_FAILED);
     s_next_at = now + (success ? REFRESH_MS : RETRY_MS); s_scheduled = true;
+    if (s_keep_online && atomic_load(&s_got_ip)) {
+        if (s_sntp) { esp_netif_sntp_deinit(); s_sntp = false; }
+        return;
+    }
     esp_err_t rc = stop();
+    if (s_keep_online) s_next_at = now + 15000U;
     if (rc != ESP_OK) ESP_LOGW("keypad_time", "Network cleanup pending: %s", esp_err_to_name(rc));
 }
 void kp_network_tick(uint32_t now) {
     if (s_suspended) return;
     kp_network_status_t status = kp_network_status();
-    if (status != KP_NET_CONNECTING && status != KP_NET_SYNCING) {
+    if (status != KP_NET_CONNECTING && status != KP_NET_SYNCING && !(s_keep_online && s_started)) {
         if (stop() != ESP_OK) return;
         if (s_scheduled && (int32_t)(now - s_next_at) < 0) return;
         kp_wifi_config_t wifi; kp_store_wifi_get(&wifi);
@@ -119,8 +142,14 @@ void kp_network_tick(uint32_t now) {
             ESP_LOGI("keypad_time", "Network time synchronized"); finish(now, true); return;
         }
     }
-    if ((uint32_t)(now - s_attempt_at) >= ATTEMPT_MS) { finish(now, false); return; }
+    if (s_keep_online && s_had_ip && !atomic_load(&s_got_ip)) {
+        s_had_ip = false; s_attempt_at = now; s_connects = 0; s_scheduled = false;
+    }
+    if ((!s_keep_online || !atomic_load(&s_got_ip)) && (uint32_t)(now - s_attempt_at) >= ATTEMPT_MS) { finish(now, false); return; }
     if (atomic_load(&s_got_ip)) {
+        s_had_ip = true;
+        if (s_keep_online && s_scheduled && (int32_t)(now - s_next_at) < 0) return;
+        if (s_keep_online && !s_scheduled && (uint32_t)(now - s_attempt_at) >= ATTEMPT_MS) { finish(now, false); return; }
         if (!s_sntp) {
             esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(3,
                 ESP_SNTP_SERVER_LIST("ntp.aliyun.com", "time.cloudflare.com", "pool.ntp.org"));

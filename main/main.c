@@ -4,11 +4,9 @@
 #include "keypad_model.h"
 #include "keypad_ble.h"
 #include "keypad_store.h"
-#include "keypad_web.h"
 #include "keypad_ui.h"
 #include "keypad_runner.h"
-#include "keypad_network.h"
-#include "keypad_wifi_setup_runtime.h"
+#include "keypad_network_service.h"
 #include <stdlib.h>
 #include "esp_event.h"
 #include "esp_heap_caps.h"
@@ -25,11 +23,11 @@
 
 typedef struct { unsigned key; bool down; uint32_t at; } input_t;
 static QueueHandle_t s_queue;
-static atomic_uint s_physical, s_requests;
+static atomic_uint s_physical;
 static atomic_bool s_overflow;
 static kp_model_t s_model;
 static char s_message[96] = "准备连接 Passport Keys";
-static bool s_ap_start, s_ap_stop, s_forget, s_ap_active, s_select_profile;
+static bool s_forget, s_ap_active, s_select_profile;
 static bool s_save_screen, s_save_system;
 static unsigned s_target_profile;
 static kp_runner_t s_runner;
@@ -67,8 +65,10 @@ static void effect(void *user, kp_effect_t event, const kp_action_t *action) {
     case KP_SELECT_PROFILE: s_target_profile = s_model.selected; s_select_profile = true; break;
     case KP_SAVE_SCREEN: s_save_screen = true; break;
     case KP_SAVE_SYSTEM: s_save_system = true; break;
-    case KP_AP_START: s_ap_start = true; break;
-    case KP_AP_STOP: s_ap_stop = true; break;
+    case KP_AP_START: kp_network_service_ap(true); break;
+    case KP_AP_STOP: kp_network_service_ap(false); break;
+    case KP_TRANSFER_START: kp_network_service_transfer(true); break;
+    case KP_TRANSFER_STOP: kp_network_service_transfer(false); break;
     case KP_CLEAR_BOND: s_forget = true; break;
     }
 }
@@ -102,7 +102,6 @@ static void on_key(bsp_btn_t key, bsp_btn_ev_t ev, void *user) {
     input_t input = {.key = key, .down = down, .at = now_ms()};
     if (xQueueSend(s_queue, &input, 0) != pdTRUE) atomic_store(&s_overflow, true);
 }
-static void web_request(bool forget) { atomic_fetch_or(&s_requests, forget ? 2U : 1U); }
 static void sync_physical_input(void) {
     // Drop all queued events on mode/link transitions. Synchronize the physical
     // state as well, including a release that could have been lost on overflow.
@@ -148,6 +147,8 @@ void app_main(void) {
     ESP_ERROR_CHECK(bsp_button_init(on_key, NULL));
     rc = kp_ble_init();
     if (rc != ESP_OK) message("蓝牙启动失败，请重启");
+    ESP_ERROR_CHECK(kp_network_service_start());
+    kp_ap_state_t previous_ap = KP_AP_OFF;
     memory_log("startup");
     uint32_t last_ui = 0, last_battery = 0, generation = 0;
     int battery = -1;
@@ -195,45 +196,25 @@ void app_main(void) {
             }
             resync_input();
         }
-        unsigned request = atomic_exchange(&s_requests, 0);
-        if (request && s_model.page == KP_HOTSPOT) kp_hotspot_exit(&s_model);
-        if (s_ap_stop) {
-            s_ap_stop = false;
-            rc = kp_web_stop();
-            if (rc == ESP_OK) {
+        kp_network_view_t network; kp_network_service_get(&network);
+        s_model.transfer = network.transfer;
+        if (network.ap != previous_ap) {
+            if (network.ap == KP_AP_OFF && previous_ap != KP_AP_OFF) {
                 s_ap_active = false; kp_store_get(&s_model.config); ++s_model.config_revision;
-                kp_store_home_get(&home);
-                kp_ble_pause(false); message("热点已关闭");
-                kp_network_resume();
-                if (request & 2U) { s_model.page = KP_FORGET; s_model.selected = 0; }
-            } else { s_model.page = KP_HOTSPOT; message("关闭失败，长按 OK 重试"); }
-            resync_input(); memory_log("AP stop");
-        }
-        if (s_ap_start) {
-            s_ap_start = false; resync_input();
-            message("正在开启热点");
-            kp_ui_update(&s_model, kp_ble_status(), battery, s_message, "...", "...", &home,
-                         kp_store_time_read((uint64_t)esp_timer_get_time() / 1000));
-            rc = kp_network_suspend();
-            if (rc == ESP_OK) rc = kp_ble_pause(true);
-            if (rc == ESP_OK) rc = kp_web_start(web_request);
-            s_ap_active = rc == ESP_OK;
-            if (!s_ap_active) {
-                if (kp_web_stop() == ESP_OK) { kp_ble_pause(false); kp_network_resume(); }
-                message("热点启动失败，长按返回");
-            }
-            else message("配置完成后长按 OK 返回");
-            resync_input(); memory_log("AP start");
+                kp_store_home_get(&home); message("热点已关闭");
+                if (s_model.page == KP_HOTSPOT) { s_model.page = KP_SETTINGS; s_model.selected = 3; }
+                if (network.forget_requested) { s_model.page = KP_FORGET; s_model.selected = 0; }
+            } else if (network.ap == KP_AP_STARTING) message("正在开启热点");
+            else if (network.ap == KP_AP_ACTIVE) { s_ap_active = true; message("配置完成后长按 OK 返回"); }
+            else if (network.ap == KP_AP_STOPPING) message("正在关闭热点");
+            else if (network.ap == KP_AP_FAILED) { s_model.page = KP_HOTSPOT; message("热点操作失败，长按重试"); }
+            previous_ap = network.ap; resync_input();
         }
         if (s_forget) {
             s_forget = false; resync_input();
             message(kp_ble_forget() == ESP_OK ? "配对已清除，请重新连接" : "清除失败，请重试");
             resync_input();
         }
-        // Slow radio lifecycle runs in this worker, between actions. Callbacks
-        // never block keys or access LVGL. STA releases Wi-Fi before AP startup.
-        if (!s_ap_active && !s_runner.running && !s_model.down_mask) kp_network_tick(now);
-        if (s_ap_active) kp_wifi_setup_poll(now);
         uint8_t level = kp_screen_level(&s_model);
         if (level != backlight) { backlight = level; bsp_display_backlight(level); }
         if (battery_ok && (!last_battery || (uint32_t)(now - last_battery) >= 30000)) {
@@ -242,7 +223,7 @@ void app_main(void) {
         if ((uint32_t)(now - last_ui) >= 100) {
             kp_ble_poll();
             kp_ui_update(&s_model, kp_ble_status(), battery, s_message,
-                         s_ap_active ? kp_web_ssid() : "未开启", s_ap_active ? kp_web_password() : "--", &home,
+                         s_ap_active ? network.ssid : "未开启", s_ap_active ? network.password : "--", &home,
                          kp_store_time_read((uint64_t)esp_timer_get_time() / 1000));
             last_ui = now;
         }

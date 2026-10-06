@@ -14,8 +14,8 @@ static void *web_malloc(size_t size) {
     return fail_alloc ? NULL : malloc(size);
 }
 
-// Exercise the actual embedded files and production handlers. A constrained
-// fake transport rejects writes over 512 bytes, reproducing a large-send limit.
+// Exercise the actual embedded files and production handlers. HTTP response
+// length is independent from the bounded writes performed by the TCP transport.
 #define malloc web_malloc
 #include "../main/keyboard/keypad_web.c"
 #undef malloc
@@ -86,8 +86,12 @@ esp_err_t httpd_resp_send_chunk(httpd_req_t *req, const char *data, ssize_t coun
     collect(NULL, data, count); return ESP_OK;
 }
 esp_err_t httpd_resp_send(httpd_req_t *req, const char *data, ssize_t count) {
+    (void)req;
     if (count < 0) count = strlen(data);
-    return httpd_resp_send_chunk(req, data, count);
+    ++send_calls;
+    if(fail_send_at==send_calls)return ESP_FAIL;
+    if((size_t)count>largest_send)largest_send=(size_t)count;
+    collect(NULL,data,(size_t)count);++finished;return ESP_OK;
 }
 esp_err_t httpd_resp_sendstr(httpd_req_t *req, const char *text) {
     return httpd_resp_send(req, text, -1);
@@ -174,12 +178,11 @@ int main(void) {
     for (unsigned i=0;i<sizeof(files)/sizeof(files[0]);++i) {
         reset_response();
         httpd_req_t req={.uri=files[i].uri};
-        assert(static_file(&req)==ESP_OK && finished==1 && largest_send<=512);
+        assert(static_file(&req)==ESP_OK && finished==1 && send_calls==1);
         assert(response_size==(size_t)(files[i].end-files[i].start-1));
         assert(!memcmp(response,files[i].start,response_size));
         reset_response();
-        // charset.js fits one block; fail that block rather than its terminator.
-        fail_send_at=(size_t)(files[i].end-files[i].start-1)>512 ? 3 : 1;
+        fail_send_at=1;
         assert(static_file(&req)==ESP_FAIL && send_calls==fail_send_at && !finished);
     }
     httpd_req_t req={.uri="/api/config",.method=HTTP_GET,.host="192.168.4.1"};

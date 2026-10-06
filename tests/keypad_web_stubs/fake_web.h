@@ -9,18 +9,24 @@ typedef void *httpd_handle_t;
 enum { HTTP_GET, HTTP_POST };
 typedef struct {
     const char *uri, *host, *session, *body;
-    int method;
+    int method, fd;
+    const char *origin;
     size_t content_len, received;
 } httpd_req_t;
 typedef struct {
     const char *uri;
     int method;
     esp_err_t (*handler)(httpd_req_t *);
+    bool is_websocket;
+    esp_err_t (*ws_pre_handshake_cb)(httpd_req_t *);
 } httpd_uri_t;
 typedef struct {
     unsigned max_open_sockets, max_uri_handlers, stack_size;
     unsigned recv_wait_timeout, send_wait_timeout;
+    unsigned backlog_conn;
     bool lru_purge_enable;
+    esp_err_t (*open_fn)(httpd_handle_t,int);
+    void (*close_fn)(httpd_handle_t,int);
 } httpd_config_t;
 #define HTTPD_DEFAULT_CONFIG() ((httpd_config_t){0})
 esp_err_t httpd_resp_set_status(httpd_req_t *, const char *);
@@ -37,6 +43,11 @@ esp_err_t httpd_stop(httpd_handle_t);
 esp_err_t httpd_register_uri_handler(httpd_handle_t, const httpd_uri_t *);
 
 typedef struct { int unused; } esp_netif_t;
+typedef struct { uint32_t addr; } esp_ip4_addr_t;
+typedef struct { esp_ip4_addr_t ip, netmask, gw; } esp_netif_ip_info_t;
+#define IPSTR "%u.%u.%u.%u"
+#define IP2STR(p) (unsigned)((p)->addr&255),(unsigned)(((p)->addr>>8)&255),(unsigned)(((p)->addr>>16)&255),(unsigned)((p)->addr>>24)
+esp_err_t esp_netif_get_ip_info(esp_netif_t *, esp_netif_ip_info_t *);
 esp_netif_t *esp_netif_create_default_wifi_ap(void);
 esp_netif_t *esp_netif_create_default_wifi_sta(void);
 void esp_netif_destroy_default_wifi(esp_netif_t *);
@@ -79,3 +90,16 @@ size_t heap_caps_get_largest_free_block(unsigned);
 #define ESP_LOGW(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
 #define ESP_LOGI(...) ((void)0)
+
+typedef struct { bool final,fragmented;int type;uint8_t *payload;size_t len; } httpd_ws_frame_t;
+enum {HTTPD_WS_TYPE_TEXT=1,HTTPD_WS_TYPE_BINARY=2};
+int httpd_req_to_sockfd(httpd_req_t *);
+#define HTTPD_SOCK_ERR_FAIL -1
+typedef int (*httpd_send_func_t)(httpd_handle_t, int, const char *, size_t, int);
+esp_err_t httpd_sess_set_send_override(httpd_handle_t, int, httpd_send_func_t);
+esp_err_t httpd_ws_recv_frame(httpd_req_t *,httpd_ws_frame_t *,size_t);
+esp_err_t httpd_ws_send_frame_async(httpd_handle_t,int,httpd_ws_frame_t *);
+enum { HTTPD_WS_CLIENT_INVALID, HTTPD_WS_CLIENT_HTTP, HTTPD_WS_CLIENT_WEBSOCKET };
+int httpd_ws_get_fd_info(httpd_handle_t,int);
+esp_err_t httpd_sess_trigger_close(httpd_handle_t,int);
+esp_err_t httpd_queue_work(httpd_handle_t,void (*)(void *),void *);

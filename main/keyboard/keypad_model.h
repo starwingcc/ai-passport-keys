@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "keypad_screen.h"
+#include "keypad_transfer.h"
 
 #define KP_BINDINGS 11
 #define KP_LEGACY_BINDINGS 8
@@ -53,9 +54,9 @@ _Static_assert(offsetof(kp_config_t, data) == 392, "v4 disk header");
 _Static_assert(sizeof(kp_step_t) == 12, "persisted step layout");
 
 typedef enum { KP_CONSOLE, KP_MENU, KP_SETTINGS, KP_HOTSPOT, KP_FORGET, KP_PROFILES, KP_AP_CONFIRM,
-               KP_SCREEN, KP_SCREEN_EDIT, KP_SYSTEM } kp_page_t;
+               KP_SCREEN, KP_SCREEN_EDIT, KP_SYSTEM, KP_TRANSFER } kp_page_t;
 typedef enum { KP_TAP, KP_HOLD, KP_RELEASE, KP_AP_START, KP_AP_STOP,
-               KP_CLEAR_BOND, KP_CANCEL, KP_SELECT_PROFILE, KP_SAVE_SCREEN, KP_SAVE_SYSTEM } kp_effect_t;
+               KP_CLEAR_BOND, KP_CANCEL, KP_SELECT_PROFILE, KP_SAVE_SCREEN, KP_SAVE_SYSTEM, KP_TRANSFER_START, KP_TRANSFER_STOP } kp_effect_t;
 typedef void (*kp_emit_t)(void *user, kp_effect_t effect, const kp_action_t *action);
 typedef struct {
     bool down, pending, long_sent, ignored;
@@ -82,6 +83,7 @@ typedef struct {
     kp_screen_t screen;
     kp_screen_setting_t screen_setting;
     bool screen_saving, screen_save_failed;
+    kp_transfer_view_t transfer;
     kp_system_t system;
     bool system_saving, system_save_failed, system_saved;
     kp_emit_t emit;

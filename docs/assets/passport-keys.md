@@ -17,12 +17,18 @@ returns or cancels the current action. Enter Start control to send keys.
 | DOWN | Backspace | Left Command+A | None | Hold Down arrow |
 | OK | Enter | None | None | Return / cancel |
 
-Settings are ordered **Screen → Pairing system → Hotspot configuration → Clear
-Bluetooth pairing**.
+Settings are ordered **Screen → File transfer → Pairing system → Hotspot configuration →
+Clear Bluetooth pairing**, with four visible rows and scrolling.
 
 - **Screen**: adjust brightness and idle dim/off timers; zero disables a timer.
   UP/DOWN adjusts, short OK saves, hold OK cancels. After screen-off, the first
   button press only wakes the screen; release before operating.
+- **File transfer**: connect to saved Wi-Fi while keeping Bluetooth usable.
+  UP/DOWN selects Enable/Disable; short OK applies, `>` marks the cursor and `*`
+  the running state. Hold OK returns while sharing remains enabled. The device
+  shows the current URL/QR and browser count only when the service is ready.
+  No saved Wi-Fi: configure it in the hotspot first. After failure select Enable
+  to retry. Restart defaults to disabled; entering the hotspot ends sharing.
 - **Pairing system**: manually select the global macOS (first-use default) or
   Windows setting. UP/DOWN previews, OK saves, hold OK returns; `*` marks the
   saved system. Failed saves retain it. Changes cancel actions and release keys.
@@ -63,6 +69,34 @@ files require the updated workbench.
 
 **Restore defaults** resets the badge, Wi-Fi and scenarios after saving. Screen,
 pairing-system and Bluetooth pairing settings remain outside this configuration.
+
+## Local browser transfer
+
+Enable **Settings → File transfer** and open the displayed `http://<IP>/transfer`
+(or scan its QR) on devices in the same network. Name each browser, select one
+recipient or all online devices, then send text or share files for recipients to
+receive. At most four browser sessions and eight shared files per sender are
+available. Keep the sender page open and phones in the foreground. Refreshing or
+closing it removes its shared source; Passport never stores or relays content.
+
+Transfers use local WebRTC without internet or cloud services. Guest-network
+isolation, firewall rules or browser candidate handling can prevent direct
+connections; retry after correcting the network. This LAN page exposes no
+keyboard or Wi-Fi management APIs. Closing transfer ends browser RTC sessions.
+
+If the page reports that WebRTC is unavailable, the browser cannot establish a
+direct connection. Check whether a WebRTC extension allows the displayed Passport
+address, or try another browser. Peers without WebRTC remain visible but are marked unavailable
+for transfers; camera and microphone access are not required.
+
+Receivers verify SHA-256 before saving. A browser with a secure context and a
+supported file picker writes chunks directly; ordinary HTTP uses a bounded
+browser download (128 MiB total on desktop, 64 MiB on mobile, per page). Pending
+receives and retained downloads share this budget. Click **Save file**
+after verification. Download status confirms handoff to the browser, not disk
+persistence; compare saved-file hashes for acceptance. Limits are conservative
+and browser-dependent; 100 MiB is the desktop acceptance target, not a promise
+for every phone. Cancel or clear finished records to release receive capacity.
 
 ## Build and flash
 

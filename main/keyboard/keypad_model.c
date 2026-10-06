@@ -295,6 +295,7 @@ static void back(kp_model_t *m) {
     case KP_FORGET: case KP_AP_CONFIRM: page(m, KP_SETTINGS); break;
     case KP_PROFILES: page(m, KP_MENU); break;
     case KP_SCREEN: page(m, KP_SETTINGS); break;
+    case KP_TRANSFER: page(m, KP_SETTINGS); m->selected = 1; break;
     case KP_SYSTEM:
         if (!m->system_saving) page(m, KP_SETTINGS);
         break;
@@ -314,6 +315,10 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
     }
     if (m->page == KP_HOTSPOT) {
         // Only long OK exits; short keys cannot accidentally stop configuration.
+    } else if (m->page == KP_TRANSFER) {
+        if (m->transfer.state == KP_TRANSFER_STOPPING) return;
+        if (key < 2) m->selected = (m->selected + 1) % 2;
+        else emit(m, m->selected ? KP_TRANSFER_STOP : KP_TRANSFER_START, NULL);
     } else if (m->page == KP_SYSTEM) {
         if (m->system_saving) return;
         if (key < 2) {
@@ -335,7 +340,7 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
             emit(m, KP_SAVE_SCREEN, NULL);
         }
     } else if (key < 2) {
-        unsigned count = m->page == KP_SETTINGS ? 4 : m->page == KP_MENU ? 3 :
+        unsigned count = m->page == KP_SETTINGS ? KP_SETTINGS_COUNT : m->page == KP_MENU ? 3 :
                          m->page == KP_SCREEN ? KP_SCREEN_SETTING_COUNT : m->page == KP_PROFILES ? m->config.profile_count : 2;
         m->selected = (m->selected + (key == 0 ? count - 1 : 1)) % count;
     } else if (m->page == KP_MENU) {
@@ -344,9 +349,10 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
         if (target == KP_PROFILES) m->selected = m->config.active_profile;
     } else if (m->page == KP_PROFILES) emit(m, KP_SELECT_PROFILE, NULL);
     else if (m->page == KP_SETTINGS) {
-        kp_page_t target = m->selected == 0 ? KP_SCREEN : m->selected == 1 ? KP_SYSTEM :
-                           m->selected == 2 ? KP_AP_CONFIRM : KP_FORGET;
+        kp_page_t target = m->selected == 0 ? KP_SCREEN : m->selected == 1 ? KP_TRANSFER :
+                           m->selected == 2 ? KP_SYSTEM : m->selected == 3 ? KP_AP_CONFIRM : KP_FORGET;
         page(m, target);
+        if (target == KP_TRANSFER) m->selected = m->transfer.enabled ? 1 : 0;
         if (target == KP_SYSTEM) {
             m->selected = m->system;
             m->system_saved = m->system_save_failed = false;

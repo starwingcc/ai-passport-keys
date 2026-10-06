@@ -38,7 +38,7 @@ static void menu_layout(unsigned expected){
         if(lv_obj_check_type(o,&lv_label_class)&&!lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)&&lv_obj_get_x(o)==20&&
            lv_obj_get_style_text_font(o,LV_PART_MAIN)==&passport_font_20_menu){
             assert(lv_obj_get_x(o)==20&&lv_obj_get_y(o)==86+(int)rows*42);
-            assert((lv_obj_get_width(o)==200||(rows==1&&lv_obj_get_width(o)==113))&&lv_obj_get_height(o)==32);
+            assert((lv_obj_get_width(o)==200||lv_obj_get_width(o)==113)&&lv_obj_get_height(o)==32);
             assert(lv_obj_get_style_text_line_space(o,LV_PART_MAIN)==0);
             assert(lv_label_get_long_mode(o)==LV_LABEL_LONG_DOT);
             ++rows;
@@ -88,7 +88,11 @@ static void console_layout(const char *state){
             for(unsigned n=0;n<lv_obj_get_child_count(o);n++){
                 lv_obj_t *l=lv_obj_get_child(o,n);
                 if(lv_obj_get_x(l)==48){
-                    char prefix[32];snprintf(prefix,sizeof(prefix),"#%s %s#  ",marks==2?"d8a466":"a3b5a5",gestures[marks]);assert(!strncmp(lv_label_get_text(l),prefix,strlen(prefix)));assert(lv_label_get_recolor(l));assert(lv_obj_get_y(l)==(int)marks*20);
+                    int y=lv_obj_get_y(l);
+                    assert(y>=0&&y<=60&&y%20==0);
+                    char prefix[32];snprintf(prefix,sizeof(prefix),"#%s %s#  ",y==40?"d8a466":"a3b5a5",gestures[y/20]);
+                    assert(!strncmp(lv_label_get_text(l),prefix,strlen(prefix)));
+                    assert(lv_label_get_recolor(l));
                     assert(lv_obj_get_style_text_font(l,LV_PART_MAIN)==&passport_font_16);
                     ++marks;
                 }
@@ -144,6 +148,29 @@ int main(int argc,char **argv){
     const char *names[]={"console","menu","settings","hotspot","forget","profiles","ap_confirm"};
     const unsigned row_counts[]={0,0,4,0,2,1,2};
     for(unsigned p=0;p<7;p++){m.page=p;kp_ble_status_t state=ble;if(p==KP_HOTSPOT){state.paused=true;state.ready=state.connected=state.secure=state.keyboard_subscribed=false;}kp_ui_update(&m,state,85,"","Passport-Keys-ABCD","12345678",&home,epoch);save(d,argv[1],names[p]);menu_layout(row_counts[p]);}
+    // Render every real transfer state using the production UI, linked fonts
+    // and the same 28 KiB LVGL pool. State updates must invalidate the cache.
+    for (unsigned state = KP_TRANSFER_OFF; state <= KP_TRANSFER_STOPPING; ++state) {
+        m.page = KP_TRANSFER; m.selected = state == KP_TRANSFER_OFF ? 0 : 1;
+        m.transfer = (kp_transfer_view_t){.state = state, .enabled = state >= KP_TRANSFER_CONNECTING, .peers = 4};
+        if (state == KP_TRANSFER_READY) strcpy(m.transfer.ip, "255.255.255.255");
+        kp_ui_update(&m,ble,100,"","","",&home,epoch);lv_refr_now(d);screen_layout(&m);battery_layout();
+        char name[40];snprintf(name,sizeof(name),"transfer_%u",state);save(d,argv[1],name);
+        bool qr = false;
+        for (unsigned i = 0; i < lv_obj_get_child_count(lv_screen_active()); ++i) {
+            lv_obj_t *o = lv_obj_get_child(lv_screen_active(),i);
+            if(lv_obj_check_type(o,&lv_qrcode_class)) {qr=true;assert(state==KP_TRANSFER_READY&&lv_obj_get_width(o)==99&&lv_obj_get_x(o)==20&&lv_obj_get_y(o)==164);}
+            if(lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)||!lv_obj_check_type(o,&lv_label_class))continue;
+            const char *text=lv_label_get_text(o);const lv_font_t *font=lv_obj_get_style_text_font(o,LV_PART_MAIN);
+            lv_point_t size;lv_text_get_size(&size,text,font,lv_obj_get_style_text_letter_space(o,0),lv_obj_get_style_text_line_space(o,0),lv_obj_get_width(o),LV_TEXT_FLAG_NONE);
+            if(size.y>lv_obj_get_height(o))fprintf(stderr,"Clipped transfer text %s: %d > %d\n",text,(int)size.y,(int)lv_obj_get_height(o));
+            assert(size.y<=lv_obj_get_height(o));
+        }
+        assert(qr==(state==KP_TRANSFER_READY));
+    }
+    m.transfer=(kp_transfer_view_t){0};m.page=KP_SETTINGS;m.selected=4;
+    kp_ui_update(&m,ble,100,"","","",&home,epoch);lv_refr_now(d);menu_layout(4);screen_layout(&m);save(d,argv[1],"settings_scrolled");
+    m.selected=0;
     m.screen_draft=m.screen_config;
     for(unsigned p=0;p<=KP_SYSTEM;p++){
         m.page=p;kp_ui_update(&m,ble,100,"","Passport-Keys-ABCD","12345678",&home,epoch);lv_refr_now(d);battery_layout();

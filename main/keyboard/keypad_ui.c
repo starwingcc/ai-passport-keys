@@ -16,6 +16,8 @@ LV_FONT_DECLARE(passport_font_28);
 #define MENU_PITCH 42
 #define MENU_HEIGHT 32
 static lv_obj_t *s_title, *s_state, *s_battery, *s_panels[3], *s_keys[3], *s_lines[3][4];
+static lv_obj_t *s_transfer_qr;
+static char s_qr_url[40];
 static lv_obj_t *s_body, *s_footer, *s_message, *s_profile_rows[4];
 static lv_obj_t *s_command_title, *s_command_keys, *s_command_band, *s_command_status, *s_command_progress, *s_command_separator;
 static lv_obj_t *s_screen_values[4], *s_screen_range, *s_screen_fill;
@@ -146,13 +148,19 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     static char previous_message[96], previous_ssid[32], previous_password[32];
     static kp_home_config_t previous_home;
     static uint64_t previous_minute;
+    static kp_transfer_view_t previous_transfer;
     if (cached && revision == m->config_revision && previous_profile == m->config.active_profile &&
         previous_page == m->page && previous_selected == m->selected &&
+        !memcmp(&previous_transfer, &m->transfer, sizeof(m->transfer)) &&
         !memcmp(&previous_feedback, &m->feedback, sizeof(m->feedback)) && !memcmp(&previous_ble, &ble, sizeof(ble)) &&
         battery == previous_battery && !strcmp(previous_message, message) &&
         !strcmp(previous_ssid, ssid) && !strcmp(previous_password, password) &&
         !memcmp(&previous_home, home, sizeof(*home)) && (m->page != KP_MENU || previous_minute == epoch / 60)) return;
     if (!s_title || !bsp_lvgl_lock(1000)) return;
+    previous_transfer = m->transfer;
+    if (s_transfer_qr && (m->page != KP_TRANSFER || m->transfer.state != KP_TRANSFER_READY)) {
+        lv_obj_delete(s_transfer_qr); s_transfer_qr = NULL; s_qr_url[0] = 0;
+    }
     cached = true; revision = m->config_revision; previous_profile = m->config.active_profile;
     previous_page = m->page; previous_selected = m->selected; previous_feedback = m->feedback;
     previous_ble = ble; previous_battery = battery;
@@ -163,13 +171,13 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     snprintf(previous_message, sizeof(previous_message), "%s", message);
     snprintf(previous_ssid, sizeof(previous_ssid), "%s", ssid);
     snprintf(previous_password, sizeof(previous_password), "%s", password);
-    const char *titles[] = {"开始控制", "Passport", "设置", "热点配置", "清除配对", "情景列表", "热点配置", "屏幕", "屏幕", "配对系统"};
+    const char *titles[] = {"开始控制", "Passport", "设置", "热点配置", "清除配对", "情景列表", "热点配置", "屏幕", "屏幕", "配对系统", "文件流转"};
     bool command = m->page == KP_CONSOLE && m->feedback.visible;
     hidden(s_title, false);
     lv_obj_set_pos(s_title, 18, 20); lv_obj_set_width(s_title, 151);
     lv_obj_set_pos(s_battery, 178, 24); lv_obj_set_width(s_battery, 45);
     lv_obj_set_style_text_font(s_title, command ? &passport_font_16 : &passport_font_20, 0);
-    if (m->page == KP_SYSTEM) lv_obj_set_style_text_font(s_title, &passport_font_20_menu, 0);
+    if (m->page == KP_SYSTEM || m->page == KP_TRANSFER) lv_obj_set_style_text_font(s_title, &passport_font_20_menu, 0);
     lv_label_set_text(s_title, command ? kp_text(&m->config, m->config.profiles[m->config.active_profile].name) : titles[m->page]);
     if (battery >= 0) lv_label_set_text_fmt(s_battery, "%d%%", battery);
     else lv_label_set_text(s_battery, "--");
@@ -179,7 +187,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
                       "等待电脑连接");
     for (unsigned i = 0; i < 4; ++i) {
         lv_obj_t *value = s_screen_values[i];
-        bool system_value = m->page == KP_SETTINGS && i == 0;
+        bool system_value = m->page == KP_SETTINGS && i < 2;
         bool column = m->page == KP_SCREEN || system_value;
         lv_obj_t *parent = column ? lv_screen_active() : s_panels[0];
         if (lv_obj_get_parent(value) != parent) lv_obj_set_parent(value, parent);
@@ -284,6 +292,52 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
             lv_obj_set_style_text_color(rows[i], lv_color_hex(m->selected == i ? PAPER : INK), 0);
             lv_label_set_text(rows[i], menu[i]);
         }
+    } else if (m->page == KP_TRANSFER) {
+        const kp_transfer_view_t *t = &m->transfer;
+        const char *states[] = {"已关闭", "未配置 Wi-Fi", "已开启 · 正在连接 Wi-Fi", "已开启 · Wi-Fi 已连接",
+                                "已开启 · Wi-Fi 正在重连", "已开启 · 连接或服务失败", "正在关闭"};
+        lv_label_set_text(s_state, states[t->state]);
+        const char *choices[] = {"开启", "关闭"};
+        for (unsigned i = 0; i < 2; ++i)
+            lv_label_set_text_fmt(menu_row(i, m->selected == i), "%s %s%s", m->selected == i ? ">" : " ",
+                choices[i], t->enabled == (i == 0) ? " *" : "");
+        hidden(s_body, false); lv_obj_set_pos(s_body, 20, 186); lv_obj_set_size(s_body, 200, 68);
+        lv_label_set_text(s_footer, "上下选择，OK 确认");
+        lv_label_set_text(s_message, t->enabled ? "返回后仍保持开启" : "长按 OK 返回");
+        if (t->state == KP_TRANSFER_READY && t->ip[0]) {
+            char url[40]; snprintf(url, sizeof(url), "http://%s/", t->ip);
+            if (!s_transfer_qr) {
+                s_transfer_qr = lv_qrcode_create(lv_screen_active());
+                lv_qrcode_set_size(s_transfer_qr, 99); lv_qrcode_set_quiet_zone(s_transfer_qr, true);
+                lv_qrcode_set_dark_color(s_transfer_qr, lv_color_black());
+                lv_qrcode_set_light_color(s_transfer_qr, lv_color_white());
+                lv_obj_set_pos(s_transfer_qr, 20, 164);
+            }
+            if (strcmp(url, s_qr_url)) {
+                if (lv_qrcode_update(s_transfer_qr, url, strlen(url)) == LV_RESULT_OK) snprintf(s_qr_url, sizeof(s_qr_url), "%s", url);
+                else hidden(s_transfer_qr, true);
+            }
+            lv_obj_set_pos(s_body, 124, 167); lv_obj_set_size(s_body, 98, 47);
+            lv_label_set_text(s_body, "扫码访问\nhttp://");
+            lv_obj_t *ip = s_command_progress; hidden(ip, false);
+            lv_obj_set_pos(ip, 124, 216); lv_obj_set_size(ip, 98, 19);
+            lv_point_t ip_size;
+            lv_text_get_size(&ip_size, t->ip, &passport_font_16, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            bool compact_ip = ip_size.x > 98;
+            lv_obj_set_style_text_font(ip, compact_ip ? &lv_font_montserrat_14 : &passport_font_16, 0);
+            lv_obj_set_style_text_letter_space(ip, compact_ip ? -1 : 0, 0);
+            lv_obj_set_height(ip, compact_ip ? lv_font_montserrat_14.line_height : passport_font_16.line_height);
+            lv_obj_set_style_text_align(ip, LV_TEXT_ALIGN_LEFT, 0); lv_label_set_text(ip, t->ip);
+            lv_obj_t *count = s_profile_rows[2]; hidden(count, false);
+            lv_obj_set_pos(count, 124, 238); lv_obj_set_size(count, 98, 24);
+            lv_obj_set_style_text_font(count, &passport_font_16, 0); lv_obj_set_style_text_color(count, lv_color_hex(INK), 0);
+            lv_label_set_text_fmt(count, "在线 %u 台", t->peers);
+        } else if (t->state == KP_TRANSFER_NO_WIFI) lv_label_set_text(s_body, "请先进入热点配置\n保存 Wi-Fi 后再开启");
+        else if (t->state == KP_TRANSFER_FAILED) lv_label_set_text(s_body, "请检查已保存的 Wi-Fi\n选择开启可重试连接");
+        else if (t->state == KP_TRANSFER_CONNECTING) lv_label_set_text(s_body, "正在连接已保存的 Wi-Fi\n连接成功后显示访问地址");
+        else if (t->state == KP_TRANSFER_RECONNECTING) lv_label_set_text(s_body, "连接已断开，正在重连\n重连后更新访问地址");
+        else if (t->state == KP_TRANSFER_STOPPING) {lv_label_set_text(s_body, "正在结束共享会话\n蓝牙键盘可继续使用");lv_label_set_text(s_message, "请稍候");}
+        else lv_label_set_text(s_body, "开启后，Wi-Fi 保持连接\n蓝牙键盘可继续使用\n文字、图片、文件直传");
     } else if (m->page == KP_SYSTEM) {
         lv_label_set_text_fmt(s_state, "当前：%s", m->system == KP_SYSTEM_MACOS ? "macOS" : "Windows");
         const char *systems[] = {"macOS", "Windows"};
@@ -423,24 +477,27 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         } else if (m->page == KP_MENU || m->page == KP_SETTINGS || m->page == KP_FORGET || m->page == KP_AP_CONFIRM) {
             hidden(s_body, true);
             const char *menu[] = {"开始控制", "情景列表", "设置"};
-            const char *settings[] = {"屏幕", "配对系统", "热点配置", "清除蓝牙配对"};
+            const char *settings[] = {"屏幕", "文件流转", "配对系统", "热点配置", "清除蓝牙配对"};
             const char *forget[] = {"取消", "确认清除"};
             const char *ap[] = {"取消", "开启"};
             const char **entries = m->page == KP_MENU ? menu : m->page == KP_SETTINGS ? settings : m->page == KP_FORGET ? forget : ap;
-            unsigned count = m->page == KP_SETTINGS ? 4 : m->page == KP_MENU ? 3 : 2;
-            for (unsigned i = 0; i < count; ++i) {
-                lv_obj_t *row = menu_row(i, i == m->selected);
+            unsigned count = m->page == KP_SETTINGS ? KP_SETTINGS_COUNT : m->page == KP_MENU ? 3 : 2;
+            unsigned first = m->page == KP_SETTINGS ? kp_settings_first(m->selected) : 0;
+            for (unsigned i = first; i < count && i < first + 4; ++i) {
+                lv_obj_t *row = menu_row(i - first, i == m->selected);
                 lv_label_set_text_fmt(row, "%s %s", i == m->selected ? ">" : " ", entries[i]);
-                if (m->page == KP_SETTINGS && i == 1) lv_obj_set_width(row, 113);
-            }
-            if (m->page == KP_SETTINGS) {
-                lv_obj_t *value = s_screen_values[0]; hidden(value, false);
-                lv_obj_set_style_text_color(value, lv_color_hex(m->selected == 1 ? ACCENT : INK), 0);
-                lv_label_set_text(value, m->system == KP_SYSTEM_MACOS ? "macOS" : "Windows");
+                if (m->page == KP_SETTINGS && (i == 1 || i == 2)) {
+                    lv_obj_set_width(row, 113);
+                    lv_obj_t *value = s_screen_values[i - 1]; hidden(value, false);
+                    lv_obj_set_pos(value, 137, MENU_TOP + (i - first) * MENU_PITCH); lv_obj_set_size(value, 83, MENU_HEIGHT);
+                    lv_obj_set_style_text_color(value, lv_color_hex(m->selected == i ? ACCENT : INK), 0);
+                    lv_label_set_text(value, i == 1 ? (m->transfer.enabled ? "已开启" : "已关闭") :
+                        m->system == KP_SYSTEM_MACOS ? "macOS" : "Windows");
+                }
             }
             if (m->page == KP_FORGET || m->page == KP_AP_CONFIRM) {
                 hidden(s_body, false); lv_obj_set_pos(s_body, 20, 195);
-                snprintf(text, sizeof(text), "%s", m->page == KP_FORGET ? "清除后请在电脑忽略设备\n再重新连接" : "开启热点会暂时断开蓝牙");
+                snprintf(text, sizeof(text), "%s", m->page == KP_FORGET ? "清除后请在电脑忽略设备\n再重新连接" : m->transfer.enabled ? "开启热点会结束文件流转\n并暂时断开蓝牙" : "开启热点会暂时断开蓝牙");
                 lv_label_set_text(s_footer, "上下选择，OK 确认");
             } else lv_label_set_text(s_footer, "上下选择，OK 进入");
         } else if (m->page == KP_HOTSPOT) {
@@ -448,7 +505,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         }
         lv_label_set_text(s_body, text);
     }
-    if (!home_page && m->page != KP_SCREEN && m->page != KP_SCREEN_EDIT && m->page != KP_SYSTEM) lv_label_set_text(s_message, message);
+    if (!home_page && m->page != KP_SCREEN && m->page != KP_SCREEN_EDIT && m->page != KP_SYSTEM && m->page != KP_TRANSFER) lv_label_set_text(s_message, message);
     if (!home_page) lv_obj_set_style_text_align(s_battery, LV_TEXT_ALIGN_RIGHT, 0);
     bsp_lvgl_unlock();
 }

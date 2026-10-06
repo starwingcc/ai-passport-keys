@@ -2,7 +2,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-static unsigned count[KP_SAVE_SYSTEM + 1];
+static unsigned count[KP_TRANSFER_STOP + 1];
 static kp_action_t last;
 static void effect(void *ctx, kp_effect_t e, const kp_action_t *a) { (void)ctx; ++count[e]; if (a) last = *a; }
 static void press(kp_model_t *m, unsigned k, uint32_t t) { kp_input(m,k,true,t); }
@@ -33,13 +33,13 @@ int main(void) {
     click(&m,2,4100); assert(count[KP_SELECT_PROFILE]==1 && m.page==KP_PROFILES);
     press(&m,2,4400); kp_tick(&m,4900); release(&m,2,5000); assert(m.page==KP_MENU);
     click(&m,0,5100); click(&m,2,5400); assert(m.page==KP_SETTINGS); // UP wraps to third entry.
-    quick(&m,1,5450);quick(&m,1,5500); // Hotspot is the second settings entry.
+    quick(&m,1,5450);quick(&m,1,5500);quick(&m,1,5525); // Hotspot is the fourth settings entry.
     quick(&m,2,5700); assert(m.page==KP_AP_CONFIRM && !m.selected && !count[KP_AP_START]);
     quick(&m,2,5800); assert(m.page==KP_SETTINGS && !count[KP_AP_START] && !count[KP_AP_STOP]);
-    quick(&m,1,5825);quick(&m,1,5850); quick(&m,2,5900); assert(m.page==KP_AP_CONFIRM);
+    quick(&m,1,5825);quick(&m,1,5850);quick(&m,1,5875); quick(&m,2,5900); assert(m.page==KP_AP_CONFIRM);
     press(&m,2,6000); kp_tick(&m,6499); assert(m.page==KP_AP_CONFIRM);
     kp_tick(&m,6500);release(&m,2,6510);assert(m.page==KP_SETTINGS&&!count[KP_AP_START]&&!count[KP_AP_STOP]);
-    quick(&m,1,6525);quick(&m,1,6550);quick(&m,2,6600);quick(&m,0,6700);assert(m.selected==1);quick(&m,1,6800);assert(m.selected==0);
+    quick(&m,1,6525);quick(&m,1,6550);quick(&m,1,6575);quick(&m,2,6600);quick(&m,0,6700);assert(m.selected==1);quick(&m,1,6800);assert(m.selected==0);
     quick(&m,1,6900);quick(&m,2,7000);assert(m.page==KP_HOTSPOT&&count[KP_AP_START]==1);
     quick(&m,2,7100); assert(m.page==KP_HOTSPOT);
     press(&m,2,7200); kp_tick(&m,7700); release(&m,2,7800);
@@ -199,10 +199,10 @@ int main(void) {
     assert(m.screen.state==KP_SCREEN_OFF&&m.page==KP_CONSOLE);
     // Manual system selection previews only; commit failure and back retain the saved value.
     kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));m.page=KP_SETTINGS;
-    quick(&m,1,0);quick(&m,2,50);assert(m.page==KP_SYSTEM&&m.system==KP_SYSTEM_MACOS&&m.selected==0);
+    quick(&m,1,0);quick(&m,1,25);quick(&m,2,50);assert(m.page==KP_SYSTEM&&m.system==KP_SYSTEM_MACOS&&m.selected==0);
     quick(&m,1,100);assert(m.selected==1&&m.system==KP_SYSTEM_MACOS&&!count[KP_SAVE_SYSTEM]);
     press(&m,2,200);kp_tick(&m,700);release(&m,2,710);assert(m.page==KP_SETTINGS&&m.system==KP_SYSTEM_MACOS);
-    quick(&m,1,800);quick(&m,2,850);quick(&m,0,900);assert(m.selected==1);
+    quick(&m,1,800);quick(&m,1,825);quick(&m,2,850);quick(&m,0,900);assert(m.selected==1);
     m.executing=true;unsigned canceled=count[KP_CANCEL];quick(&m,2,950);
     assert(m.system_saving&&count[KP_SAVE_SYSTEM]==1&&count[KP_CANCEL]==canceled+1&&!m.executing);
     quick(&m,1,1000);assert(m.selected==1);kp_system_saved(&m,false);
@@ -224,6 +224,17 @@ int main(void) {
     kp_report(&a,keys,media);for(unsigned i=0;i<8;i++)assert(!keys[i]);
     a.logical_modifiers=4;assert(!kp_action_valid(&a,false));
     assert(!kp_action_resolve(&a,KP_SYSTEM_COUNT,&last));
+    // Five settings scroll through four visible rows; runtime state survives Back.
+    kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));m.page=KP_SETTINGS;
+    for(unsigned i=0;i<KP_SETTINGS_COUNT;i++){assert(m.selected==i);assert(kp_settings_first(i)==(i==4?1U:0U));quick(&m,1,i*50);}
+    assert(m.selected==0);quick(&m,1,300);quick(&m,2,350);assert(m.page==KP_TRANSFER&&m.selected==0&&!m.transfer.enabled);
+    quick(&m,2,400);assert(count[KP_TRANSFER_START]==1&&!m.transfer.enabled);
+    m.transfer.enabled=true;m.transfer.state=KP_TRANSFER_CONNECTING;
+    quick(&m,1,450);quick(&m,2,500);assert(count[KP_TRANSFER_STOP]==1);
+    m.transfer.state=KP_TRANSFER_STOPPING;quick(&m,2,550);quick(&m,0,600);assert(count[KP_TRANSFER_STOP]==1&&m.selected==1);
+    press(&m,2,650);kp_tick(&m,1150);release(&m,2,1160);assert(m.page==KP_SETTINGS&&m.selected==1&&m.transfer.enabled);
+    quick(&m,2,1200);assert(m.page==KP_TRANSFER&&m.selected==1);m.transfer.state=KP_TRANSFER_FAILED;
+    quick(&m,0,1250);quick(&m,2,1300);assert(count[KP_TRANSFER_START]==2);
     puts("System preview/save/back and exhaustive left/right Cmd/Ctrl HID resolution: PASS");
     puts("Keypad gestures, navigation, screen drafts, wake consumption and feedback: PASS");
 }

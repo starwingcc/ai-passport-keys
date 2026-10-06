@@ -22,7 +22,7 @@ Store reusable font files and generated font sources in `fonts/`.
 The application embeds four read-only LVGL fonts: dynamic 16/20/28 px
 at 2 bpp with lossless RLE compression and uncompressed fixed-interface 20 px
 at 4 bpp. `passport-codepoints.txt` lists 3,886
-dynamic glyphs; `passport-ui-codepoints.txt` lists 257 fixed glyphs. Labels explicitly
+dynamic glyphs; `passport-ui-codepoints.txt` lists 292 fixed glyphs. Labels explicitly
 select their font; all menu rows use `passport_font_20_menu`, including dynamic
 scenario names. Start control retains its 16 px mappings and fixed 20 px key labels.
 The compressed 16/28 px fonts preserve their original pixels and metrics.

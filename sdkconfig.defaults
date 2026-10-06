@@ -59,8 +59,10 @@ CONFIG_BT_NIMBLE_SM_LVL=2
 CONFIG_BT_NIMBLE_SM_LEGACY=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
-CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=12
+# Six dynamic frames in each direction bound peak Wi-Fi allocation while BLE
+# and four signaling sessions coexist. Shared content bypasses Passport.
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_NVS_ENABLED=n
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
 CONFIG_LWIP_SNTP_MAX_SERVERS=3
@@ -68,12 +70,22 @@ CONFIG_LWIP_SNTP_MAX_SERVERS=3
 # ESP32-C3 shares instruction/data RAM: keep optional Wi-Fi code in Flash.
 CONFIG_ESP_WIFI_IRAM_OPT=n
 CONFIG_ESP_WIFI_RX_IRAM_OPT=n
-# Two MSS segments per socket bound queued asset data with three HTTP sockets.
+# Two MSS segments per socket bound queued asset data in the shared TCP pool.
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
-CONFIG_LWIP_MAX_SOCKETS=6
+CONFIG_LWIP_MAX_SOCKETS=10
+# Failed transfer sessions must release their queued TCP payloads immediately.
+CONFIG_LWIP_SO_LINGER=y
 CONFIG_LV_TXT_ENC_UTF8=y
 CONFIG_LV_USE_FONT_PLACEHOLDER=y
 CONFIG_LV_USE_FONT_COMPRESSED=y
 
 # The common-character subsets fit the compact 20-bit bitmap offsets.
 CONFIG_LV_FONT_FMT_TXT_LARGE=n
+
+# Local transfer signaling and a compact QR entry; content stays in browsers.
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT=y
+# Transfer queues only one poll and one end work item, both from its worker.
+# Backpressure prevents UDP control work (including shutdown) being dropped.
+CONFIG_HTTPD_QUEUE_WORK_BLOCKING=y
+CONFIG_LV_USE_QRCODE=y

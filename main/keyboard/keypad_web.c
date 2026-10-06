@@ -1,4 +1,5 @@
 #include "keypad_web.h"
+#include "keypad_web_asset.h"
 #include "keypad_store.h"
 #include "keypad_config.h"
 #include "keypad_network.h"
@@ -20,7 +21,6 @@ static esp_netif_t *s_netif, *s_station_netif;
 static bool s_wifi_initialized, s_wifi_started;
 static char s_ssid[32], s_session[33];
 static const char s_password[] = "12345678";
-#define ASSET_CHUNK_BYTES 512U
 static kp_web_request_t s_request;
 extern const char index_start[] __asm__("_binary_index_html_start");
 extern const char index_end[] __asm__("_binary_index_html_end");
@@ -43,24 +43,18 @@ static esp_err_t static_file(httpd_req_t *req) {
     if (!strcmp(req->uri, "/app.js")) { start = js_start; end = js_end; type = "text/javascript; charset=utf-8"; }
     else if (!strcmp(req->uri, "/charset.js")) { start = charset_start; end = charset_end; type = "text/javascript; charset=utf-8"; }
     else if (!strcmp(req->uri, "/app.css")) { start = css_start; end = css_end; type = "text/css; charset=utf-8"; }
+    return kp_web_asset(req, start, end, type);
+}
+esp_err_t kp_web_asset(httpd_req_t *req, const char *start, const char *end, const char *type) {
     httpd_resp_set_type(req, type);
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
     httpd_resp_set_hdr(req, "Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'");
-    // Large single sends can exhaust TCP/Wi-Fi buffers on this no-PSRAM board.
-    size_t remaining = end - start - 1;
-    while (remaining) {
-        size_t count = remaining < ASSET_CHUNK_BYTES ? remaining : ASSET_CHUNK_BYTES;
-        esp_err_t rc = httpd_resp_send_chunk(req, start, count);
-        if (rc != ESP_OK) {
-            ESP_LOGW("keypad_web", "Asset send failed uri=%s free=%u largest=%u",
-                     req->uri, (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-            return rc;
-        }
-        start += count; remaining -= count;
-    }
-    return httpd_resp_send_chunk(req, NULL, 0);
+    // The length and lifetime are known: send Flash directly with Content-Length.
+    // HTTPD/lwIP bound socket writes; httpd_resp_send does not allocate a copy of
+    // this asset. Chunked encoding used three sends and an event per 512 bytes,
+    // without bounding lwIP's actual pbuf allocations.
+    return httpd_resp_send(req, start, end - start - 1);
 }
 static bool authorized(httpd_req_t *req) {
     char token[sizeof(s_session)];
