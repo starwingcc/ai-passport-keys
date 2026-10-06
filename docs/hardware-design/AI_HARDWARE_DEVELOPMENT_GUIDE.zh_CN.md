@@ -141,7 +141,7 @@ Wi-Fi、NimBLE 和 light/deep sleep 直接使用 ESP-IDF API，不属于板级 B
 
 ### 5.2 LVGL 内存和线程规则
 
-ESP32-C3 无 PSRAM。当前 LVGL 显示缓冲为 `240 × 24` 像素的单 DMA 缓冲，RGB565 约 11.52 KB；`sdkconfig.defaults` 的 LVGL 内部池为 28 KB。不要直接改为大行数双缓冲，也不要扩大 UI 内存池而不检查内部 RAM、最大连续堆和 I2S DMA 初始化。必须单独检查 DMA 可用内存及其最大连续块，不能只看总空闲堆：RTC 堆无法满足 Wi-Fi 的 DMA 分配。
+ESP32-C3 无 PSRAM。当前 LVGL 显示缓冲为 `240 × 32` 像素的单 DMA 缓冲，RGB565 约 15.36 KB；`sdkconfig.defaults` 的 LVGL 内部池为 28 KB。不要直接改为大行数双缓冲，也不要扩大 UI 内存池而不检查内部 RAM、最大连续堆和 I2S DMA 初始化。必须单独检查 DMA 可用内存及其最大连续块，不能只看总空闲堆：RTC 堆无法满足 Wi-Fi 的 DMA 分配。
 
 LVGL 最终输出的 RGB565 刷新区域会统一套用 30 px 圆角遮罩，因此正常刷新和页面切换期间，圆角之外的四角区域都会保持纯黑。遮罩直接作用于局部绘制缓冲，不使用根 screen 的 `clip_corner`；全屏圆角裁剪需要 ARGB 中间图层，在本项目无 PSRAM、LVGL 内存池仅 28 KB 的条件下可能耗尽内存。该行为统一放在显示接入层，不应在各页面重复绘制四角装饰。
 
@@ -266,7 +266,7 @@ SOC 准确度取决于电芯与 profile 的匹配程度。本驱动给出的是�
 内存审查至少关注：
 
 - LVGL 静态内存池 28 KB；
-- LCD DMA buffer 约 11.52 KB；
+- LCD DMA buffer 约 15.36 KB；
 - I2S DMA descriptor/frame buffer；
 - Audio demo 96 KB 录音堆；
 - Wi-Fi 驱动或 NimBLE host/controller（两个示例不同时常驻）；

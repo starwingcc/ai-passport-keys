@@ -5,7 +5,7 @@
 #define select test_select
 #define setsockopt test_setsockopt
 #define shutdown test_shutdown
-#include "../main/keyboard/keypad_transfer_io.c"
+#include "../main/keyboard/keypad_socket_io.c"
 #undef send
 #undef select
 #undef setsockopt
@@ -48,41 +48,41 @@ int test_shutdown(int fd,int how) { assert(fd==41&&how==SHUT_RDWR&&abort_stage==
 static void reset(unsigned scenario) { mode=scenario;calls=0;received_size=0;clock_ms=0; }
 int main(void) {
     char payload[4096];for(size_t i=0;i<sizeof(payload);++i)payload[i]=(char)i;
-    kp_transfer_io_t io;
-    reset(0);kp_transfer_io_begin(&io);
-    assert(kp_transfer_io_send(&io,41,"head",4)==4);
-    assert(kp_transfer_io_send(&io,41,payload,sizeof(payload))==sizeof(payload));
+    kp_socket_io_t io;
+    reset(0);kp_socket_io_begin(&io,2000,2000);
+    assert(kp_socket_io_send(&io,41,"head",4)==4);
+    assert(kp_socket_io_send(&io,41,payload,sizeof(payload))==sizeof(payload));
     assert(received_size==4100&&!memcmp(received,"head",4)&&!memcmp(received+4,payload,sizeof(payload)));
     assert(io.sent==4100&&io.waits>0&&!io.error);
-    reset(1);kp_transfer_io_begin(&io);
-    assert(kp_transfer_io_send(&io,41,payload,sizeof(payload))<0&&io.error==ETIMEDOUT&&clock_ms==2000);
+    reset(1);kp_socket_io_begin(&io,2000,2000);
+    assert(kp_socket_io_send(&io,41,payload,sizeof(payload))<0&&io.error==ETIMEDOUT&&clock_ms==2000);
     assert(!io.sent&&io.waits==20&&io.blocked_error==EAGAIN);
-    reset(2);kp_transfer_io_begin(&io);
-    assert(kp_transfer_io_send(&io,41,payload,1)<0&&io.error==ECONNRESET);
-    unsigned before=calls;assert(kp_transfer_io_send(&io,41,payload,1)<0&&calls==before);
-    reset(3);kp_transfer_io_begin(&io);
-    assert(kp_transfer_io_send(&io,41,payload,sizeof(payload))<0&&io.error==ETIMEDOUT&&io.sent>0);
+    reset(2);kp_socket_io_begin(&io,2000,2000);
+    assert(kp_socket_io_send(&io,41,payload,1)<0&&io.error==ECONNRESET);
+    unsigned before=calls;assert(kp_socket_io_send(&io,41,payload,1)<0&&calls==before);
+    reset(3);kp_socket_io_begin(&io,2000,2000);
+    assert(kp_socket_io_send(&io,41,payload,sizeof(payload))<0&&io.error==ETIMEDOUT&&io.sent>0);
     assert(calls==4); // progress cannot renew a transaction's deadline
     // HTTP allows a slow response but still bounds a stalled receiver and the
-    // total time spent on one client. Defaults above retain the WS contract.
-    reset(3);kp_transfer_io_begin_timed(&io,5000,30000);
-    assert(kp_transfer_io_send(&io,41,payload,sizeof(payload))==sizeof(payload));
+    // total time spent on one client. Short budgets above exercise the WS policy.
+    reset(3);kp_socket_io_begin(&io,5000,30000);
+    assert(kp_socket_io_send(&io,41,payload,sizeof(payload))==sizeof(payload));
     assert(clock_ms>2000&&io.sent==sizeof(payload)&&!memcmp(received,payload,sizeof(payload)));
     mode=1;before=clock_ms;
-    assert(kp_transfer_io_send(&io,41,payload,1)<0&&io.error==ETIMEDOUT&&clock_ms-before==5000);
-    reset(3);kp_transfer_io_begin_timed(&io,5000,3000);
-    assert(kp_transfer_io_send(&io,41,payload,sizeof(payload))<0&&io.error==ETIMEDOUT&&clock_ms==3000);
-    reset(4);kp_transfer_io_begin(&io);
-    assert(kp_transfer_io_send(&io,41,payload,1)<0&&io.error==ECONNRESET);
-    reset(5);kp_transfer_io_begin(&io);
-    assert(kp_transfer_io_send(&io,41,payload,1)<0&&io.error==ETIMEDOUT&&clock_ms==2000);
+    assert(kp_socket_io_send(&io,41,payload,1)<0&&io.error==ETIMEDOUT&&clock_ms-before==5000);
+    reset(3);kp_socket_io_begin(&io,5000,3000);
+    assert(kp_socket_io_send(&io,41,payload,sizeof(payload))<0&&io.error==ETIMEDOUT&&clock_ms==3000);
+    reset(4);kp_socket_io_begin(&io,2000,2000);
+    assert(kp_socket_io_send(&io,41,payload,1)<0&&io.error==ECONNRESET);
+    reset(5);kp_socket_io_begin(&io,2000,2000);
+    assert(kp_socket_io_send(&io,41,payload,1)<0&&io.error==ETIMEDOUT&&clock_ms==2000);
     assert(io.waits==2000&&io.blocked_error==ENOMEM); // no tight allocation spin
     // Space below select's low-water mark still permits positive short writes.
-    reset(6);kp_transfer_io_begin_timed(&io,5000,30000);
-    assert(kp_transfer_io_send(&io,41,payload,sizeof(payload))==sizeof(payload));
+    reset(6);kp_socket_io_begin(&io,5000,30000);
+    assert(kp_socket_io_send(&io,41,payload,sizeof(payload))==sizeof(payload));
     assert(clock_ms>2000&&io.waits>0&&!memcmp(received,payload,sizeof(payload)));
-    reset(0);clock_ms=UINT32_MAX-5;kp_transfer_io_begin(&io);clock_ms=10;
-    assert(kp_transfer_io_send(&io,41,payload,1)==1); // uptime wrap is not expiry
-    assert(kp_transfer_io_abort(41)&&abort_stage==2);
-    puts("Transfer IO: partial writes, backpressure, total deadline, EOF/reset, memory pressure, clock wrap and abort-before-shutdown: PASS");
+    reset(0);clock_ms=UINT32_MAX-5;kp_socket_io_begin(&io,2000,2000);clock_ms=10;
+    assert(kp_socket_io_send(&io,41,payload,1)==1); // uptime wrap is not expiry
+    assert(kp_socket_io_abort(41)&&abort_stage==2);
+    puts("Socket IO: partial writes, backpressure, total deadline, EOF/reset, memory pressure, clock wrap and abort-before-shutdown: PASS");
 }

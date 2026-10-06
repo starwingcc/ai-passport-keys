@@ -1,6 +1,6 @@
 #include "keypad_web.h"
 #include "keypad_web_asset.h"
-#include "keypad_transfer_io.h"
+#include "keypad_socket_io.h"
 #include "keypad_store.h"
 #include "keypad_config.h"
 #include "keypad_network.h"
@@ -29,7 +29,7 @@ static char s_host[16] = "192.168.4.1";
 static char s_ssid[32], s_session[33];
 static const char s_password[] = "12345678";
 static kp_web_request_t s_request;
-#define HTTP_SOCKETS 6
+#define HTTP_SOCKETS 3
 #define HTTP_IDLE_MS 2000U
 #define HTTP_SEND_STALL_MS 5000U
 #define HTTP_SEND_TOTAL_MS 30000U
@@ -37,7 +37,7 @@ typedef struct {
     int fd;
     uint32_t used_at;
     bool used, handling, sending, failed;
-    kp_transfer_io_t io;
+    kp_socket_io_t io;
 } client_t;
 static client_t s_clients[HTTP_SOCKETS];
 static atomic_bool s_stopping, s_poll_queued;
@@ -63,17 +63,17 @@ static void abort_session(client_t *c) {
     c->failed = true;
     // HTTPD owns the descriptor. Abort now, then let its receive path close it;
     // queued closures can otherwise outlive and target a reused descriptor.
-    if (!kp_transfer_io_abort(c->fd)) ESP_LOGW("keypad_web", "Cannot abort fd=%d", c->fd);
+    if (!kp_socket_io_abort(c->fd)) ESP_LOGW("keypad_web", "Cannot abort fd=%d", c->fd);
 }
 static int send_full(httpd_handle_t http, int fd, const char *data, size_t size, int flags) {
     (void)http; (void)flags;
     client_t *c = client(fd);
     if (!c || c->failed) return HTTPD_SOCK_ERR_FAIL;
     if (!c->handling || !c->sending) {
-        kp_transfer_io_begin_timed(&c->io, HTTP_SEND_STALL_MS, HTTP_SEND_TOTAL_MS);
+        kp_socket_io_begin(&c->io, HTTP_SEND_STALL_MS, HTTP_SEND_TOTAL_MS);
         if (c->handling) c->sending = true;
     }
-    int sent = kp_transfer_io_send(&c->io, fd, data, size);
+    int sent = kp_socket_io_send(&c->io, fd, data, size);
     if (sent < 0) abort_session(c);
     return sent < 0 ? HTTPD_SOCK_ERR_FAIL : sent;
 }
@@ -292,7 +292,14 @@ static esp_err_t api_body(httpd_req_t *req) {
     if (!strcmp(req->uri, "/api/settings")) {
         if (!req->content_len) return fail(req, "400 Bad Request", "配置为空");
         kp_settings_t *settings = malloc(sizeof(*settings));
-        if (!settings) return fail(req, "500 Internal Server Error", "内存不足");
+        if (!settings) {
+            ESP_LOGE("keypad_web", "Settings allocation failed free=%u largest=%u needed=%u dma=%u",
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                (unsigned)sizeof(*settings),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA));
+            return fail(req, "500 Internal Server Error", "内存不足");
+        }
         body_reader_t reader = {.request = req, .remaining = req->content_len};
         bool valid = kp_settings_decode(read_body, &reader, settings) && !reader.remaining;
         if (!valid) { free(settings); return fail(req, "400 Bad Request", "完整配置无效，请检查工牌、Wi-Fi 和按键情景"); }
@@ -396,11 +403,19 @@ static esp_err_t start(kp_web_request_t callback, const char *ip) {
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
     http.max_open_sockets = HTTP_SOCKETS; http.max_uri_handlers = 18;
     http.backlog_conn = 1;
-    http.lru_purge_enable = false; http.stack_size = 6144;
+    // Configuration has no persistent WebSocket peers to protect. Reclaim
+    // keep-alives when full rather than retaining the transfer service's six
+    // connections and their TCP queues in DMA-capable RAM.
+    http.lru_purge_enable = true; http.stack_size = 6144;
     http.recv_wait_timeout = 2; http.send_wait_timeout = 2;
     http.open_fn = open_session; http.close_fn = close_session;
     rc = httpd_start(&s_http, &http);
     if (rc != ESP_OK) goto fail;
+    ESP_LOGI("keypad_web", "HTTP ready sockets=%u dma=%u dma_largest=%u rtc=%u",
+        (unsigned)http.max_open_sockets,
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_RTCRAM));
     const httpd_uri_t routes[] = {
         {.uri="/", .method=HTTP_GET, .handler=static_file},
         {.uri="/app.js", .method=HTTP_GET, .handler=static_file},

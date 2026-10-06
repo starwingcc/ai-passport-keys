@@ -9,7 +9,7 @@
 
 static const char *TAG = "bsp_lvgl";
 
-#define BSP_LVGL_DRAW_BUFFER_LINES 24
+#define BSP_LVGL_DRAW_BUFFER_LINES 32
 
 static lv_display_t *s_disp;
 static bool s_port_initialized;
@@ -79,8 +79,8 @@ lv_display_t *bsp_lvgl_init(void) {
     const lvgl_port_display_cfg_t dc = {
         .panel_handle = bsp_display_panel(),
         .io_handle    = bsp_display_io(),
-        // One 24-row RGB565 buffer uses 11.52 KB of DMA-capable RAM. A 40-row
-        // buffer starves Wi-Fi TX during concurrent UI/BLE/HTTP use on C3:
+        // One 32-row RGB565 buffer uses 15.36 KB of DMA-capable RAM. A 40-row
+        // buffer leaves less headroom for Wi-Fi TX on C3:
         // free RTC heap cannot satisfy the radio's DMA allocations.
         .buffer_size   = (uint32_t)BSP_LCD_W * BSP_LVGL_DRAW_BUFFER_LINES,
         .double_buffer = false,

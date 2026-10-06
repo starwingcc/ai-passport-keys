@@ -6,7 +6,7 @@ idf_component_register(
          "keyboard/keypad_home.c" "keyboard/keypad_home_ui.c"
          "keyboard/keypad_wifi.c" "keyboard/keypad_network.c"
          "keyboard/keypad_network_service.c" "keyboard/keypad_transfer_signal.c"
-         "keyboard/keypad_transfer_web.c" "keyboard/keypad_transfer_io.c"
+         "keyboard/keypad_transfer_web.c" "keyboard/keypad_socket_io.c"
          "keyboard/keypad_transfer_diag.c"
          "keyboard/keypad_wifi_setup.c" "keyboard/keypad_wifi_setup_runtime.c"
          "../assets/fonts/passport_font_16.c" "../assets/fonts/passport_font_20.c" "../assets/fonts/passport_font_28.c"

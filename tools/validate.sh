@@ -79,8 +79,8 @@ run_static_checks() {
         tests/test_transfer_signal.c main/keyboard/keypad_transfer_signal.c tests/third_party/cjson/cJSON.c -lm -o "${test_dir}/test_transfer_signal"
     "${test_dir}/test_transfer_signal"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/keypad_web_stubs -Imain/keyboard \
-        tests/test_transfer_io.c -o "${test_dir}/test_transfer_io"
-    "${test_dir}/test_transfer_io"
+        tests/test_socket_io.c -o "${test_dir}/test_socket_io"
+    "${test_dir}/test_socket_io"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/transfer_stubs -Itests/keypad_web_stubs -Itests/third_party/cjson -Imain/keyboard \
         tests/test_transfer_http.c main/keyboard/keypad_transfer_signal.c tests/third_party/cjson/cJSON.c -lm -o "${test_dir}/test_transfer_http"
     "${test_dir}/test_transfer_http"

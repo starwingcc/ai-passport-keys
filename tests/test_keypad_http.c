@@ -24,7 +24,7 @@ static void *web_malloc(size_t size) {
 #define shutdown web_shutdown
 #define close web_close
 #include "../main/keyboard/keypad_web.c"
-#include "../main/keyboard/keypad_transfer_io.c"
+#include "../main/keyboard/keypad_socket_io.c"
 #undef malloc
 #undef send
 #undef recv
@@ -209,7 +209,7 @@ esp_err_t kp_store_settings_save(const kp_settings_t *settings) {
     return ESP_OK;
 }
 esp_err_t httpd_start(httpd_handle_t *out, const httpd_config_t *c) {
-    assert(c->max_uri_handlers==18 && c->max_open_sockets==6 && c->stack_size==6144 && !c->lru_purge_enable);
+    assert(c->max_uri_handlers==18 && c->max_open_sockets==3 && c->stack_size==6144 && c->lru_purge_enable);
     assert(c->backlog_conn==1&&c->send_wait_timeout==2&&c->recv_wait_timeout==2);
     assert(c->open_fn==open_session&&c->close_fn==close_session);
     if (fail_http_start) return ESP_FAIL;
@@ -377,30 +377,31 @@ int main(void) {
     req.host="192.168.1.50";req.method=HTTP_POST;req.uri="/api/wifi/scan";req.session=s_session;
     reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"409 Conflict"));
 
-    // A browser can retain six connections across HTML/JS/CSS refreshes.
+    // Configuration bounds TCP state to three slots, independently of transfer.
     // Failed override installation must not consume one of those slots.
     fail_override=true;assert(open_session(s_http,11)==ESP_FAIL&&!client(11));fail_override=false;
-    for(int fd=11;fd<16;++fd)assert(open_session(s_http,fd)==ESP_OK);
+    for(int fd=11;fd<13;++fd)assert(open_session(s_http,fd)==ESP_OK);
+    assert(open_session(s_http,13)!=ESP_OK&&!client(13));
     unsigned aborted=aborts;
     for(unsigned refresh=0;refresh<2;++refresh)for(unsigned i=0;i<4;++i){
-        httpd_req_t asset={.uri=files[i].uri,.fd=10+(int)i};reset_response();
+        httpd_req_t asset={.uri=files[i].uri,.fd=10+(int)(i%3)};reset_response();
         assert(static_file(&asset)==ESP_OK&&finished==1&&socket_calls>1&&largest_socket_send<=1440);
         assert(response_size==(size_t)(files[i].end-files[i].start-1)&&!memcmp(response,files[i].start,response_size));
         assert(!client(asset.fd)->failed&&client(asset.fd)->io.waits>0&&aborts==aborted);
     }
     // Model a fresh pool of idle/preconnected sockets. Receive timeouts alone
     // cannot reclaim sockets that never send a request into HTTPD's select().
-    for(int fd=10;fd<16;++fd)close_session(s_http,fd);
-    for(int fd=10;fd<16;++fd)assert(open_session(s_http,fd)==ESP_OK);
+    for(int fd=10;fd<13;++fd)close_session(s_http,fd);
+    for(int fd=10;fd<13;++fd)assert(open_session(s_http,fd)==ESP_OK);
     clock_ms+=HTTP_IDLE_MS-1;
     unsigned queued=queue_calls;for(unsigned i=0;i<50;++i)kp_web_poll(clock_ms);
     assert(queue_calls==queued+1&&pending_work);run_work();assert(aborts==aborted);
-    req=(httpd_req_t){.uri="/api/home",.method=HTTP_GET,.host="192.168.1.50",.fd=15};
+    req=(httpd_req_t){.uri="/api/home",.method=HTTP_GET,.host="192.168.1.50",.fd=11};
     reset_response();assert(api(&req)==ESP_OK);++clock_ms;
-    pending_fd=14;kp_web_poll(clock_ms);run_work();
-    assert(aborts==aborted&&graceful_closes==4&&!client(14)->failed&&!client(15)->failed);
-    pending_fd=-1;kp_web_poll(clock_ms);run_work();assert(aborts==aborted&&graceful_closes==5&&!client(15)->failed);
-    for(int fd=10;fd<15;++fd){assert(client(fd)->failed);close_session(s_http,fd);assert(open_session(s_http,fd)==ESP_OK);}
+    pending_fd=12;kp_web_poll(clock_ms);run_work();
+    assert(aborts==aborted&&graceful_closes==1&&!client(12)->failed&&!client(11)->failed);
+    pending_fd=-1;kp_web_poll(clock_ms);run_work();assert(aborts==aborted&&graceful_closes==2&&!client(11)->failed);
+    for(int fd=10;fd<13;fd+=2){assert(client(fd)->failed);close_session(s_http,fd);assert(open_session(s_http,fd)==ESP_OK);}
     // Allocation pressure is retried for a bounded response, then aborted
     // once. Reusing the same descriptor must not inherit the failed send.
     req=(httpd_req_t){.uri="/app.js",.fd=10};reset_response();io_mode=1;
@@ -413,7 +414,7 @@ int main(void) {
     // Large resources are not WebSocket signaling frames: valid progress over
     // more than two seconds must not truncate the browser's script.
     io_mode=2;reset_response();started=clock_ms;aborted=aborts;
-    assert(static_file(&req)==ESP_OK&&finished==1&&clock_ms-started>KP_TRANSFER_SEND_MS);
+    assert(static_file(&req)==ESP_OK&&finished==1&&clock_ms-started>2000U);
     assert(aborts==aborted&&response_size==(size_t)(js_end-js_start-1)&&!memcmp(response,js_start,response_size));
     io_mode=0;
     // A failed control-queue insertion can be retried. Stop retains ownership
@@ -426,5 +427,5 @@ int main(void) {
     assert(kp_web_stop()==ESP_OK&&!wifi_initialized&&!wifi_started&&!netifs&&!setup_active);
     queued=queue_calls;kp_web_poll(clock_ms);assert(queue_calls==queued&&!pending_work);
     fail_http_start=true;assert(kp_web_start_wifi("192.168.1.50",NULL)!=ESP_OK&&!wifi_initialized&&!wifi_started&&!netifs&&!setup_active);fail_http_start=false;
-    puts("Keypad HTTP: real assets/transport, six-connection refresh, partial writes/backpressure, idle preconnect expiry, bounded send abort/reuse, slow-save acknowledgement and retained failed-stop ownership: PASS");
+    puts("Keypad HTTP: real assets/transport, bounded connection pool and refresh, partial writes/backpressure, idle preconnect expiry, bounded send abort/reuse, slow-save acknowledgement and retained failed-stop ownership: PASS");
 }

@@ -1,6 +1,6 @@
 #include "keypad_transfer_web.h"
 #include "keypad_transfer_signal.h"
-#include "keypad_transfer_io.h"
+#include "keypad_socket_io.h"
 #include "keypad_transfer_diag.h"
 #include "keypad_web_asset.h"
 #include "esp_timer.h"
@@ -16,7 +16,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 static httpd_handle_t s_http;
-static kp_transfer_signal_t s_signal;
+// Catalogs belong to the running transfer service, not to configuration mode.
+static kp_transfer_signal_t *s_signal;
 static char s_ip[16];
 static atomic_uint s_peers;
 static atomic_bool s_poll_queued, s_stopping;
@@ -25,11 +26,12 @@ static atomic_uint s_end_state;
 static bool s_ready;
 #define HTTP_SOCKETS 6
 #define HTTP_IDLE_MS 2000U
+#define TRANSFER_SEND_MS 2000U
 typedef struct {
     int fd;
     uint32_t opened;
     bool used, sending, failed;
-    kp_transfer_io_t io;
+    kp_socket_io_t io;
 } client_t;
 static client_t s_clients[HTTP_SOCKETS];
 extern const char transfer_html_start[] __asm__("_binary_transfer_html_start"), transfer_html_end[] __asm__("_binary_transfer_html_end");
@@ -45,11 +47,11 @@ static void abort_session(int fd) {
     client_t *c=client(fd);
     if(c&&c->failed)return;
     if(c)c->failed=true;
-    if(!kp_transfer_io_abort(fd))ESP_LOGW("transfer","Cannot set abortive close fd=%d",fd);
+    if(!kp_socket_io_abort(fd))ESP_LOGW("transfer","Cannot set abortive close fd=%d",fd);
 }
 static void begin_send(int fd) {
     client_t *c=client(fd);
-    if(c){kp_transfer_io_begin(&c->io);c->sending=true;}
+    if(c){kp_socket_io_begin(&c->io,TRANSFER_SEND_MS,TRANSFER_SEND_MS);c->sending=true;}
 }
 static void end_send(int fd, const char *kind, esp_err_t result) {
     client_t *c=client(fd);
@@ -68,8 +70,8 @@ static int send_full(httpd_handle_t http, int fd, const char *data, size_t size,
     (void)http;(void)flags;
     client_t *c=client(fd);
     if(!c||c->failed)return HTTPD_SOCK_ERR_FAIL;
-    if(!c->sending)kp_transfer_io_begin(&c->io);
-    int sent=kp_transfer_io_send(&c->io,fd,data,size);
+    if(!c->sending)kp_socket_io_begin(&c->io,TRANSFER_SEND_MS,TRANSFER_SEND_MS);
+    int sent=kp_socket_io_send(&c->io,fd,data,size);
     if(sent<0)abort_session(fd);
     return sent<0?HTTPD_SOCK_ERR_FAIL:sent;
 }
@@ -92,12 +94,12 @@ static void close_session(httpd_handle_t http, int fd) {
     (void)http;
     for(unsigned i=0;i<HTTP_SOCKETS;++i)if(s_clients[i].used&&s_clients[i].fd==fd)s_clients[i].used=false;
     close(fd);
-    for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)if(s_signal.peers[i].id&&s_signal.peers[i].fd==fd)
-        ESP_LOGI("transfer","Browser session closed id=%u stopping=%d",(unsigned)s_signal.peers[i].id,atomic_load(&s_stopping));
+    for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)if(s_signal->peers[i].id&&s_signal->peers[i].fd==fd)
+        ESP_LOGI("transfer","Browser session closed id=%u stopping=%d",(unsigned)s_signal->peers[i].id,atomic_load(&s_stopping));
     if(atomic_load(&s_stopping)) {
-        for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)if(s_signal.peers[i].id&&s_signal.peers[i].fd==fd)memset(&s_signal.peers[i],0,sizeof(s_signal.peers[i]));
-    } else kp_transfer_signal_close(&s_signal,fd);
-    atomic_store(&s_peers,kp_transfer_signal_count(&s_signal));
+        for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)if(s_signal->peers[i].id&&s_signal->peers[i].fd==fd)memset(&s_signal->peers[i],0,sizeof(s_signal->peers[i]));
+    } else kp_transfer_signal_close(s_signal,fd);
+    atomic_store(&s_peers,kp_transfer_signal_count(s_signal));
 }
 static esp_err_t fail(httpd_req_t *r, const char *status, const char *text) {httpd_resp_set_status(r,status);return httpd_resp_sendstr(r,text);}
 static bool valid_host(httpd_req_t *r, bool origin) {
@@ -114,14 +116,14 @@ static bool valid_host(httpd_req_t *r, bool origin) {
 static esp_err_t pre_handshake(httpd_req_t *r) {
     if(atomic_load(&s_stopping)||!valid_host(r,true)){fail(r,"403 Forbidden","Use the address on Passport");return ESP_FAIL;}
     unsigned reserved=0;
-    for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)reserved+=s_signal.peers[i].id!=0;
+    for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)reserved+=s_signal->peers[i].id!=0;
     if(reserved>=KP_TRANSFER_PEERS){fail(r,"503 Service Unavailable","Four browser sessions maximum");return ESP_FAIL;}
     return ESP_OK;
 }
 static esp_err_t websocket(httpd_req_t *r) {
     if(atomic_load(&s_stopping))return ESP_FAIL;
     int fd=httpd_req_to_sockfd(r);
-    if(r->method==HTTP_GET)return kp_transfer_signal_open(&s_signal,fd,now_ms())?ESP_OK:ESP_FAIL;
+    if(r->method==HTTP_GET)return kp_transfer_signal_open(s_signal,fd,now_ms())?ESP_OK:ESP_FAIL;
     httpd_ws_frame_t frame={0};esp_err_t rc=httpd_ws_recv_frame(r,&frame,0);
     if(rc!=ESP_OK)return rc;
     // Browser signaling messages are single text frames. Reject fragmentation,
@@ -130,9 +132,9 @@ static esp_err_t websocket(httpd_req_t *r) {
         ESP_LOGW("transfer","Rejected frame fd=%d type=%d bytes=%u final=%d",fd,(int)frame.type,(unsigned)frame.len,frame.final);return ESP_FAIL;}
     char *buffer=malloc(frame.len+1);if(!buffer)return ESP_ERR_NO_MEM;
     frame.payload=(uint8_t *)buffer;rc=httpd_ws_recv_frame(r,&frame,frame.len);buffer[frame.len]=0;
-    bool ok=rc==ESP_OK&&kp_transfer_signal_message(&s_signal,fd,buffer,frame.len,now_ms());free(buffer);
+    bool ok=rc==ESP_OK&&kp_transfer_signal_message(s_signal,fd,buffer,frame.len,now_ms());free(buffer);
     if(!ok)ESP_LOGW("transfer","Signaling receive rejected fd=%d rc=%d bytes=%u free=%u",fd,(int)rc,(unsigned)frame.len,(unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
-    atomic_store(&s_peers,kp_transfer_signal_count(&s_signal));
+    atomic_store(&s_peers,kp_transfer_signal_count(s_signal));
     // Invalid messages terminate the offending session, so it cannot flood an
     // unbounded error queue. Content is never printed in logs.
     return ok?ESP_OK:ESP_FAIL;
@@ -158,9 +160,9 @@ static esp_err_t asset(httpd_req_t *r) {
 static void poll_work(void *arg) {
     (void)arg;
     int fd;
-    while((fd=kp_transfer_signal_expired(&s_signal,now_ms()))>=0) {
+    while((fd=kp_transfer_signal_expired(s_signal,now_ms()))>=0) {
         ESP_LOGW("transfer","Browser heartbeat expired fd=%d",fd);
-        abort_session(fd);kp_transfer_signal_close(&s_signal,fd);
+        abort_session(fd);kp_transfer_signal_close(s_signal,fd);
     }
     // SO_RCVTIMEO cannot expire a preconnect waiting in select(). When all
     // slots are occupied, reclaim the oldest idle HTTP socket only. Global
@@ -171,7 +173,7 @@ static void poll_work(void *arg) {
         if(elapsed>age&&httpd_ws_get_fd_info(s_http,s_clients[i].fd)==HTTPD_WS_CLIENT_HTTP){idle=(int)i;age=elapsed;}
     }
     if(occupied==HTTP_SOCKETS&&idle>=0)abort_session(s_clients[idle].fd);
-    atomic_store(&s_peers,kp_transfer_signal_count(&s_signal));atomic_store(&s_poll_queued,false);
+    atomic_store(&s_peers,kp_transfer_signal_count(s_signal));atomic_store(&s_poll_queued,false);
 }
 void kp_transfer_web_poll(uint32_t now) {
     (void)now;
@@ -179,7 +181,7 @@ void kp_transfer_web_poll(uint32_t now) {
         if(httpd_queue_work(s_http,poll_work,NULL)!=ESP_OK)atomic_store(&s_poll_queued,false);
     }
 }
-static void end_work(void *arg) {(void)arg;kp_transfer_signal_end(&s_signal);atomic_store(&s_end_state,2);xSemaphoreGive(s_end_done);}
+static void end_work(void *arg) {(void)arg;kp_transfer_signal_end(s_signal);atomic_store(&s_end_state,2);xSemaphoreGive(s_end_done);}
 esp_err_t kp_transfer_web_stop(void) {
     if(!s_http)return ESP_OK;
     atomic_store(&s_stopping,true); s_ready=false;
@@ -193,23 +195,28 @@ esp_err_t kp_transfer_web_stop(void) {
     vTaskDelay(pdMS_TO_TICKS(300));
     esp_err_t rc=httpd_stop(s_http);if(rc!=ESP_OK)return rc;
     s_http=NULL;atomic_store(&s_peers,0);atomic_store(&s_poll_queued,false);
-    vSemaphoreDelete(s_end_done);s_end_done=NULL;return ESP_OK;
+    vSemaphoreDelete(s_end_done);s_end_done=NULL;
+    // httpd_stop has joined the worker and closed every session; callbacks can
+    // no longer access the catalogs. Failed stops retain them for a retry.
+    free(s_signal);s_signal=NULL;return ESP_OK;
 }
 esp_err_t kp_transfer_web_start(const char *ip) {
     if(s_http)return !atomic_load(&s_stopping)&&!strcmp(ip,s_ip)?ESP_OK:ESP_ERR_INVALID_STATE;
     if(!ip||!*ip||strlen(ip)>=sizeof(s_ip))return ESP_ERR_INVALID_ARG;
     s_ready=false;atomic_store(&s_end_state,0);
     snprintf(s_ip,sizeof(s_ip),"%s",ip);atomic_store(&s_stopping,false);atomic_store(&s_poll_queued,false);
-    kp_transfer_signal_init(&s_signal,send_message,NULL);
+    s_signal=malloc(sizeof(*s_signal));if(!s_signal)return ESP_ERR_NO_MEM;
+    kp_transfer_signal_init(s_signal,send_message,NULL);
     memset(s_clients,0,sizeof(s_clients));
-    s_end_done=xSemaphoreCreateBinary();if(!s_end_done)return ESP_ERR_NO_MEM;
+    s_end_done=xSemaphoreCreateBinary();
+    if(!s_end_done){free(s_signal);s_signal=NULL;return ESP_ERR_NO_MEM;}
     httpd_config_t config=HTTPD_DEFAULT_CONFIG();config.max_open_sockets=HTTP_SOCKETS;config.max_uri_handlers=6;
     // lwIP allocates TCP state and queues incoming data before accept(). These
     // connections are additional to max_open_sockets (the IDF default is five).
     config.backlog_conn=1;
     config.stack_size=6144;config.lru_purge_enable=false;config.recv_wait_timeout=2;config.send_wait_timeout=2;config.open_fn=open_session;config.close_fn=close_session;
     esp_err_t rc=httpd_start(&s_http,&config);
-    if(rc!=ESP_OK){vSemaphoreDelete(s_end_done);s_end_done=NULL;return rc;}
+    if(rc!=ESP_OK){vSemaphoreDelete(s_end_done);s_end_done=NULL;free(s_signal);s_signal=NULL;return rc;}
     const httpd_uri_t routes[]={
         {.uri="/",.method=HTTP_GET,.handler=asset}, {.uri="/transfer",.method=HTTP_GET,.handler=asset},
         {.uri="/transfer.js",.method=HTTP_GET,.handler=asset}, {.uri="/transfer.css",.method=HTTP_GET,.handler=asset},

@@ -1,4 +1,4 @@
-#include "keypad_transfer_io.h"
+#include "keypad_socket_io.h"
 #include "esp_timer.h"
 #include <errno.h>
 #include <limits.h>
@@ -7,24 +7,20 @@
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
-void kp_transfer_io_begin(kp_transfer_io_t *io) {
-    kp_transfer_io_begin_timed(io, KP_TRANSFER_SEND_MS, KP_TRANSFER_SEND_MS);
-}
-
-void kp_transfer_io_begin_timed(kp_transfer_io_t *io, uint32_t stall_ms, uint32_t total_ms) {
+void kp_socket_io_begin(kp_socket_io_t *io, uint32_t stall_ms, uint32_t total_ms) {
     uint32_t now = now_ms();
-    *io = (kp_transfer_io_t){.started_ms = now, .progressed_ms = now,
+    *io = (kp_socket_io_t){.started_ms = now, .progressed_ms = now,
                             .stall_ms = stall_ms, .total_ms = total_ms};
 }
 
-static uint32_t remaining_ms(const kp_transfer_io_t *io) {
+static uint32_t remaining_ms(const kp_socket_io_t *io) {
     uint32_t now = now_ms(), total = now - io->started_ms, stalled = now - io->progressed_ms;
     if (total >= io->total_ms || stalled >= io->stall_ms) return 0;
     uint32_t remaining = io->total_ms - total;
     return remaining < io->stall_ms - stalled ? remaining : io->stall_ms - stalled;
 }
 
-int kp_transfer_io_send(kp_transfer_io_t *io, int fd, const char *data, size_t size) {
+int kp_socket_io_send(kp_socket_io_t *io, int fd, const char *data, size_t size) {
     if (io->error) return -1;
     if (fd < 0 || fd >= FD_SETSIZE || size > INT_MAX) {
         io->error = EINVAL;
@@ -76,7 +72,7 @@ int kp_transfer_io_send(kp_transfer_io_t *io, int fd, const char *data, size_t s
     return (int)size;
 }
 
-bool kp_transfer_io_abort(int fd) {
+bool kp_socket_io_abort(int fd) {
     const struct linger discard = {.l_onoff = 1, .l_linger = 0};
     bool configured = setsockopt(fd, SOL_SOCKET, SO_LINGER, &discard, sizeof(discard)) == 0;
     shutdown(fd, SHUT_RDWR);
