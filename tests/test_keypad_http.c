@@ -4,12 +4,13 @@
 #include <string.h>
 #include "fake_web.h"
 #include "keypad_model.h"
+#include "keypad_settings.h"
 
 static bool fail_alloc;
 static unsigned allocations;
 static void *web_malloc(size_t size) {
     ++allocations;
-    assert(size == KP_CONFIG_BYTES);
+    assert(size == KP_CONFIG_BYTES || size == sizeof(kp_settings_t));
     return fail_alloc ? NULL : malloc(size);
 }
 
@@ -52,14 +53,14 @@ int64_t esp_timer_get_time(void){return 1000000;}
 void kp_store_home_get(kp_home_config_t *out){*out=committed_home;}
 esp_err_t kp_store_home_save(const kp_home_config_t *home){if(fail_alloc)return ESP_FAIL;committed_home=*home;return ESP_OK;}
 bool kp_store_time_sync(uint64_t epoch,uint64_t now){return kp_clock_sync(&test_clock,epoch,now);}
-static char response[65536], input[KP_JSON_BYTES + 1];
+static char response[65536], input[KP_SETTINGS_JSON_BYTES + 1];
 static size_t response_size, largest_send;
 static unsigned send_calls, finished, visit_calls, save_calls;
 static unsigned fail_send_at;
 static bool fail_save, reading;
 static const char *status, *content_type;
 static esp_netif_t netif, station_netif;
-static httpd_uri_t routes[16];
+static httpd_uri_t routes[18];
 static unsigned route_count, wifi_started, wifi_initialized;
 static bool fail_http_start;
 
@@ -122,14 +123,25 @@ esp_err_t kp_store_save(const kp_config_t *c) {
     if (fail_save) return ESP_FAIL;
     committed=*c; return ESP_OK;
 }
+bool kp_store_settings_read(kp_store_settings_reader_t reader, void *user) {
+    assert(!reading); reading=true; ++visit_calls;
+    kp_settings_t settings={.version=1,.home=committed_home,.wifi=committed_wifi,.config=committed};
+    bool ok=reader(&settings,user); reading=false; return ok;
+}
+esp_err_t kp_store_settings_save(const kp_settings_t *settings) {
+    assert(!reading && kp_settings_valid(settings,false)); ++save_calls;
+    if (fail_save) return ESP_FAIL;
+    committed=settings->config;committed_home=settings->home;committed_wifi=settings->wifi;
+    return ESP_OK;
+}
 esp_err_t httpd_start(httpd_handle_t *out, const httpd_config_t *c) {
-    assert(c->max_uri_handlers==16 && c->max_open_sockets==3 && c->stack_size==6144 && c->lru_purge_enable);
+    assert(c->max_uri_handlers==18 && c->max_open_sockets==3 && c->stack_size==6144 && c->lru_purge_enable);
     if (fail_http_start) return ESP_FAIL;
     *out=routes; route_count=0; return ESP_OK;
 }
 esp_err_t httpd_stop(httpd_handle_t h) { assert(h==routes); route_count=0; return ESP_OK; }
 esp_err_t httpd_register_uri_handler(httpd_handle_t h, const httpd_uri_t *route) {
-    assert(h==routes && route_count<16); routes[route_count++]=*route; return ESP_OK;
+    assert(h==routes && route_count<18); routes[route_count++]=*route; return ESP_OK;
 }
 esp_netif_t *esp_netif_create_default_wifi_ap(void) { ++netifs;return &netif; }
 esp_netif_t *esp_netif_create_default_wifi_sta(void) { if(fail_sta_netif)return NULL;++netifs;return &station_netif; }
@@ -154,7 +166,7 @@ int main(void) {
     kp_wifi_defaults(&committed_wifi);
     kp_home_defaults(&committed_home);
     kp_defaults(&committed);
-    assert(kp_web_start(NULL)==ESP_OK && route_count==16);
+    assert(kp_web_start(NULL)==ESP_OK && route_count==18);
     const struct { const char *uri,*start,*end; } files[]={
         {"/",index_start,index_end},{"/app.css",css_start,css_end},
         {"/app.js",js_start,js_end},{"/charset.js",charset_start,charset_end}
@@ -248,6 +260,24 @@ int main(void) {
     // Saved-password testing passes the password internally, without returning it.
     strcpy(committed_wifi.ssid,"saved-network");strcpy(committed_wifi.password,"saved-test-pass");
     req.body="{\"ssid\":\"saved-network\",\"password\":\"\",\"keep_password\":true}";req.content_len=strlen(req.body);req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&!strcmp(tested_wifi.password,"saved-test-pass"));
+    // Complete reads expose credentials only to the authorized setup session.
+    req=(httpd_req_t){.uri="/api/settings",.method=HTTP_GET,.host="192.168.4.1"};
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"403 Forbidden")&&!strstr(response,"saved-test-pass"));
+    req.session=s_session;unsigned allocations_before=allocations;
+    reset_response();assert(api(&req)==ESP_OK&&finished==1&&strstr(response,"saved-test-pass")&&strstr(response,"home")&&strstr(response,"config")&&allocations==allocations_before&&largest_send<=256);
+    kp_settings_t all_before={.version=1,.home=committed_home,.wifi=committed_wifi,.config=committed},all_next=all_before;
+    strcpy(all_next.home.name,"Complete");strcpy(all_next.wifi.ssid,"complete-network");strcpy(all_next.wifi.password,"complete-pass");
+    assert(kp_profile_add(&all_next.config,"Complete"));
+    reset_response();assert(kp_settings_encode(&all_next,collect,NULL));strcpy(input,response);
+    assert(kp_settings_decode_string(input,&all_next)); // Compare the canonical wire representation.
+    req.method=HTTP_POST;req.body=input;req.content_len=strlen(input);req.received=0;
+    fail_alloc=true;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"500 Internal Server Error"));
+    fail_alloc=false;fail_save=true;req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"500 Internal Server Error"));
+    assert(!memcmp(&committed,&all_before.config,sizeof(committed))&&!memcmp(&committed_home,&all_before.home,sizeof(committed_home))&&!memcmp(&committed_wifi,&all_before.wifi,sizeof(committed_wifi)));
+    fail_save=false;req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK"));
+    assert(!memcmp(&committed,&all_next.config,sizeof(committed))&&!memcmp(&committed_home,&all_next.home,sizeof(committed_home))&&!memcmp(&committed_wifi,&all_next.wifi,sizeof(committed_wifi)));
+    req.body="{\"version\":1}";req.content_len=strlen(req.body);req.received=0;
+    unsigned saves_before=save_calls;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"400 Bad Request")&&save_calls==saves_before);
     assert(kp_web_stop()==ESP_OK && !wifi_initialized && !wifi_started && !s_session[0]);
     assert(!netifs&&!setup_active);
     for(unsigned fault=0;fault<4;++fault){

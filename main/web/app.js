@@ -93,6 +93,10 @@
   // Files are configuration-only envelopes; the HTTP session never enters them.
   const fileFormat='passport-keys',fileLimit=65536;
   function exportFile(c,kind,index=c.active_profile){
+    if(kind==='configuration'&&Object.hasOwn(c,'config')){
+      validateSettings(c,true);
+      return JSON.stringify({format:fileFormat,version:6,kind,settings:clone(c)});
+    }
     validate(c,true);
     if(kind==='scenario'){
       if(!Number.isInteger(index)||index<0||index>=c.profiles.length)throw Error('请选择要导出的情景。');
@@ -124,6 +128,12 @@
   function parseImport(text){
     if(typeof text!=='string'||utf8(text)>fileLimit)throw Error('文件过大，最多 64 KiB。');
     let file;try{file=JSON.parse(text);}catch{throw Error('文件不是有效的 JSON。');}
+    if(file?.version===6){
+      fields(file,['format','version','kind','settings']);
+      if(file.format!==fileFormat||file.kind!=='configuration')throw Error('完整配置文件格式不匹配。');
+      validateSettings(file.settings);
+      return {kind:'settings',config:clone(file.settings.config),settings:clone(file.settings)};
+    }
     if(!file||![2,3,4,5].includes(file.version))throw Error('不支持该配置文件版本。');
     let kind,profiles,active;
     if(Object.hasOwn(file,'format')){
@@ -138,6 +148,10 @@
     validate(config);return {kind,config};
   }
   function applyImport(current,payload,options={}){
+    if(payload.kind==='settings'){
+      fields(payload,['kind','config','settings']);validateSettings(payload.settings);
+      return {config:clone(payload.settings.config),editing:payload.settings.config.active_profile,settings:clone(payload.settings)};
+    }
     fields(payload,['kind','config']);validate(payload.config);
     if(payload.kind==='configuration')return {config:clone(payload.config),editing:payload.config.active_profile};
     if(payload.kind!=='scenario'||payload.config.profiles.length!==1)throw Error('单情景文件无效。');
@@ -165,19 +179,42 @@
     return {ssid,password,keep_password};
   }
   function wifiJobMessage(job){
-    const messages=['尚未测试','正在准备','正在扫描附近 Wi-Fi','正在连接，请保持连接 Passport 热点','Wi-Fi 已连接，正在校时','扫描完成','连接成功，认证通过且已校时。请保存网络设置。','认证失败，请检查密码或路由器设置。','未找到网络，请检查名称、距离和 2.4 GHz 设置。','连接超时，请检查路由器和信号。','Wi-Fi 认证通过，但网络校时失败。请检查外网连接，密码可正常使用。','连接或扫描失败，请重试。','网络安全方式不兼容，请检查路由器设置。'];
+    const messages=['尚未测试','正在准备','正在扫描附近 Wi-Fi','正在连接，请保持连接 Passport 热点','Wi-Fi 已连接，正在校时','扫描完成','连接成功，认证通过且已校时。请点击“保存全部设置”。','认证失败，请检查密码或路由器设置。','未找到网络，请检查名称、距离和 2.4 GHz 设置。','连接超时，请检查路由器和信号。','Wi-Fi 认证通过，但网络校时失败。请检查外网连接，密码可正常使用。','连接或扫描失败，请重试。','网络安全方式不兼容，请检查路由器设置。'];
     return messages[job.state]||'设备返回了未知结果，请重试。';
   }
-  root.Keypad={wifiJobMessage,wifiPayload,homeDefaults,validateHome,timePayload,exportFile,parseImport,applyImport,fileLimit,keys,modCodes,media,defaults,capture,actionLabel,sequenceLabel,titleLabel,capacity,validate,validateText,addStep,removeStep,moveStep,addProfile,removeProfile};
+  const settingsDefaults=()=>({version:1,home:homeDefaults(),wifi:{version:1,ssid:'',password:''},config:defaults()});
+  function validateSettings(s,stored=false){
+    fields(s,['version','home','wifi','config']);
+    if(s.version!==1)throw Error('完整配置版本无效。');
+    validateHome(s.home,stored);validate(s.config,stored);
+    fields(s.wifi,['version','ssid','password']);
+    if(s.wifi.version!==1)throw Error('Wi-Fi 配置版本无效。');
+    wifiPayload(s.wifi.ssid,s.wifi.password);
+    if(utf8(JSON.stringify(s))>33792)throw Error('完整配置超过网页传输容量，请减少步骤或文字。');
+    return true;
+  }
+  async function saveSettings(settings,write,onSaved=()=>{}){
+    validateSettings(settings);
+    const snapshot=clone(settings);
+    try{await write('/api/settings',snapshot);}catch(e){throw Error('完整配置尚未确认保存，请重试。'+e.message);}
+    onSaved('/api/settings',snapshot);
+    return true;
+  }
+  root.Keypad={settingsDefaults,validateSettings,saveSettings,wifiJobMessage,wifiPayload,homeDefaults,validateHome,timePayload,exportFile,parseImport,applyImport,fileLimit,keys,modCodes,media,defaults,capture,actionLabel,sequenceLabel,titleLabel,capacity,validate,validateText,addStep,removeStep,moveStep,addProfile,removeProfile};
   if(typeof document==='undefined')return;
   let pendingImport=null;
-  let config,session='',selected=0,editing=0,dirty=false,busy=false,recording=null;
-  let home,homeDirty=false,wifi,wifiDirty=false,wifiNetworks=[],wifiRevision=0;
+  let config,session='',selected=0,gesture=0,editing=0,dirty=false,busy=false,recording=null;
+  let home,homeDirty=false,wifi,wifiDirty=false,wifiNetworks=[],wifiRevision=0,wifiSavedPassword='',wifiKeepAllowed=true;
   const $=id=>document.getElementById(id);
   function status(text,error=false){$('status').textContent=text;$('status').className=error?'error':'';}
   function metrics(){if(!config)return;const used=capacity(config);$('capacity').textContent=used+' / 6144 B · '+config.profiles.length+' / 8 情景';$('capacity').classList.toggle('error',used>6144);$('current-profile').textContent='当前：'+config.profiles[config.active_profile].name;}
-  function changed(){dirty=true;$('dirty').textContent='有未保存的修改';metrics();}
-  function homeChanged(){homeDirty=true;$('home-saved').textContent='工牌有未保存的修改';}
+  function dirtyStatus(){
+    const names=[];if(homeDirty)names.push('工牌');if(wifiDirty)names.push('Wi-Fi');if(dirty)names.push('按键情景');
+    $('dirty').textContent=names.length?'未保存：'+names.join('、'):'全部设置已保存';
+    $('save-state').classList.toggle('dirty',!!names.length);
+  }
+  function changed(){dirty=true;dirtyStatus();metrics();}
+  function homeChanged(){homeDirty=true;$('home-saved').textContent='工牌有未保存的修改';dirtyStatus();}
   function homeRender(){
     $('home-name').value=home.name;$('home-badge').value=home.badge;
     $('home-avatar').value=home.avatar;$('home-timezone').value=home.timezone_minutes;$('home-hour12').value=home.hour12;
@@ -193,46 +230,95 @@
   function button(text,cls,fn){const b=element('button',text,cls);b.type='button';b.addEventListener('click',()=>{try{fn();}catch(e){status(e.message,true);}});return b;}
   function select(options,value,fn){const s=element('select');for(const [v,label] of options){const o=element('option',label);o.value=v;s.append(o);}s.value=value;s.addEventListener('change',()=>fn(Number(s.value)));return s;}
   function preview(b,gesture){const frame=element('div',undefined,'device-preview');frame.setAttribute('aria-label','设备详情预览');const band=element('div',undefined,'preview-band');band.append(element('div',titleLabel(b),'preview-title'));frame.append(element('div',config.profiles[editing].name,'preview-profile'),element('div','--%','preview-battery'),element('div',['上','下','OK'][selected]+' · '+gesture,'preview-state'),band,element('div',sequenceLabel(b),'preview-keys'),element('div','已完成','preview-status'),element('div',b.steps.length>1?b.steps.length+' / '+b.steps.length:'','preview-progress'));return frame;}
-  function metadata(card,b,name){const wrap=element('label','动作标题','text-field'),input=element('input');input.value=b.title;input.maxLength=16;input.setAttribute('aria-label',name+'动作标题');input.placeholder='留空则自动命名';let frame;input.addEventListener('input',()=>{b.title=input.value;changed();frame.querySelector('.preview-title').textContent=titleLabel(b);});wrap.append(input);card.append(wrap);const details=element('details',undefined,'preview-details');details.append(element('summary','查看设备全屏预览'));frame=preview(b,name);details.append(frame);card.append(details);}
+  const gestureNames=['单击','双击','三击','长按'];
+  const binding=()=>config.profiles[editing].bindings[selected*4+gesture];
+  function icon(name){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'),use=document.createElementNS(svg.namespaceURI,'use');svg.setAttribute('aria-hidden','true');use.setAttribute('href','#i-'+name);svg.append(use);return svg;}
+  function tool(label,name,fn){const b=button('', 'icon-btn step-tool',fn);b.setAttribute('aria-label',label);b.title=label;b.append(icon(name));return b;}
+  function wrappedSelect(options,value,fn,cls,label){const wrap=element('div',undefined,'select-wrap '+cls),choice=select(options,value,fn);choice.className='control';choice.setAttribute('aria-label',label);wrap.append(choice);return wrap;}
+  let manualEdit=null;
+  function manualRender(){
+    const a=manualEdit.draft,body=$('manual-body');body.replaceChildren();
+    body.append(element('div',actionLabel(a)||'请选择按键','chord-preview'));
+    const mods=element('div',undefined,'modifier-grid');
+    for(let side=0;side<2;side++){
+      const column=element('div',undefined,'modifier-column');column.append(element('h4',side?'右侧修饰键':'左侧修饰键'));
+      const choices=[[side?'右 Cmd/Ctrl':'左 Cmd/Ctrl','logical_modifiers',1<<side],...modLabels.slice(side*4,side*4+4).map((label,i)=>[label,'modifiers',1<<(side*4+i)])];
+      const options=element('div',undefined,'modifier-options');
+      for(const [label,field,bit] of choices){
+        const wrap=element('label'),input=element('input');input.type='checkbox';input.checked=!!(a[field]&bit);input.setAttribute('aria-label',label);
+        input.addEventListener('change',()=>{a[field]=input.checked?a[field]|bit:a[field]&~bit;if(field==='logical_modifiers'&&!a[field])delete a[field];manualRender();});
+        wrap.append(input,document.createTextNode(label));options.append(wrap);
+      }
+      column.append(options);mods.append(column);
+    }
+    body.append(mods);
+    const heading=element('div',undefined,'ordinary-heading');heading.append(element('span','普通按键'),element('small','最多 6 个'));body.append(heading);
+    a.keys.forEach((value,i)=>{
+      const row=element('div',undefined,'ordinary-row'),wrap=wrappedSelect(keys.map(k=>[k.usage,k.label]),value,next=>{
+        if(a.keys.some((k,j)=>j!==i&&k===next)){$('manual-error').textContent='组合键不能包含重复按键。';wrap.firstChild.value=value;return;}
+        a.keys[i]=next;manualRender();
+      },'key-choice','普通按键 '+(i+1));
+      row.append(element('span',String(i+1).padStart(2,'0')),wrap,tool('移除普通按键 '+(i+1),'trash',()=>{a.keys.splice(i,1);manualRender();}));body.append(row);
+    });
+    const add=button('+ 添加普通按键','add-ordinary',()=>{a.keys.push(keys.find(k=>!a.keys.includes(k.usage)).usage);manualRender();});add.disabled=a.keys.length>=6;body.append(add);
+    const empty=!a.keys.length&&!a.modifiers&&!a.logical_modifiers;
+    $('manual-apply').disabled=empty;$('manual-error').textContent=empty?'至少选择一个普通按键或修饰键。':'';
+  }
+  function openManual(index){
+    cancelRecording(false);manualEdit={binding:binding(),index,draft:clone(binding().steps[index])};manualRender();$('key-editor').showModal();
+  }
+  $('manual-cancel').addEventListener('click',()=>$('key-editor').close());
+  $('key-editor').addEventListener('close',()=>{manualEdit=null;});
+  $('manual-apply').addEventListener('click',()=>{
+    if(!manualEdit||busy)return;
+    const {binding:b,index,draft}=manualEdit;b.steps[index]=draft;changed();$('key-editor').close();render();
+  });
+  $('action-title').addEventListener('input',()=>{binding().title=$('action-title').value;changed();});
+  $('preview').addEventListener('click',()=>{$('preview-body').replaceChildren(preview(binding(),gestureNames[gesture]));$('preview-dialog').showModal();});
+  $('preview-close').addEventListener('click',()=>$('preview-dialog').close());
+  $('add-step').addEventListener('click',()=>{try{cancelRecording(false);addStep(binding());changed();render();}catch(e){status(e.message,true);}});
   function render(){
-    $('editor').disabled=busy||!config;$('forget').disabled=busy||!config;$('wifi-fields').disabled=busy||!wifi;if(!config)return;
+    $('editor').disabled=busy||!config;$('forget').disabled=busy||!config;$('wifi-fields').disabled=busy||!wifi;
+    $('save').disabled=busy||!config||!home||!wifi;
+    for(const id of ['defaults','exit','import-file','export-toggle','export-all','export-profile'])$(id).disabled=busy||!config;
+    if(!config)return;
     metrics();$('profile').replaceChildren(...config.profiles.map((p,i)=>{const o=element('option',p.name+(i===config.active_profile?' · 当前':''));o.value=i;return o;}));$('profile').value=editing;$('profile-name').value=config.profiles[editing].name;
     $('activate-profile').disabled=editing===config.active_profile;$('delete-profile').disabled=config.profiles.length===1;$('new-profile').disabled=$('copy-profile').disabled=config.profiles.length>=8;
-    $('actions').replaceChildren();
-    ['单击','双击','三击','长按'].forEach((name,gesture)=>{
-      const slot=selected*4+gesture,fixed=slot===11;const card=element('article',undefined,'action'+(fixed?' fixed':'')+(gesture===2?' triple':''));
-      const head=element('div',undefined,'action-head');head.append(element('h2',name),element('span',`0${gesture+1} / ${fixed?'SYSTEM':'ACTION'}`,'index'));card.append(head);
-      if(fixed){card.append(element('div','返回上一层','binding'),element('p','OK 长按 500ms 保留为全局返回。组合执行期间，可随时取消并进入主菜单。'));$('actions').append(card);return;}
-      const b=config.profiles[editing].bindings[slot];metadata(card,b,name);
-      if(gesture===3)card.append(element('p','上下键长按 200ms 触发；只有长按有步骤时，按下立即执行。单步保持到松开，多步完整执行一次。','empty-state'));
-      const heading=element('div',undefined,'steps-heading');heading.append(element('h3','操作步骤'),element('span',b.steps.length+' / 64'));card.append(heading);
-      if(!b.steps.length)card.append(element('p','无。添加步骤后开始配置。','empty-state'));
-      b.steps.forEach((a,index)=>{
-        const panel=element('section',undefined,'step');const top=element('div',undefined,'step-head');top.append(element('span',String(index+1).padStart(2,'0'),'step-index'));
-        const kind=select([[1,'键盘组合键'],[2,'媒体控制']],a.type,v=>{cancelRecording(false);b.steps[index]=v===1?{...newStep(),delay_ms:a.delay_ms}:{type:2,modifiers:0,keys:[],consumer:205,delay_ms:a.delay_ms};changed();render();});kind.setAttribute('aria-label',name+'第'+(index+1)+'步类型');top.append(kind);
-        const up=button('↑','step-tool',()=>{cancelRecording(false);moveStep(b,index,-1);changed();render();});up.disabled=index===0;up.setAttribute('aria-label','上移第'+(index+1)+'步');
-        const down=button('↓','step-tool',()=>{cancelRecording(false);moveStep(b,index,1);changed();render();});down.disabled=index===b.steps.length-1;down.setAttribute('aria-label','下移第'+(index+1)+'步');
-        const del=button('×','step-tool',()=>{cancelRecording(false);removeStep(b,index);changed();render();});del.setAttribute('aria-label','删除第'+(index+1)+'步');top.append(up,down,del);panel.append(top);
-        const chord=element('div',actionLabel(a),'step-chord');panel.append(chord);
-        if(a.type===2){const ms=select(media,a.consumer,v=>{a.consumer=v;changed();render();});ms.className='type';ms.setAttribute('aria-label','媒体动作');panel.append(ms);}
-        else{
-          const rec=button('录制这一步','record',()=>{if(recording?.slot===slot&&recording.index===index){cancelRecording();return;}cancelRecording(false);recording={slot,index,events:[],down:new Set(),button:rec,timer:null};rec.textContent='请按一组组合键… 点击取消';rec.classList.add('recording');status('按下一组组合键后松开。多组操作请分别添加步骤；系统拦截时可手动配置。');});panel.append(rec);
-          const manual=element('details',undefined,'manual');manual.append(element('summary','手动选择按键'));const mods=element('div',undefined,'modifiers');
-          for(let side=0;side<2;side++){
-            const column=element('div',undefined,'modifier-column');column.setAttribute('aria-label',side?'右修饰键':'左修饰键');
-            const choices=[[side?'右 Cmd/Ctrl':'左 Cmd/Ctrl','logical_modifiers',1<<side],...modLabels.slice(side*4,side*4+4).map((label,i)=>[label,'modifiers',1<<(side*4+i)])];
-            for(const [label,field,bit] of choices){const wrap=element('label'),input=element('input');input.type='checkbox';input.checked=!!(a[field]&bit);input.addEventListener('change',()=>{a[field]=input.checked?a[field]|bit:a[field]&~bit;if(field==='logical_modifiers'&&!a[field])delete a[field];changed();chord.textContent=actionLabel(a);card.querySelector('.preview-keys').textContent=sequenceLabel(b);card.querySelector('.preview-title').textContent=titleLabel(b);});wrap.append(input,document.createTextNode(label));column.append(wrap);}
-            mods.append(column);
-          }
-          manual.append(mods);
-          a.keys.forEach((v,i)=>{const row=element('div',undefined,'key-choice');const choice=select(keys.map(k=>[k.usage,k.label]),v,value=>{if(a.keys.includes(value)){status('组合键不能包含重复按键。',true);choice.value=v;return;}a.keys[i]=value;changed();render();});choice.setAttribute('aria-label','第'+(index+1)+'步第'+(i+1)+'个按键');row.append(choice,button('移除','',()=>{a.keys.splice(i,1);changed();render();}));manual.append(row);});if(a.keys.length<6)manual.append(button('+ 添加普通按键','add',()=>{a.keys.push(keys.find(k=>!a.keys.includes(k.usage)).usage);changed();render();}));panel.append(manual);
-        }
-        const delay=element('label',index===b.steps.length-1?'最后一步，无额外等待':'释放后等待','step-delay');const input=element('input');input.type='number';input.min=0;input.max=5000;input.step=1;input.value=a.delay_ms;input.disabled=index===b.steps.length-1;input.setAttribute('aria-label','第'+(index+1)+'步后等待毫秒');input.addEventListener('input',()=>{a.delay_ms=Number(input.value);changed();});delay.append(input,document.createTextNode('ms'));panel.append(delay);card.append(panel);
-      });
-      const add=button('+ 添加一步','add-step',()=>{cancelRecording(false);addStep(b);changed();render();});add.disabled=b.steps.length>=64;card.append(add);$('actions').append(card);
+    document.querySelectorAll('.tab').forEach(tab=>{
+      const key=Number(tab.dataset.key);tab.classList.toggle('active',key===selected);tab.setAttribute('aria-selected',String(key===selected));
+      const count=config.profiles[editing].bindings.slice(key*4,key*4+4).filter(b=>b.steps.length).length;tab.querySelector('.key-count').textContent=count+' 个动作';
     });
+    document.querySelectorAll('.event').forEach(tab=>{
+      const g=Number(tab.dataset.event),slot=selected*4+g;tab.classList.toggle('active',g===gesture);tab.setAttribute('aria-selected',String(g===gesture));tab.classList.toggle('has-action',slot===11||!!config.profiles[editing].bindings[slot].steps.length);
+    });
+    $('binding-summary').textContent=['上键','下键','确定键'][selected]+' · '+gestureNames[gesture];
+    const fixed=selected===2&&gesture===3;$('system-action').hidden=!fixed;$('actions').hidden=fixed;if(fixed)return;
+    const b=binding(),name=gestureNames[gesture],slot=selected*4+gesture;
+    $('action-title').value=b.title;$('action-title').setAttribute('aria-label',name+'动作标题');$('step-count').textContent=b.steps.length+' / 64 步';
+    $('actions').classList.toggle('triple',gesture===2);
+    $('steps').replaceChildren();document.querySelector('.table-head').hidden=!b.steps.length;
+    let note=$('gesture-note');if(!note){note=element('p',undefined,'gesture-note');note.id='gesture-note';$('actions').insertBefore(note,$('steps'));}
+    note.hidden=gesture!==3;note.textContent='上下键长按 200ms 触发；只有长按有步骤时，按下立即执行。单步保持到松开，多步完整执行一次。';
+    if(!b.steps.length)$('steps').append(element('div','无。添加步骤后开始配置。','empty'));
+    b.steps.forEach((a,index)=>{
+      const panel=element('section',undefined,'step');panel.append(element('span',String(index+1).padStart(2,'0'),'step-index mono'));
+      panel.append(wrappedSelect([[1,'键盘组合键'],[2,'媒体控制']],a.type,v=>{cancelRecording(false);b.steps[index]=v===1?{...newStep(),delay_ms:a.delay_ms}:{type:2,modifiers:0,keys:[],consumer:205,delay_ms:a.delay_ms};changed();render();},'step-kind',name+'第'+(index+1)+'步类型'));
+      if(a.type===2)panel.append(wrappedSelect(media,a.consumer,v=>{a.consumer=v;changed();render();},'media-choice','媒体动作'));
+      else{const chord=element('div',undefined,'keys'),label=element('span',undefined,'step-chord');actionLabel(a).split('+').forEach((key,i)=>{if(i)label.append(element('span','+','plus'));label.append(element('kbd',key));});chord.append(label);panel.append(chord);}
+      const delay=element('label',undefined,'step-delay'),input=element('input');input.type='number';input.min=0;input.max=5000;input.step=1;input.value=a.delay_ms;input.disabled=index===b.steps.length-1;input.setAttribute('aria-label','第'+(index+1)+'步后等待毫秒');input.addEventListener('input',()=>{a.delay_ms=Number(input.value);changed();});
+      delay.append(element('span',index===b.steps.length-1?'最后一步':'释放后等待','delay-label'),input,document.createTextNode('ms'));delay.title=index===b.steps.length-1?'最后一步，无额外等待':'释放后等待';panel.append(delay);
+      const tools=element('div',undefined,'step-actions');
+      if(a.type===1){
+        tools.append(button('手动选键','record chord-button manual',()=>openManual(index)));
+        const rec=button('录制','record chord-button',()=>{if(recording?.slot===slot&&recording.index===index){cancelRecording();return;}cancelRecording(false);recording={slot,index,events:[],down:new Set(),button:rec,timer:null};rec.textContent='取消录制';rec.classList.add('recording');status('按下一组组合键后松开。多组操作请分别添加步骤；系统拦截时可手动配置。');});tools.append(rec);
+      }
+      const up=tool('上移第'+(index+1)+'步','up',()=>{cancelRecording(false);moveStep(b,index,-1);changed();render();});up.disabled=index===0;
+      const down=tool('下移第'+(index+1)+'步','down',()=>{cancelRecording(false);moveStep(b,index,1);changed();render();});down.disabled=index===b.steps.length-1;
+      const del=tool('删除第'+(index+1)+'步','trash',()=>{cancelRecording(false);removeStep(b,index);changed();render();});del.classList.add('delete');tools.append(up,down,del);panel.append(tools);$('steps').append(panel);
+    });
+    $('add-step').disabled=b.steps.length>=64;
   }
-  function cancelRecording(message=true){if(!recording)return;clearTimeout(recording.timer);recording.button.textContent='录制这一步';recording.button.classList.remove('recording');recording=null;if(message)status('录制已取消，原步骤未修改。');}
+  function cancelRecording(message=true){if(!recording)return;clearTimeout(recording.timer);recording.button.textContent='录制';recording.button.classList.remove('recording');recording=null;if(message)status('录制已取消，原步骤未修改。');}
   function finishRecording(){if(!recording)return;const saved=recording;try{const b=config.profiles[editing].bindings[saved.slot],old=b.steps[saved.index];b.steps[saved.index]={...capture(saved.events),delay_ms:old.delay_ms};cancelRecording(false);changed();render();status('已录制，请保存到 Passport。');}catch(e){cancelRecording(false);status(e.message,true);}}
   document.addEventListener('keydown',e=>{if(!recording)return;e.preventDefault();e.stopPropagation();if(e.repeat)return;clearTimeout(recording.timer);recording.events.push({code:e.code,key:e.key,ctrlKey:e.ctrlKey,altKey:e.altKey,shiftKey:e.shiftKey,metaKey:e.metaKey,isComposing:e.isComposing});recording.down.add(e.code);});
   document.addEventListener('keyup',e=>{if(!recording)return;e.preventDefault();e.stopPropagation();recording.down.delete(e.code);if(!recording.down.size)finishRecording();else if(modCodes.includes(e.code))recording.timer=setTimeout(finishRecording,120);});
@@ -247,14 +333,6 @@
   $('activate-profile').addEventListener('click',()=>{config.active_profile=editing;changed();render();status('已设为当前情景，保存后生效。');});
   async function request(path,body){const response=await fetch(path,{method:'POST',headers:{'X-Session':session,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(8000)});if(!response.ok)throw Error(await response.text());return response.json();}
   async function operation(fn){if(busy||!config)return;cancelRecording(false);busy=true;render();try{await fn();}catch(e){status('操作未完成：'+e.message,true);}finally{busy=false;render();}}
-  $('save-home').addEventListener('click',()=>operation(async()=>{
-    validateHome(home);await request('/api/home',home);homeDirty=false;$('home-saved').textContent='工牌已保存';
-    status('工牌设置已保存，退出热点后可在首页查看。');
-  }));
-  $('sync-time').addEventListener('click',()=>operation(async()=>{
-    await request('/api/time',timePayload());$('clock-status').textContent='已同步当前手机／电脑时间。配置 Wi-Fi 后，下次开机可自动校时。';
-    status(homeDirty?'校时成功。工牌和时区仍有修改，请保存工牌设置。':'校时成功，退出热点后可查看时间。');
-  }));
   function wifiRender(password=''){
     $('wifi-ssid').value=wifi.ssid;$('wifi-password').value=password;
     $('wifi-password').placeholder=wifi.has_password?'密码已保存，留空保持不变':'无密码网络可留空';
@@ -266,20 +344,22 @@
     if(!r.ok)throw Error('读取 Wi-Fi 设置失败');wifi=await r.json();wifiDirty=false;wifiRender(password);render();
   }
   $('wifi-show-password').addEventListener('change',()=>{
-    $('wifi-password').type=$('wifi-show-password').checked?'text':'password';
+    const visible=$('wifi-show-password').checked;$('wifi-password').type=visible?'text':'password';
+    $('toggle-password').setAttribute('aria-pressed',String(visible));$('toggle-password').setAttribute('aria-label',visible?'隐藏密码':'显示密码');
   });
+  $('toggle-password').addEventListener('click',()=>{$('wifi-show-password').checked=!$('wifi-show-password').checked;$('wifi-show-password').dispatchEvent(new Event('change'));});
   function wifiChanged(){
-    wifiDirty=true;++wifiRevision;$('wifi-saved').textContent='Wi-Fi 有未保存的修改';
-    $('wifi-test-status').textContent='网络或密码已修改，请重新测试。';$('wifi-test-status').className='';
+    wifiDirty=true;++wifiRevision;$('wifi-saved').textContent='Wi-Fi 有未保存的修改';dirtyStatus();
+    $('wifi-test-status').textContent='网络或密码已修改，请重新测试。';$('wifi-test-status').classList.remove('error');
   }
   for(const id of ['wifi-ssid','wifi-password'])$(id).addEventListener('input',wifiChanged);
   $('wifi-networks').addEventListener('change',()=>{
-    if(!$('wifi-networks').value)return;$('wifi-ssid').value=$('wifi-networks').value;wifiChanged();
+    if(!$('wifi-networks').value)return;$('wifi-ssid').value=$('wifi-networks').value;wifiChanged();$('scan-results').hidden=true;$('scan-wifi').setAttribute('aria-expanded','false');
   });
   function wifiCandidate(){
     const ssid=$('wifi-ssid').value,password=$('wifi-password').value;
     const network=wifiNetworks.find(n=>n.ssid===ssid);
-    const keep=ssid===wifi.ssid&&wifi.has_password&&!password&&network?.secured!==false;
+    const keep=wifiKeepAllowed&&ssid===wifi.ssid&&wifi.has_password&&!password&&network?.secured!==false;
     if(network?.secured&&!password&&!keep)throw Error('此网络需要密码，请先填写。');
     return wifiPayload(ssid,password,keep);
   }
@@ -292,11 +372,16 @@
     $('wifi-networks').replaceChildren(first);
     for(const n of wifiNetworks){const o=document.createElement('option');o.value=n.ssid;o.textContent=n.ssid+' · '+n.rssi+' dBm'+(n.secured?'':' · 无密码');$('wifi-networks').append(o);}
     $('wifi-networks').disabled=!wifiNetworks.length;
+    $('scan-results').replaceChildren(...wifiNetworks.map(n=>{
+      const row=button('', '',()=>{$('wifi-networks').value=n.ssid;$('wifi-networks').dispatchEvent(new Event('change'));});
+      row.append(element('span',n.ssid),element('small',n.rssi+' dBm'+(n.secured?'':' · 无密码')));return row;
+    }));
+    $('scan-results').hidden=!wifiNetworks.length;$('scan-wifi').setAttribute('aria-expanded',String(!!wifiNetworks.length));
     $('wifi-scan-status').textContent=wifiNetworks.length?'找到 '+wifiNetworks.length+' 个网络；选择后填写密码。':'未发现可显示的网络，可重试扫描或手动填写名称。';
   }
   function wifiTestRender(job){
     $('wifi-test-status').textContent=job.ssid+'：'+wifiJobMessage(job);
-    $('wifi-test-status').className=!job.busy&&!job.connected?'error':'';
+    $('wifi-test-status').classList.toggle('error',!job.busy&&!job.connected);
   }
   async function wifiJobWait(id,revision){
     const deadline=performance.now()+75000;
@@ -335,27 +420,35 @@
     const candidate=wifiCandidate();if(!candidate.ssid)throw Error('请先选择或填写网络名称。');
     $('wifi-test-status').textContent='正在开始连接测试…';await wifiJobStart('/api/wifi/test',candidate);
   }));
-  $('save-wifi').addEventListener('click',()=>operation(async()=>{
-    const candidate=wifiCandidate(),password=$('wifi-password').value;
-    await request('/api/wifi',candidate);await wifiLoad(password);
-    const ssid=candidate.ssid;
-    $('wifi-status').textContent=ssid?'网络已保存，退出热点后开始自动校时。':'自动校时网络已清除。';
-    status('Wi-Fi 设置已保存。');
+  $('clear-wifi').addEventListener('click',()=>operation(()=>{
+    $('wifi-ssid').value='';$('wifi-password').value='';wifiChanged();
+    $('wifi-test-status').textContent='网络将在保存后清除，也可填写新网络。';
+    $('wifi-status').textContent='清除网络待保存。';status('已清空网络填写内容，请点击“保存全部设置”确认清除。');
   }));
-  $('clear-wifi').addEventListener('click',()=>operation(async()=>{
-    await request('/api/wifi',wifiPayload('',''));await wifiLoad();++wifiRevision;$('wifi-test-status').textContent='网络设置已清除，可选择新网络测试。';status('已清除网络设置；仍可手动同步时间。');
-  }));
+  function closeExport(){$('export-menu').hidden=true;$('export-toggle').setAttribute('aria-expanded','false');}
+  $('export-toggle').addEventListener('click',()=>{const open=$('export-menu').hidden;$('export-menu').hidden=!open;$('export-toggle').setAttribute('aria-expanded',String(open));});
+  document.addEventListener('click',e=>{
+    if(!e.target.closest('.file-menu'))closeExport();
+    if(!e.target.closest('.network-input')&&!e.target.closest('#scan-wifi')){$('scan-results').hidden=true;$('scan-wifi').setAttribute('aria-expanded','false');}
+  });
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeExport();$('scan-results').hidden=true;$('scan-wifi').setAttribute('aria-expanded','false');}});
+  document.querySelectorAll('.event').forEach(tab=>tab.addEventListener('click',()=>{cancelRecording(false);gesture=Number(tab.dataset.event);render();}));
+  const navLinks=[...document.querySelectorAll('.nav a')],navSections=navLinks.map(a=>document.querySelector(a.hash));
+  function navUpdate(){const marker=innerWidth<=850?document.querySelector('.sidebar').getBoundingClientRect().bottom+20:150,current=navSections.find(s=>{const r=s.getBoundingClientRect();return r.top<=marker&&r.bottom>marker;})||navSections.find(s=>s.getBoundingClientRect().bottom>marker)||navSections.at(-1);navLinks.forEach(a=>a.classList.toggle('active',a.hash==='#'+current.id));}
+  window.addEventListener('scroll',navUpdate,{passive:true});window.addEventListener('resize',navUpdate);navUpdate();
   function download(kind){
-    const text=exportFile(config,kind,editing),url=URL.createObjectURL(new Blob([text],{type:'application/json'}));
+    closeExport();
+    const text=exportFile(kind==='configuration'?currentSettings():config,kind,editing),url=URL.createObjectURL(new Blob([text],{type:'application/json'}));
     const link=element('a');link.href=url;link.download='passport-keys-'+(kind==='scenario'?'scenario':'all')+'.json';
     document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
-    status(kind==='scenario'?'已导出当前编辑的情景。':'已导出全部情景及当前选择。');
+    status(kind==='scenario'?'已导出当前编辑的情景。':'已导出工牌、Wi-Fi 与全部按键情景；文件包含 Wi-Fi 密码，请妥善保管。');
   }
   function importMode(){
     const replace=!$('import-collision').hidden&&$('import-mode').value==='replace';
     $('import-name').disabled=replace;
-    $('import-warning').textContent=pendingImport?.kind==='configuration'?
-      '全量导入会替换编辑区的全部情景及当前选择，包括未保存的修改。检查后点击“保存到 Passport”才写入设备。':
+    $('import-warning').textContent=pendingImport?.kind==='settings'?
+      '完整配置会替换编辑区的工牌、Wi-Fi 与全部按键情景，包括未保存的修改。文件包含 Wi-Fi 密码。检查后点击“保存全部设置”才写入设备。':
+      pendingImport?.kind==='configuration'?'旧版文件会替换全部按键情景，工牌与 Wi-Fi 保持当前编辑内容。保存后生效。':
       replace?'将替换编辑区的同名情景。保存后生效。':'将追加为一个情景，设备当前选择保持原样。保存后生效。';
   }
   function reviewImport(payload){
@@ -363,7 +456,7 @@
     const profiles=payload.config.profiles,steps=profiles.reduce((n,p)=>n+p.bindings.reduce((n,b)=>n+b.steps.length,0),0);
     const single=payload.kind==='scenario',name=profiles[0].name;
     $('import-summary').textContent=single?'情景“'+name+'” · 11 个动作 · '+steps+' 步':
-      profiles.length+' 个情景 · '+steps+' 步 · 当前：'+profiles[payload.config.active_profile].name;
+      (payload.kind==='settings'?'工牌 + Wi-Fi + ':'')+profiles.length+' 个情景 · '+steps+' 步 · 当前：'+profiles[payload.config.active_profile].name;
     const collision=single&&config.profiles.some(p=>p.name===name);
     $('import-collision').hidden=!collision;$('import-name-label').hidden=!single;$('import-mode').value='rename';
     let candidate=name;
@@ -388,14 +481,47 @@
     try{
       const mode=$('import-collision').hidden?'rename':$('import-mode').value;
       const next=applyImport(config,pendingImport,{mode,name:$('import-name').value});
-      cancelRecording(false);config=next.config;editing=next.editing;changed();render();$('import-review').close();
-      status('已加载到编辑区。请检查映射和当前情景，再点击“保存到 Passport”。');
+      cancelRecording(false);config=next.config;editing=next.editing;
+      if(next.settings){
+        home=next.settings.home;homeRender();homeChanged();
+        $('wifi-ssid').value=next.settings.wifi.ssid;$('wifi-password').value=next.settings.wifi.password;wifiKeepAllowed=false;wifiChanged();
+      }
+      changed();render();$('import-review').close();
+      status('已加载到编辑区。请检查映射和当前情景，再点击“保存全部设置”。');
     }catch(e){$('import-error').textContent=e.message;}
   });
-  $('save').addEventListener('click',()=>operation(async()=>{validate(config);await request('/api/config',config);dirty=false;$('dirty').textContent='已保存到设备';status('保存成功。退出热点后，在设备进入“开始控制”即可使用。');}));
-  $('defaults').addEventListener('click',()=>{if(!config||!confirm('恢复默认配置会移除当前编辑的全部情景。保存后生效，是否继续？'))return;cancelRecording(false);config=defaults();editing=0;changed();render();});
+  function currentSettings(){
+    if(!home||!wifi)throw Error('完整配置尚未读取，请稍后重试。');
+    const candidate=wifiCandidate();
+    return {version:1,home:clone(home),wifi:{version:1,ssid:candidate.ssid,password:candidate.keep_password?wifiSavedPassword:candidate.password},config:clone(config)};
+  }
+  $('save').addEventListener('click',()=>operation(async()=>{
+    if(!dirty&&!homeDirty&&!wifiDirty){status('没有未保存的修改。');return;}
+    const settings=currentSettings(),password=$('wifi-password').value;
+    status('正在保存完整配置…');
+    await saveSettings(settings,request);
+    wifiSavedPassword=settings.wifi.password;wifiKeepAllowed=true;
+    wifi={...wifi,ssid:settings.wifi.ssid,has_password:!!settings.wifi.password};
+    dirty=homeDirty=wifiDirty=false;$('home-saved').textContent='工牌已保存';wifiRender(password);dirtyStatus();
+    $('wifi-status').textContent=settings.wifi.ssid?'网络已保存，退出热点后开始自动校时。':'自动校时网络已清除。';
+    status('完整配置已保存到 Passport。退出热点后生效。');
+  }));
+  $('defaults').addEventListener('click',()=>{
+    if(!config||busy||!confirm('恢复默认会重置编辑区的工牌、Wi-Fi 与全部按键情景。保存后生效，是否继续？'))return;
+    cancelRecording(false);const settings=settingsDefaults();config=settings.config;home=settings.home;editing=0;
+    homeRender();homeChanged();$('wifi-ssid').value='';$('wifi-password').value='';wifiKeepAllowed=false;wifiChanged();changed();render();
+  });
   $('exit').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存的修改，仍要退出热点？'))return;operation(async()=>{await request('/api/exit');status('热点正在关闭。设备返回设置；长按 OK 进入首页，再选择“开始控制”。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='会话已结束';});});
   $('forget').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存修改，清除配对将结束网页会话，仍要继续？'))return;if(!confirm('设备将退出热点并显示确认页，请在设备上确认清除配对。'))return;operation(async()=>{await request('/api/forget');status('请在 Passport 确认清除配对。热点正在关闭。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='请在设备确认';});});
   window.addEventListener('beforeunload',e=>{if(dirty||homeDirty||wifiDirty){e.preventDefault();e.returnValue='';}});
-  Promise.all(['/api/config','/api/home'].map(async path=>{const r=await fetch(path,{signal:AbortSignal.timeout(8000)});if(!r.ok)throw Error('读取配置失败');return r.json();})).then(([data,identity])=>{validate(data.config,true);validateHome(identity,true);config=data.config;home=identity;session=data.session;editing=config.active_profile;$('dirty').textContent='已读取设备配置';$('home-saved').textContent='已读取工牌';homeRender();render();wifiLoad().then(async()=>{const job=await wifiJobRead();if(job.kind===1&&job.state===5)wifiScanRender(job);if(job.busy)await operation(()=>wifiJobWait(job.id,wifiRevision));else if(job.kind===2&&job.state!==0)wifiTestRender(job);}).catch(e=>{$('wifi-saved').textContent=e.message;status(e.message+'，请刷新重试。',true);});}).catch(e=>{status('无法读取配置：'+e.message+'。请确认已连接 Passport 热点，然后刷新。',true);$('dirty').textContent='连接失败';});
+  fetch('/api/config',{signal:AbortSignal.timeout(8000)}).then(async r=>{
+    if(!r.ok)throw Error('读取设置会话失败');session=(await r.json()).session;
+    const response=await fetch('/api/settings',{headers:{'X-Session':session},signal:AbortSignal.timeout(8000)});
+    if(!response.ok)throw Error('读取完整配置失败');const settings=await response.json();validateSettings(settings,true);
+    config=settings.config;home=settings.home;wifiSavedPassword=settings.wifi.password;editing=config.active_profile;
+    $('dirty').textContent='已读取完整配置';$('home-saved').textContent='已读取工牌';homeRender();
+    await wifiLoad(wifiSavedPassword);dirtyStatus();const job=await wifiJobRead();
+    if(job.kind===1&&job.state===5)wifiScanRender(job);
+    if(job.busy)await operation(()=>wifiJobWait(job.id,wifiRevision));else if(job.kind===2&&job.state!==0)wifiTestRender(job);
+  }).catch(e=>{status('无法读取配置：'+e.message+'。请确认已连接 Passport 热点，然后刷新。',true);$('dirty').textContent='连接失败';});
 })(globalThis);

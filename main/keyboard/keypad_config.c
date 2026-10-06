@@ -4,7 +4,7 @@
 
 typedef struct {
     kp_json_read_t read; void *user;
-    char buffer[256]; size_t pos, size, total;
+    char buffer[256]; size_t pos, size, total, limit;
     bool failed;
     bool logical_steps;
 } parser_t;
@@ -20,7 +20,7 @@ static int peek(parser_t *p) {
 }
 static int take(parser_t *p) {
     int c = peek(p);
-    if (c >= 0) { ++p->pos; if (++p->total > KP_JSON_BYTES) { p->failed = true; return -1; } }
+    if (c >= 0) { ++p->pos; if (++p->total > (p->limit ? p->limit : KP_JSON_BYTES)) { p->failed = true; return -1; } }
     return c;
 }
 static void space(parser_t *p) {
@@ -178,31 +178,34 @@ static bool profile(parser_t *p, kp_config_t *c) {
     } while ((next = more(p, '}')) == 1);
     return next == 0 && seen == 3;
 }
-bool kp_config_decode(kp_json_read_t read, void *user, kp_config_t *out) {
-    if (!read || !out) return false;
-    parser_t p = {.read = read, .user = user};
+static bool config_object(parser_t *p, kp_config_t *out) {
     const char *const names[] = {"version", "active_profile", "profiles"};
     unsigned seen = 0, f, value; int next;
     kp_config_empty(out);
-    if (!token(&p, '{')) return false;
+    if (!token(p, '{')) return false;
     do {
-        if (!field(&p, names, 3, &seen, &f)) return false;
+        if (!field(p, names, 3, &seen, &f)) return false;
         if (f == 2) {
-            if (!token(&p, '[')) return false;
+            if (!token(p, '[')) return false;
             do {
-                if (out->profile_count == KP_MAX_PROFILES || !profile(&p, out)) return false;
-            } while ((next = more(&p, ']')) == 1);
+                if (out->profile_count == KP_MAX_PROFILES || !profile(p, out)) return false;
+            } while ((next = more(p, ']')) == 1);
             if (next < 0) return false;
         } else {
-            if (!number(&p, f == 0 ? KP_VERSION : KP_MAX_PROFILES - 1, &value)) return false;
+            if (!number(p, f == 0 ? KP_VERSION : KP_MAX_PROFILES - 1, &value)) return false;
             if (f == 0) out->version = value; else out->active_profile = value;
         }
-    } while ((next = more(&p, '}')) == 1);
+    } while ((next = more(p, '}')) == 1);
     if (next != 0 || seen != 7) return false;
-    if (out->version == 4 && !p.logical_steps) out->version = KP_VERSION;
+    if (out->version == 4 && !p->logical_steps) out->version = KP_VERSION;
     else if (out->version != KP_VERSION) return false;
-    space(&p);
-    return peek(&p) < 0 && !p.failed && kp_config_valid(out);
+    return kp_config_valid(out);
+}
+bool kp_config_decode(kp_json_read_t read, void *user, kp_config_t *out) {
+    if (!read || !out) return false;
+    parser_t p = {.read = read, .user = user};
+    if (!config_object(&p, out)) return false;
+    space(&p); return peek(&p) < 0 && !p.failed;
 }
 typedef struct { const char *data; size_t used; } memory_t;
 static int memory_read(void *user, char *buffer, size_t capacity) {
@@ -214,31 +217,74 @@ bool kp_config_decode_string(const char *json, kp_config_t *out) {
     if (!json) return false;
     memory_t m = {.data = json}; return kp_config_decode(memory_read, &m, out);
 }
-bool kp_home_decode(kp_json_read_t read, void *user, kp_home_config_t *out) {
-    if (!read || !out) return false;
-    parser_t p = {.read = read, .user = user};
+static bool home_object(parser_t *p, kp_home_config_t *out) {
     const char *const names[] = {"version", "name", "badge", "avatar", "timezone_minutes", "hour12"};
     unsigned seen = 0, f, value; int next;
     kp_home_defaults(out);
-    if (!token(&p, '{')) return false;
+    if (!token(p, '{')) return false;
     do {
-        if (!field(&p, names, 6, &seen, &f)) return false;
+        if (!field(p, names, 6, &seen, &f)) return false;
         if (f == 1 || f == 2) {
-            if (!string(&p, f == 1 ? out->name : out->badge, sizeof(out->name))) return false;
+            if (!string(p, f == 1 ? out->name : out->badge, sizeof(out->name))) return false;
         } else {
-            space(&p); bool negative = f == 4 && peek(&p) == '-';
-            if (negative) (void)take(&p);
+            space(p); bool negative = f == 4 && peek(p) == '-';
+            if (negative) (void)take(p);
             unsigned max = f == 3 ? KP_AVATAR_CHIP : f == 4 ? 840 : 1;
-            if (!number(&p, max, &value)) return false;
+            if (!number(p, max, &value)) return false;
             if (f == 0) out->version = value;
             else if (f == 3) out->avatar = value;
             else if (f == 4) out->timezone_minutes = negative ? -(int)value : (int)value;
             else out->hour12 = value;
         }
-    } while ((next = more(&p, '}')) == 1);
+    } while ((next = more(p, '}')) == 1);
     if (next != 0 || seen != 63) return false;
+    return kp_home_valid(out, false);
+}
+bool kp_home_decode(kp_json_read_t read, void *user, kp_home_config_t *out) {
+    if (!read || !out) return false;
+    parser_t p = {.read = read, .user = user};
+    if (!home_object(&p, out)) return false;
+    space(&p); return peek(&p) < 0 && !p.failed && p.total <= KP_HOME_JSON_BYTES;
+}
+static bool wifi_object(parser_t *p, kp_wifi_config_t *out) {
+    const char *const names[] = {"version", "ssid", "password"};
+    unsigned seen = 0, f, value; int next;
+    kp_wifi_defaults(out);
+    if (!token(p, '{')) return false;
+    do {
+        if (!field(p, names, 3, &seen, &f)) return false;
+        if (!f) {
+            if (!number(p, 1, &value)) return false;
+            out->version = value;
+        } else if (!string(p, f == 1 ? out->ssid : out->password,
+                           f == 1 ? sizeof(out->ssid) : sizeof(out->password))) return false;
+    } while ((next = more(p, '}')) == 1);
+    return next == 0 && seen == 7 && kp_wifi_valid(out);
+}
+bool kp_settings_decode(kp_json_read_t read, void *user, kp_settings_t *out) {
+    if (!read || !out) return false;
+    parser_t p = {.read = read, .user = user, .limit = KP_SETTINGS_JSON_BYTES};
+    const char *const names[] = {"version", "home", "wifi", "config"};
+    unsigned seen = 0, f, value; int next;
+    memset(out, 0, sizeof(*out));
+    if (!token(&p, '{')) return false;
+    do {
+        if (!field(&p, names, 4, &seen, &f)) return false;
+        if (!f) {
+            if (!number(&p, 1, &value)) return false;
+            out->version = value;
+        } else if (f == 1) {
+            if (!home_object(&p, &out->home)) return false;
+        } else if (f == 2) {
+            if (!wifi_object(&p, &out->wifi)) return false;
+        } else if (!config_object(&p, &out->config)) return false;
+    } while ((next = more(&p, '}')) == 1);
     space(&p);
-    return peek(&p) < 0 && !p.failed && p.total <= KP_HOME_JSON_BYTES && kp_home_valid(out, false);
+    return next == 0 && seen == 15 && peek(&p) < 0 && !p.failed && kp_settings_valid(out, false);
+}
+bool kp_settings_decode_string(const char *json, kp_settings_t *out) {
+    if (!json) return false;
+    memory_t m = {.data = json}; return kp_settings_decode(memory_read, &m, out);
 }
 bool kp_wifi_decode(kp_json_read_t read, void *user, const kp_wifi_config_t *saved, kp_wifi_config_t *out) {
     if (!read || !saved || !out) return false;
@@ -360,4 +406,15 @@ bool kp_config_encode(const kp_config_t *c, kp_json_write_t write, void *user) {
         output(&w, "]}");
     }
     output(&w, "]}"); return flush(&w);
+}
+bool kp_settings_encode(const kp_settings_t *s, kp_json_write_t write, void *user) {
+    if (!write || !kp_settings_valid(s, true)) return false;
+    writer_t w = {.write = write, .user = user};
+    output(&w, "{\"version\":1,\"home\":");
+    if (!flush(&w) || !kp_home_encode(&s->home, write, user)) return false;
+    output(&w, ",\"wifi\":{\"version\":1,\"ssid\":"); quoted(&w, s->wifi.ssid);
+    output(&w, ",\"password\":"); quoted(&w, s->wifi.password);
+    output(&w, "},\"config\":");
+    if (!flush(&w) || !kp_config_encode(&s->config, write, user)) return false;
+    output(&w, "}"); return flush(&w);
 }

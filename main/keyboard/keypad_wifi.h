@@ -8,7 +8,7 @@ typedef struct {
     char password[64];
 } kp_wifi_config_t;
 
-// An empty SSID disables automatic network time. Credentials are stored
-// separately from shortcut/home records and never included in exports.
+// An empty SSID disables automatic network time. Complete configuration
+// exports include these credentials; scenario-only exports omit them.
 void kp_wifi_defaults(kp_wifi_config_t *wifi);
 bool kp_wifi_valid(const kp_wifi_config_t *wifi);

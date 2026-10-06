@@ -4,14 +4,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-static char encoded[KP_JSON_BYTES+1];static size_t size;
-static bool write_json(void *user,const char *data,size_t n){(void)user;assert(size+n<=KP_JSON_BYTES);memcpy(encoded+size,data,n);size+=n;encoded[size]=0;return true;}
+static char encoded[KP_SETTINGS_JSON_BYTES+1];static size_t size;
+static bool write_json(void *user,const char *data,size_t n){(void)user;assert(size+n<=KP_SETTINGS_JSON_BYTES);memcpy(encoded+size,data,n);size+=n;encoded[size]=0;return true;}
 static bool decode(cJSON *json,kp_config_t *out){char *s=cJSON_PrintUnformatted(json);assert(s);bool valid=kp_config_decode_string(s,out);free(s);return valid;}
 typedef struct {const char *text;size_t pos;} reader_t;
 static int one_byte(void *user,char *out,size_t max){(void)max;reader_t *r=user;if(!r->text[r->pos])return 0;*out=r->text[r->pos++];return 1;}
 int main(int argc,char **argv){
+    if(argc==2&&!strcmp(argv[1],"--settings-stdin")){
+        size_t n=fread(encoded,1,sizeof(encoded),stdin);if(n>KP_SETTINGS_JSON_BYTES)return 1;encoded[n]=0;
+        kp_settings_t settings;if(!kp_settings_decode_string(encoded,&settings))return 1;
+        size=0;assert(kp_settings_encode(&settings,write_json,NULL));printf("{\"settings\":%s}\n",encoded);return 0;
+    }
     if(argc==2&&!strcmp(argv[1],"--stdin")){
-        size_t n=fread(encoded,1,sizeof(encoded),stdin);if(n>KP_JSON_BYTES)return 1;encoded[n]=0;
+        size_t n=fread(encoded,1,KP_JSON_BYTES+1,stdin);if(n>KP_JSON_BYTES)return 1;encoded[n]=0;
         kp_config_t d;if(!kp_config_decode_string(encoded,&d))return 1;
         size=0;assert(kp_config_encode(&d,write_json,NULL));printf("{\"bytes\":%zu,\"config\":%s}\n",kp_config_size(&d),encoded);return 0;
     }
@@ -78,4 +83,26 @@ int main(int argc,char **argv){
     limit[KP_JSON_BYTES]=' ';limit[KP_JSON_BYTES+1]=0;assert(!kp_config_decode_string(limit,&decoded));free(limit);
     assert(!kp_config_decode_string(NULL,&decoded));
     puts("Keypad streaming JSON, strict fields, Unicode and capacity: PASS");
+    kp_settings_t settings, restored_settings;kp_settings_defaults(&settings);settings.config=c;
+    strcpy(settings.home.name,"星翼");strcpy(settings.wifi.ssid,"test-network");strcpy(settings.wifi.password,"test-pass");
+    size=0;assert(kp_settings_encode(&settings,write_json,NULL));
+    assert(kp_settings_decode_string(encoded,&restored_settings));
+    assert(kp_settings_size(&restored_settings)==offsetof(kp_settings_t,config)+KP_CONFIG_BYTES);
+    assert(!memcmp(&settings,&restored_settings,sizeof(settings)));
+    reader=(reader_t){encoded,0};assert(kp_settings_decode(one_byte,&reader,&restored_settings));
+    root=cJSON_Parse(encoded);assert(root);
+    cJSON *home=cJSON_GetObjectItem(root,"home"),*wifi=cJSON_GetObjectItem(root,"wifi");
+    for(unsigned fault=0;fault<3;fault++){
+        cJSON *bad=cJSON_Duplicate(root,true);
+        if(!fault)cJSON_DeleteItemFromObject(bad,"wifi");
+        else if(fault==1)cJSON_AddNumberToObject(bad,"version",1);
+        else cJSON_SetValuestring(cJSON_GetObjectItem(cJSON_GetObjectItem(bad,"wifi"),"password"),"short");
+        char *text=cJSON_PrintUnformatted(bad);assert(text&&!kp_settings_decode_string(text,&restored_settings));free(text);cJSON_Delete(bad);
+    }
+    assert(home&&wifi);cJSON_Delete(root);
+    base=strlen(encoded);limit=malloc(KP_SETTINGS_JSON_BYTES+2);assert(limit);memcpy(limit,encoded,base);
+    memset(limit+base,' ',KP_SETTINGS_JSON_BYTES-base);limit[KP_SETTINGS_JSON_BYTES]=0;assert(kp_settings_decode_string(limit,&restored_settings));
+    limit[KP_SETTINGS_JSON_BYTES]=' ';limit[KP_SETTINGS_JSON_BYTES+1]=0;assert(!kp_settings_decode_string(limit,&restored_settings));free(limit);
+    for(size_t n=0;n<strlen(encoded);n++){char byte=encoded[n];encoded[n]=0;assert(!kp_settings_decode_string(encoded,&restored_settings));encoded[n]=byte;}
+    puts("Complete settings JSON round trip, credentials, 6 KiB shortcut arena, strict fields and transport bounds: PASS");
 }

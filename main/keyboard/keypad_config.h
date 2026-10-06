@@ -3,7 +3,10 @@
 #include "keypad_home.h"
 #include "keypad_wifi.h"
 #include "keypad_wifi_setup.h"
+#include "keypad_settings.h"
 #define KP_JSON_BYTES 32768U
+// Add bounded room for badge/network metadata without shrinking legacy uploads.
+#define KP_SETTINGS_JSON_BYTES (KP_JSON_BYTES + KP_HOME_JSON_BYTES)
 // read returns bytes read, 0 at EOF, or -1 on transport failure.
 typedef int (*kp_json_read_t)(void *user, char *buffer, size_t capacity);
 typedef bool (*kp_json_write_t)(void *user, const char *buffer, size_t size);
@@ -12,6 +15,10 @@ typedef bool (*kp_json_write_t)(void *user, const char *buffer, size_t size);
 bool kp_config_decode(kp_json_read_t read, void *user, kp_config_t *out);
 bool kp_config_decode_string(const char *json, kp_config_t *out);
 bool kp_config_encode(const kp_config_t *config, kp_json_write_t write, void *user);
+bool kp_settings_decode(kp_json_read_t read, void *user, kp_settings_t *out);
+bool kp_settings_decode_string(const char *json, kp_settings_t *out);
+// Includes Wi-Fi credentials. Serve only to an authenticated setup session.
+bool kp_settings_encode(const kp_settings_t *settings, kp_json_write_t write, void *user);
 bool kp_home_decode(kp_json_read_t read, void *user, kp_home_config_t *out);
 bool kp_home_encode(const kp_home_config_t *home, kp_json_write_t write, void *user);
 bool kp_time_decode(kp_json_read_t read, void *user, uint64_t *epoch);

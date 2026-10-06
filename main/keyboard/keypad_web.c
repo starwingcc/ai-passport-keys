@@ -83,6 +83,9 @@ static bool write_body(void *user, const char *buffer, size_t size) {
 static bool write_config(const kp_config_t *config, void *user) {
     return kp_config_encode(config, write_body, user);
 }
+static bool write_settings(const kp_settings_t *settings, void *user) {
+    return kp_settings_encode(settings, write_body, user);
+}
 static esp_err_t api(httpd_req_t *req) {
     char host[32];
     if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK ||
@@ -91,6 +94,11 @@ static esp_err_t api(httpd_req_t *req) {
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_set_type(req, "application/json");
     if (req->method == HTTP_GET) {
+        if (!strcmp(req->uri, "/api/settings")) {
+            if (!authorized(req)) return fail(req, "403 Forbidden", "设置会话已失效，请刷新页面");
+            if (!kp_store_settings_read(write_settings, req)) return ESP_FAIL;
+            return httpd_resp_send_chunk(req, NULL, 0);
+        }
         if (!strcmp(req->uri, "/api/wifi/job")) {
             if (!authorized(req)) return fail(req, "403 Forbidden", "设置会话已失效，请刷新页面");
             kp_wifi_job_t job; kp_wifi_setup_get(&job);
@@ -117,7 +125,8 @@ static esp_err_t api(httpd_req_t *req) {
         return rc == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : rc;
     }
     if (!authorized(req)) return fail(req, "403 Forbidden", "设置会话已失效，请刷新页面");
-    if (req->content_len > KP_JSON_BYTES) return fail(req, "413 Payload Too Large", "配置过大");
+    size_t limit = !strcmp(req->uri, "/api/settings") ? KP_SETTINGS_JSON_BYTES : KP_JSON_BYTES;
+    if (req->content_len > limit) return fail(req, "413 Payload Too Large", "配置过大");
     if (!strcmp(req->uri, "/api/wifi/scan") || !strcmp(req->uri, "/api/wifi/test")) {
         uint32_t id; esp_err_t rc;
         if (!strcmp(req->uri, "/api/wifi/scan")) {
@@ -164,6 +173,17 @@ static esp_err_t api(httpd_req_t *req) {
                 !kp_store_time_sync(epoch, (uint64_t)esp_timer_get_time() / 1000))
                 return fail(req, "400 Bad Request", "时间无效，请检查手机或电脑的系统时间");
         }
+        return httpd_resp_sendstr(req, "{\"ok\":true}");
+    }
+    if (!strcmp(req->uri, "/api/settings")) {
+        if (!req->content_len) return fail(req, "400 Bad Request", "配置为空");
+        kp_settings_t *settings = malloc(sizeof(*settings));
+        if (!settings) return fail(req, "500 Internal Server Error", "内存不足");
+        body_reader_t reader = {.request = req, .remaining = req->content_len};
+        bool valid = kp_settings_decode(read_body, &reader, settings) && !reader.remaining;
+        if (!valid) { free(settings); return fail(req, "400 Bad Request", "完整配置无效，请检查工牌、Wi-Fi 和按键情景"); }
+        esp_err_t saved = kp_store_settings_save(settings); free(settings);
+        if (saved != ESP_OK) return fail(req, "500 Internal Server Error", "完整配置保存失败，请重试");
         return httpd_resp_sendstr(req, "{\"ok\":true}");
     }
     if (!strcmp(req->uri, "/api/config")) {
@@ -243,7 +263,7 @@ esp_err_t kp_web_start(kp_web_request_t callback) {
     if (rc != ESP_OK) goto fail;
     s_wifi_started = true;
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
-    http.max_open_sockets = 3; http.max_uri_handlers = 16;
+    http.max_open_sockets = 3; http.max_uri_handlers = 18;
     http.lru_purge_enable = true; http.stack_size = 6144;
     http.recv_wait_timeout = 5; http.send_wait_timeout = 5;
     rc = httpd_start(&s_http, &http);
@@ -255,6 +275,8 @@ esp_err_t kp_web_start(kp_web_request_t callback) {
         {.uri="/charset.js", .method=HTTP_GET, .handler=static_file},
         {.uri="/api/config", .method=HTTP_GET, .handler=api},
         {.uri="/api/config", .method=HTTP_POST, .handler=api},
+        {.uri="/api/settings", .method=HTTP_GET, .handler=api},
+        {.uri="/api/settings", .method=HTTP_POST, .handler=api},
         {.uri="/api/home", .method=HTTP_GET, .handler=api},
         {.uri="/api/home", .method=HTTP_POST, .handler=api},
         {.uri="/api/time", .method=HTTP_POST, .handler=api},

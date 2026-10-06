@@ -7,7 +7,7 @@
 #define KP_TIME_MIN 1577836800ULL /* 2020-01-01 UTC */
 #define KP_TIME_MAX 4102444799ULL /* 2099-12-31 UTC */
 typedef enum { KP_AVATAR_ROBOT, KP_AVATAR_CAT, KP_AVATAR_ASTRO, KP_AVATAR_CHIP } kp_avatar_t;
-// Separate NVS record: shortcut v4 and its full 6 KiB arena remain unchanged.
+// Home metadata within the complete configuration; shortcut arena stays 6 KiB.
 typedef struct {
     uint32_t version;
     char name[KP_HOME_CHARS * 4 + 1], badge[KP_HOME_CHARS * 4 + 1];

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../main/keyboard/keypad_store.c"
+static kp_settings_t stored_settings, staged_settings;static size_t settings_size, staged_settings_size;
 static uint8_t persisted[KP_CONFIG_BYTES],staged[KP_CONFIG_BYTES];static size_t persisted_size,staged_size;
 static kp_wifi_config_t stored_wifi, staged_wifi; static size_t wifi_size, staged_wifi_size;
 static kp_home_config_t stored_home, staged_home; static size_t home_size, staged_home_size;
@@ -12,14 +13,16 @@ static kp_v3_config_t v3;static size_t v3_size;
 static kp_config_t v4;static size_t v4_size;
 static uint8_t stored_system[2], staged_system[2];static size_t system_size, staged_system_size;
 static bool legacy_valid,fail_open,fail_set,fail_commit;
+static bool fail_erase=true; // Exercise migration even when obsolete-key cleanup must be retried.
 static int locked,opened,commits;
 SemaphoreHandle_t xSemaphoreCreateMutex(void){return &locked;}
 int xSemaphoreTake(SemaphoreHandle_t h,int t){(void)t;assert(h==&locked&&!locked);locked=1;return 1;}
 void xSemaphoreGive(SemaphoreHandle_t h){assert(h==&locked&&locked);locked=0;}
-esp_err_t nvs_open(const char *ns,int mode,nvs_handle_t *h){assert(!strcmp(ns,"passport_keys")&&mode==NVS_READWRITE&&!opened);if(fail_open)return ESP_FAIL;opened=1;staged_size=staged_home_size=staged_wifi_size=staged_screen_size=staged_system_size=0;*h=1;return ESP_OK;}
+esp_err_t nvs_open(const char *ns,int mode,nvs_handle_t *h){assert(!strcmp(ns,"passport_keys")&&mode==NVS_READWRITE&&!opened);if(fail_open)return ESP_FAIL;opened=1;staged_settings_size=staged_size=staged_home_size=staged_wifi_size=staged_screen_size=staged_system_size=0;*h=1;return ESP_OK;}
 esp_err_t nvs_get_blob(nvs_handle_t h,const char *key,void *out,size_t *size){
     assert(h==1&&opened);const void *data;size_t n;
-    if(!strcmp(key,"system_v1")){if(!system_size)return ESP_FAIL;data=stored_system;n=system_size;}
+    if(!strcmp(key,"settings_v1")){if(!settings_size)return ESP_FAIL;data=&stored_settings;n=settings_size;}
+    else if(!strcmp(key,"system_v1")){if(!system_size)return ESP_FAIL;data=stored_system;n=system_size;}
     else if(!strcmp(key,"home_v1")){if(!home_size)return ESP_FAIL;data=&stored_home;n=home_size;}
     else if(!strcmp(key,"wifi_v1")){if(!wifi_size)return ESP_FAIL;data=&stored_wifi;n=wifi_size;}
     else if(!strcmp(key,"screen_v1")){if(!screen_size)return ESP_FAIL;data=&stored_screen;n=screen_size;}
@@ -30,17 +33,30 @@ esp_err_t nvs_get_blob(nvs_handle_t h,const char *key,void *out,size_t *size){
     else {assert(!strcmp(key,"config_v5"));if(!persisted_size)return ESP_FAIL;data=persisted;n=persisted_size;}
     if(!out){*size=n;return ESP_OK;}if(*size<n)return ESP_FAIL;memcpy(out,data,n);*size=n;return ESP_OK;
 }
-esp_err_t nvs_set_blob(nvs_handle_t h,const char *key,const void *data,size_t n){assert(h==1&&opened&&n<=sizeof(staged));if(fail_set)return ESP_FAIL;if(!strcmp(key,"system_v1")){assert(n==sizeof(staged_system));memcpy(staged_system,data,n);staged_system_size=n;}else if(!strcmp(key,"home_v1")){assert(n==sizeof(staged_home));memcpy(&staged_home,data,n);staged_home_size=n;}else if(!strcmp(key,"wifi_v1")){assert(n==sizeof(staged_wifi));memcpy(&staged_wifi,data,n);staged_wifi_size=n;}else if(!strcmp(key,"screen_v1")){assert(n==sizeof(staged_screen));memcpy(&staged_screen,data,n);staged_screen_size=n;}else{assert(!strcmp(key,"config_v5"));memcpy(staged,data,n);staged_size=n;}return ESP_OK;}
-esp_err_t nvs_commit(nvs_handle_t h){assert(h==1&&opened);if(fail_commit)return ESP_FAIL;if(staged_size){memcpy(persisted,staged,staged_size);persisted_size=staged_size;}if(staged_home_size){stored_home=staged_home;home_size=staged_home_size;}if(staged_wifi_size){stored_wifi=staged_wifi;wifi_size=staged_wifi_size;}if(staged_screen_size){stored_screen=staged_screen;screen_size=staged_screen_size;}if(staged_system_size){memcpy(stored_system,staged_system,staged_system_size);system_size=staged_system_size;}++commits;return ESP_OK;}
+esp_err_t nvs_set_blob(nvs_handle_t h,const char *key,const void *data,size_t n){assert(h==1&&opened&&n<=sizeof(staged_settings));if(fail_set)return ESP_FAIL;if(!strcmp(key,"settings_v1")){memset(&staged_settings,0,sizeof(staged_settings));memcpy(&staged_settings,data,n);staged_settings_size=n;}else if(!strcmp(key,"system_v1")){assert(n==sizeof(staged_system));memcpy(staged_system,data,n);staged_system_size=n;}else if(!strcmp(key,"home_v1")){assert(n==sizeof(staged_home));memcpy(&staged_home,data,n);staged_home_size=n;}else if(!strcmp(key,"wifi_v1")){assert(n==sizeof(staged_wifi));memcpy(&staged_wifi,data,n);staged_wifi_size=n;}else if(!strcmp(key,"screen_v1")){assert(n==sizeof(staged_screen));memcpy(&staged_screen,data,n);staged_screen_size=n;}else{assert(!strcmp(key,"config_v5"));memcpy(staged,data,n);staged_size=n;}return ESP_OK;}
+esp_err_t nvs_commit(nvs_handle_t h){assert(h==1&&opened);if(fail_commit)return ESP_FAIL;if(staged_settings_size){stored_settings=staged_settings;settings_size=staged_settings_size;}if(staged_size){memcpy(persisted,staged,staged_size);persisted_size=staged_size;}if(staged_home_size){stored_home=staged_home;home_size=staged_home_size;}if(staged_wifi_size){stored_wifi=staged_wifi;wifi_size=staged_wifi_size;}if(staged_screen_size){stored_screen=staged_screen;screen_size=staged_screen_size;}if(staged_system_size){memcpy(stored_system,staged_system,staged_system_size);system_size=staged_system_size;}++commits;return ESP_OK;}
 void nvs_close(nvs_handle_t h){assert(h==1&&opened);opened=0;}
+esp_err_t nvs_erase_key(nvs_handle_t h,const char *key){
+    assert(h==1&&opened&&settings_size&&kp_settings_valid(&stored_settings,true));
+    if(fail_erase)return ESP_FAIL;
+    size_t *size=NULL;
+    if(!strcmp(key,"config_v1")){if(!legacy_valid)return ESP_FAIL;legacy_valid=false;return ESP_OK;}
+    if(!strcmp(key,"config_v2"))size=&v2_size;else if(!strcmp(key,"config_v3"))size=&v3_size;
+    else if(!strcmp(key,"config_v4"))size=&v4_size;else if(!strcmp(key,"config_v5"))size=&persisted_size;
+    else if(!strcmp(key,"home_v1"))size=&home_size;else{assert(!strcmp(key,"wifi_v1"));size=&wifi_size;}
+    if(!*size)return ESP_FAIL;*size=0;return ESP_OK;
+}
 static bool read_committed(const kp_config_t *config, void *user){
-    assert(locked && config == &s_config);
+    assert(locked && config == &s_settings.config);
     assert(!memcmp(config,user,sizeof(*config)));
     return true;
 }
 static bool failed_reader(const kp_config_t *config, void *user){
-    assert(locked && config == &s_config && user == NULL);
+    assert(locked && config == &s_settings.config && user == NULL);
     return false;
+}
+static bool copy_settings(const kp_settings_t *settings, void *user){
+    assert(locked && settings==&s_settings);*(kp_settings_t *)user=*settings;return true;
 }
 int main(void){
     kp_config_t c,actual,original;kp_defaults(&original);assert(kp_store_init()==ESP_OK);kp_store_get(&actual);assert(!memcmp(&actual,&original,sizeof(actual)));
@@ -52,25 +68,25 @@ int main(void){
     fail_set=true;assert(kp_store_save(&c)==ESP_FAIL);fail_set=false;
     fail_commit=true;assert(kp_store_save(&c)==ESP_FAIL);fail_commit=false;
     kp_store_get(&actual);assert(!memcmp(&original,&actual,sizeof(actual))&&!opened&&!locked);
-    assert(kp_store_save(&c)==ESP_OK&&persisted_size==kp_config_size(&c));assert(kp_store_init()==ESP_OK);
+    assert(kp_store_save(&c)==ESP_OK&&settings_size==offsetof(kp_settings_t,config)+kp_config_size(&c));assert(kp_store_init()==ESP_OK);
     kp_store_get(&actual);assert(actual.active_profile==1&&!memcmp(&c,&actual,sizeof(c)));
     assert(kp_store_read(read_committed,&c)&&!locked);
     // A font shrink must not reset profiles or macros stored by older firmware.
     kp_config_t rare=c;
     memcpy(rare.data+rare.profiles[1].name,"龘字",7);
     memcpy(rare.data+rare.profiles[0].bindings[8].title,"靐字",7);
-    assert(kp_config_valid(&rare));memcpy(persisted,&rare,kp_config_size(&rare));
+    assert(kp_config_valid(&rare));stored_settings.config=rare;
     assert(kp_store_init()==ESP_OK);kp_store_get(&actual);assert(!memcmp(&actual,&rare,sizeof(actual)));
     assert(!kp_profile_name_set(&actual,1,"龘字")&&!kp_binding_set(&actual,0,8,"靐字",NULL,0));
     c.version=99;assert(kp_store_save(&c)==ESP_ERR_INVALID_ARG);
     // Valid v1 survives failed migration commits and takes priority over defaults.
-    persisted_size=0;legacy=(kp_legacy_config_t){.version=1};legacy.bindings[0]=(kp_action_t){.type=KP_KEYBOARD,.keys={0x52}};legacy_valid=true;
+    persisted_size=settings_size=0;legacy=(kp_legacy_config_t){.version=1};legacy.bindings[0]=(kp_action_t){.type=KP_KEYBOARD,.keys={0x52}};legacy_valid=true;
     fail_commit=true;assert(kp_store_init()==ESP_OK);kp_store_get(&actual);kp_step_t s;
     assert(!persisted_size&&kp_binding_step(&actual,kp_binding(&actual,0),0,&s)&&s.action.keys[0]==0x52);
     fail_commit=false;int previous=commits;assert(kp_store_init()==ESP_OK&&commits==previous+1);
     assert(legacy_valid&&legacy.bindings[0].keys[0]==0x52);assert(kp_store_init()==ESP_OK&&commits==previous+1);
     // Multi-profile v2 uses its exact disk layout and discards only descriptions.
-    persisted_size=0;memset(&v2,0,sizeof(v2));v2.version=2;v2.used=1;v2.profile_count=8;v2.active_profile=7;
+    persisted_size=settings_size=0;memset(&v2,0,sizeof(v2));v2.version=2;v2.used=1;v2.profile_count=8;v2.active_profile=7;
     for(unsigned p=0;p<8;p++){
         char name[16];sprintf(name,"情景%u",p);v2.profiles[p].name=v2.used;memcpy(v2.data+v2.used,name,strlen(name)+1);v2.used+=strlen(name)+1;
         for(unsigned i=0;i<8;i++){
@@ -102,10 +118,10 @@ int main(void){
     v2.profiles[0].bindings[1].reserved=1;assert(!kp_migrate_v2(&v2,v2_size,&sentinel));v2=retained;
     kp_step_t bad={{.type=KP_KEYBOARD,.keys={0x66}},0};memcpy(v2.data+v2.profiles[0].bindings[1].steps,&bad,sizeof(bad));assert(!kp_migrate_v2(&v2,v2_size,&sentinel));v2=retained;
     // Invalid/truncated v3 falls back to retained v2, then invalid v2 to v1.
-    ((kp_config_t *)persisted)->version=99;assert(kp_store_init()==ESP_OK);kp_store_get(&actual);assert(actual.active_profile==7);
-    persisted_size=10;v2.profiles[0].bindings[0].title=v2.used;assert(kp_store_init()==ESP_OK);kp_store_get(&actual);
+    settings_size=0;((kp_config_t *)persisted)->version=99;assert(kp_store_init()==ESP_OK);kp_store_get(&actual);assert(actual.active_profile==7);
+    settings_size=0;persisted_size=10;v2.profiles[0].bindings[0].title=v2.used;assert(kp_store_init()==ESP_OK);kp_store_get(&actual);
     assert(actual.profile_count==1&&kp_binding_step(&actual,kp_binding(&actual,0),0,&s)&&s.action.keys[0]==0x52);
-    v2=retained;persisted_size=0;v2_size=536;legacy_valid=false;assert(kp_store_init()==ESP_OK);kp_store_get(&actual);kp_defaults(&original);assert(!memcmp(&actual,&original,sizeof(actual)));
+    v2=retained;persisted_size=settings_size=0;v2_size=536;legacy_valid=false;assert(kp_store_init()==ESP_OK);kp_store_get(&actual);kp_defaults(&original);assert(!memcmp(&actual,&original,sizeof(actual)));
     // A fully occupied v2 arena, with 465 live steps and a live description, migrates without loss.
     memset(&v2,0,sizeof(v2));v2.version=2;v2.profile_count=1;v2.used=28;v2.profiles[0].name=1;
     memcpy(v2.data+1,"A",2);memcpy(v2.data+3,"123456789012345678901234",25);v2.profiles[0].bindings[0].description=3;
@@ -129,7 +145,7 @@ int main(void){
     original=actual;v2.data[v2.profiles[0].name]=0xc0;
     assert(!kp_migrate_v2(&v2,sizeof(v2),&actual)&&!memcmp(&actual,&original,sizeof(actual)));
     // A fully live 6 KiB v3 blob uses its fixed layout and all eight scenarios.
-    persisted_size=0;v2_size=0;memset(&v3,0,sizeof(v3));v3.version=3;v3.profile_count=8;v3.active_profile=7;v3.used=1;
+    persisted_size=settings_size=0;v2_size=0;memset(&v3,0,sizeof(v3));v3.version=3;v3.profile_count=8;v3.active_profile=7;v3.used=1;
     for(unsigned p=0;p<8;p++){v3.profiles[p].name=v3.used;v3.data[v3.used++]=(uint8_t)('A'+p);v3.data[v3.used++]=0;}
     memcpy(v3.data+17,"12345",6);v3.used=24;
     for(unsigned p=0;p<8;p++){
@@ -166,7 +182,7 @@ int main(void){
     // Shared legacy offsets stay shared: migration does not duplicate live data.
     v3.profiles[1].bindings[0]=v3.profiles[0].bindings[0];assert(kp_migrate_v3(&v3,sizeof(v3),&actual));
     assert(actual.profiles[1].bindings[0].steps==actual.profiles[0].bindings[0].steps&&kp_config_valid(&actual));
-    // Home metadata cannot consume or reset even a full shortcut record.
+    // Complete storage preserves the full shortcut arena alongside home metadata.
     kp_home_config_t home, saved_home;kp_store_home_get(&home);kp_home_defaults(&saved_home);
     assert(!memcmp(&home,&saved_home,sizeof(home)));
     strcpy(home.name,"星翼");strcpy(home.badge,"ID / 001");home.avatar=3;home.hour12=1;home.timezone_minutes=-345;
@@ -182,7 +198,7 @@ int main(void){
         assert(!memcmp(&home,&saved_home,sizeof(home)));
     }
     fail_open=fail_set=fail_commit=false;
-    home_size=sizeof(home)-1;assert(kp_store_init()==ESP_OK);kp_store_home_get(&home);kp_home_defaults(&saved_home);
+    home_size=sizeof(home)-1;assert(kp_store_init()==ESP_OK);kp_store_home_get(&saved_home);
     assert(!memcmp(&home,&saved_home,sizeof(home)));kp_store_get(&actual);assert(!memcmp(&original,&actual,sizeof(actual)));
     // Network credentials survive a cold boot without affecting home/macros.
     kp_wifi_config_t wifi, next_wifi;kp_store_wifi_get(&wifi);assert(!wifi.ssid[0]);
@@ -227,7 +243,7 @@ int main(void){
     stored_screen.version=1;screen_size--;assert(kp_store_init()==ESP_OK);kp_store_screen_get(&screen);
     assert(!memcmp(&screen,&next_screen,sizeof(screen)));
     // v4 migration preserves a full arena, all fixed HID bits and shared offsets.
-    kp_defaults(&v4);v4.used=sizeof(v4.data);v4.version=4;v4_size=sizeof(v4);persisted_size=0;
+    kp_defaults(&v4);v4.used=sizeof(v4.data);v4.version=4;v4_size=sizeof(v4);persisted_size=settings_size=0;
     kp_config_t retained_v4=v4;
     for(unsigned fault=0;fault<2;fault++){
         fail_set=fault==0;fail_commit=fault==1;assert(kp_store_init()==ESP_OK&&!persisted_size);
@@ -235,7 +251,7 @@ int main(void){
         assert(!memcmp(actual.data,v4.data,v4.used)&&!memcmp(&v4,&retained_v4,sizeof(v4)));
         assert(kp_binding_step(&actual,kp_binding(&actual,5),0,&s)&&s.action.modifiers==8&&!s.action.logical_modifiers);
     }
-    fail_set=fail_commit=false;assert(kp_store_init()==ESP_OK&&persisted_size==6144);
+    fail_set=fail_commit=false;assert(kp_store_init()==ESP_OK&&settings_size==offsetof(kp_settings_t,config)+6144);
     kp_store_get(&original);
     kp_system_t system;kp_store_system_get(&system);assert(system==KP_SYSTEM_MACOS);
     assert(kp_store_system_save(KP_SYSTEM_WINDOWS)==ESP_OK);assert(kp_store_init()==ESP_OK);
@@ -259,9 +275,53 @@ int main(void){
     assert(kp_binding_set(&c,0,0,"",&s,1)&&kp_store_save(&c)==ESP_OK&&kp_store_init()==ESP_OK);
     kp_store_get(&actual);assert(kp_binding_step(&actual,kp_binding(&actual,0),0,&s)&&s.action.logical_modifiers==3&&s.action.modifiers==2);
     c.version=4;sentinel=c;assert(!kp_migrate_v4(&c,kp_config_size(&c))&&!memcmp(&c,&sentinel,sizeof(c)));
+    // All web settings occupy one blob, and failed saves replace no active module.
+    kp_settings_t before_all,next_all,actual_all;
+    assert(kp_store_settings_read(copy_settings,&before_all)&&!locked);
+    assert(!kp_store_settings_read(NULL,NULL)&&!locked);
+    next_all=before_all;strcpy(next_all.home.name,"Complete");strcpy(next_all.wifi.ssid,"unified-network");strcpy(next_all.wifi.password,"test-pass");
+    assert(kp_profile_add(&next_all.config,"Unified"));next_all.config.active_profile=1;
+    kp_settings_t persisted_before=stored_settings;size_t size_before=settings_size;
+    for(unsigned fault=0;fault<3;fault++){
+        fail_open=fault==0;fail_set=fault==1;fail_commit=fault==2;
+        assert(kp_store_settings_save(&next_all)==ESP_FAIL);
+        assert(kp_store_settings_read(copy_settings,&actual_all)&&!memcmp(&before_all,&actual_all,sizeof(actual_all)));
+        assert(settings_size==size_before&&!memcmp(&stored_settings,&persisted_before,sizeof(stored_settings))&&!locked&&!opened);
+    }
+    fail_open=fail_set=fail_commit=false;previous=commits;
+    assert(kp_store_settings_save(&next_all)==ESP_OK&&commits==previous+1);
+    assert(settings_size==kp_settings_size(&next_all)&&kp_store_init()==ESP_OK);
+    assert(kp_store_settings_read(copy_settings,&actual_all)&&!memcmp(&next_all,&actual_all,sizeof(actual_all)));
+    for(unsigned fault=0;fault<4;fault++){
+        kp_settings_t invalid=next_all;
+        if(!fault)invalid.version=99;else if(fault==1)invalid.home.name[0]=0;
+        else if(fault==2)strcpy(invalid.wifi.password,"short");else invalid.config.active_profile=8;
+        assert(kp_store_settings_save(&invalid)==ESP_ERR_INVALID_ARG&&commits==previous+1);
+    }
+    // Migrate existing v5 + badge + credentials without modifying legacy data.
+    stored_home=next_all.home;home_size=sizeof(stored_home);stored_wifi=next_all.wifi;wifi_size=sizeof(stored_wifi);
+    memcpy(persisted,&next_all.config,kp_config_size(&next_all.config));persisted_size=kp_config_size(&next_all.config);settings_size=0;
+    fail_commit=true;assert(kp_store_init()==ESP_OK&&!settings_size);
+    assert(kp_store_settings_read(copy_settings,&actual_all)&&!memcmp(&next_all,&actual_all,sizeof(actual_all)));
+    fail_commit=false;previous=commits;assert(kp_store_init()==ESP_OK&&commits==previous+1&&settings_size==kp_settings_size(&next_all));
+    assert(!memcmp(persisted,&next_all.config,persisted_size)&&!memcmp(&stored_home,&next_all.home,sizeof(stored_home))&&!memcmp(&stored_wifi,&next_all.wifi,sizeof(stored_wifi)));
+    strcpy(stored_home.name,"Legacy");strcpy(stored_wifi.ssid,"legacy-network");
+    assert(kp_store_init()==ESP_OK&&commits==previous+1);
+    assert(kp_store_settings_read(copy_settings,&actual_all)&&!memcmp(&next_all,&actual_all,sizeof(actual_all)));
+    // A truncated complete record falls back to retained valid legacy records.
+    settings_size--;assert(kp_store_init()==ESP_OK&&commits==previous+2);
+    assert(kp_store_settings_read(copy_settings,&actual_all)&&!strcmp(actual_all.home.name,"Legacy")&&!strcmp(actual_all.wifi.ssid,"legacy-network"));
+    assert(!memcmp(&actual_all.config,&next_all.config,sizeof(next_all.config)));
+    fail_erase=false;assert(kp_store_init()==ESP_OK);
+    assert(!persisted_size&&!v2_size&&!v3_size&&!v4_size&&!legacy_valid&&!home_size&&!wifi_size);
+    assert(kp_store_settings_read(copy_settings,&next_all)&&!memcmp(&actual_all,&next_all,sizeof(next_all)));
+    next_all.config.used=sizeof(next_all.config.data);
+    assert(kp_store_settings_save(&next_all)==ESP_OK&&settings_size==offsetof(kp_settings_t,config)+KP_CONFIG_BYTES);
+    assert(kp_store_init()==ESP_OK&&kp_store_settings_read(copy_settings,&actual_all)&&!memcmp(&actual_all,&next_all,sizeof(next_all)));
+    puts("Complete NVS record, all-module commit failure, restart, v5/home/Wi-Fi migration, precedence and fallback: PASS");
     puts("System NVS isolation, v4 full-capacity migration, logical flags and commit failures: PASS");
     puts("Screen NVS isolation, defaults, cold boot, invalid records and failed commits: PASS");
-    puts("Wi-Fi NVS isolation, cold boot, save failures, clearing and corrupt records: PASS");
+    puts("Wi-Fi complete-record persistence, cold boot, save failures and clearing: PASS");
     puts("Home NVS defaults, restart, isolated saves, failed commits and clock invalidation: PASS");
     puts("Keypad NVS v1/v2/v3/v4 migration, profile persistence and failure recovery: PASS");
 }

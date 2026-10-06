@@ -34,23 +34,35 @@ Bluetooth pairing**.
 
 1. Open **Settings → Hotspot configuration** and enable it; Bluetooth pauses.
 2. Join the hotspot using the displayed name/password, then open `http://192.168.4.1`.
-3. Edit scenarios, gestures and keyboard/media steps; empty steps disable an action.
-   **Set as current** selects the active scenario. Save, then hold OK on the device
-   or click **Exit hotspot** to resume Bluetooth.
+3. Edit the home badge, Wi-Fi network, scenarios and keyboard/media steps; empty
+   steps disable an action. **Set as current** selects the active scenario.
+   Select a physical key and click/hold gesture, then use **Record** or **Manual
+   selection** to edit a keyboard step. **Save all settings**, **Exit hotspot** and
+   **Restore defaults** stay visible at the top. Click **Save all settings** once
+   to save all edits, then hold OK on the device or click **Exit hotspot** to resume
+   Bluetooth. Clearing Wi-Fi also takes effect only after saving. All three modules
+   save together; a failed save keeps the saved settings unchanged. Keep the page
+   open and retry if saving cannot be confirmed.
 
 Left/right **Cmd/Ctrl** sends the corresponding Command on macOS or Ctrl on Windows,
 including macro steps and combinations with Shift. Fixed modifiers and recorded
 keys retain their meaning; the default Command+A mapping remains fixed.
 
 **Home badge** sets identity, avatar, UTC offset and 12/24-hour time; names and
-labels allow up to 16 supported characters. **Sync phone/computer time** sets the
-clock manually. For automatic time, select a 2.4 GHz Wi-Fi network, test it, then
-save it; testing does not save. Leave the password blank after reloading to keep
-its saved value. Until time is available, the home shows `--:--`.
+labels allow up to 16 supported characters. Select or enter a 2.4 GHz Wi-Fi
+network, test it, then click **Save all settings**; testing does not save. The saved
+Wi-Fi password appears when the page opens; use the eye button to hide or show
+it. Until time is available, the home shows `--:--`.
 
-JSON import loads the editor; save to apply. Export backs up scenarios only;
-badge, screen, pairing-system, Wi-Fi and Bluetooth settings are excluded from
-scenario import/export and Restore defaults.
+**Export complete configuration** backs up the badge, Wi-Fi and all scenarios,
+including the Wi-Fi password in plain text; keep the file private. JSON import
+loads all three modules into the editor; save to apply. Single-scenario export
+shares keys only. Older v2–v5 files import scenarios while preserving the badge
+and Wi-Fi edits. Existing device settings migrate automatically; new complete
+files require the updated workbench.
+
+**Restore defaults** resets the badge, Wi-Fi and scenarios after saving. Screen,
+pairing-system and Bluetooth pairing settings remain outside this configuration.
 
 ## Build and flash
 

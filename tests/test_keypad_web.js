@@ -135,3 +135,50 @@ console.log('Browser Wi-Fi UTF-8 byte bounds, password rules, retention and clea
 for(const state of [7,8,9,12])assert(!K.wifiJobMessage({state}).includes('密码错误'));
 assert(K.wifiJobMessage({state:6}).includes('连接成功'));assert(K.wifiJobMessage({state:10}).includes('认证通过'));
 console.log('Wi-Fi result messages distinguish authentication, discovery, timeout and time-service failure: PASS');
+
+async function testSaveSettings(){
+  const drafts=()=>({...K.settingsDefaults(),wifi:{version:1,ssid:'test-network',password:'test-pass'}});
+  for(const [key,invalid] of [
+    ['home',{...K.homeDefaults(),name:'😀'}],
+    ['wifi',{version:1,ssid:'test-network',password:'short'}],
+    ['config',{...defaults(),active_profile:8}]
+  ]){
+    const settings=drafts();settings[key]=invalid;let writes=0;
+    await assert.rejects(K.saveSettings(settings,async()=>{++writes;}));assert.equal(writes,0);
+  }
+  const pending=drafts(),snapshot=copy(pending),bodies=[],paths=[];
+  assert(await K.saveSettings(pending,async(path,body)=>{
+    paths.push(path);bodies.push(body);pending.config.profiles[0].name='later edit';
+  }));
+  assert.deepEqual(paths,['/api/settings']);assert.deepEqual(bodies,[snapshot]);
+  let confirmed=false;
+  await assert.rejects(K.saveSettings(drafts(),async()=>{throw Error('injected failure');},()=>{confirmed=true;}),/尚未确认保存/);
+  assert.equal(confirmed,false);
+  const all=drafts();all.home.name='星翼';all.config.profiles[0].name='完整备份';
+  const exported=K.exportFile(all,'configuration'),parsed=K.parseImport(exported);
+  assert.equal(JSON.parse(exported).version,6);assert(exported.includes('test-pass'));assert(!exported.includes('session'));
+  assert.deepEqual(parsed.settings,all);assert.deepEqual(K.applyImport(defaults(),parsed).settings,all);
+  assert.deepEqual(K.parseImport(K.exportFile(defaults(),'configuration')).config,defaults());
+  for(const alter of [s=>s.home.name='',s=>s.wifi.password='short',s=>delete s.home,s=>s.config.active_profile=99,s=>s.version=9,s=>s.extra=true]){
+    const file=JSON.parse(exported);alter(file.settings);assert.throws(()=>K.parseImport(JSON.stringify(file)));
+  }
+  // The complete transport adds room for metadata instead of shrinking the old 32 KiB scenario limit.
+  const nearLimit=copy(boundary),bytes=c=>new TextEncoder().encode(JSON.stringify(c)).length;
+  for(const binding of nearLimit.profiles[0].bindings)for(const step of binding.steps){
+    if(bytes(nearLimit)>=32750)break;
+    const old=step.keys;step.keys=[4,5,6,7,8,9];if(bytes(nearLimit)>32768)step.keys=old;
+  }
+  assert(K.validate(nearLimit));
+  const expanded={...drafts(),config:nearLimit,home:{...K.homeDefaults(),name:'星'.repeat(16),badge:'翼'.repeat(16)},wifi:{version:1,ssid:'A'.repeat(32),password:'"'.repeat(63)}};
+  assert(bytes(expanded)>32768&&bytes(expanded)<=33792&&K.validateSettings(expanded));
+  assert.deepEqual(K.parseImport(K.exportFile(expanded,'configuration')).settings,expanded);
+  if(process.env.KP_CONFIG_TEST){
+    const {spawnSync}=require('node:child_process');
+    for(const settings of [K.settingsDefaults(),all,{...all,config:boundary},expanded]){
+      const run=spawnSync(process.env.KP_CONFIG_TEST,['--settings-stdin'],{input:JSON.stringify(settings),encoding:'utf8'});
+      assert.equal(run.status,0,run.stderr);assert.deepEqual(JSON.parse(run.stdout).settings,settings);
+    }
+  }
+  console.log('Complete configuration exports/imports all three modules, validates before one save, snapshots requests and confirms only success: PASS');
+}
+testSaveSettings().catch(e=>{console.error(e);process.exitCode=1;});
