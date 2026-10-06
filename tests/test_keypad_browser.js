@@ -10,7 +10,7 @@ async function main(){
   const browser=await chromium.launch({headless:true,chromiumSandbox:true,executablePath:process.env.KP_BROWSER_EXECUTABLE});
   const page=await browser.newPage({viewport:{width:1120,height:900}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  let device=K.defaults(),posts=0,failSave=false;
+  let device=K.defaults(),posts=0,failSave=false,connection='hotspot';
   let job={id:0,kind:0,state:0,busy:false,connected:false,ssid:'',networks:[]},scanPosts=0,testPosts=0,testBody,testState=6,pollFailures=0,lostTestResponse=false;
   let scanNetworks=[{ssid:'nearby-test-network',rssi:-35,secured:true},{ssid:'open-test-network',rssi:-55,secured:false},{ssid:'<b>literal-name</b>',rssi:-65,secured:true}];
   let wifi={ssid:"",has_password:false,state:5,clock_valid:false},wifiPassword="",wifiPosts=0,wifiBody,failWifi=false,settingsPosts=0;
@@ -56,7 +56,7 @@ async function main(){
       assert.equal(request.headers()['x-session'],'test-session');
       return route.fulfill({json:wifi});
     }
-    if(url.pathname==='/api/config')return route.fulfill({json:{config:device,session:'test-session'}});
+    if(url.pathname==='/api/config')return route.fulfill({json:{config:device,session:'test-session',connection}});
     const files={'/':'index.html','/app.js':'app.js','/charset.js':'charset.js','/app.css':'app.css'};
     const file=files[url.pathname];if(!file)return route.fulfill({status:404});
     return route.fulfill({body:fs.readFileSync(path.join(__dirname,'../main/web',file)),contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',headers:{'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'"}});
@@ -325,6 +325,16 @@ async function main(){
   await page.setViewportSize({width:390,height:844});await page.evaluate(()=>scrollTo({top:0,behavior:'instant'}));await page.waitForTimeout(200);
   assert.equal(await page.locator('.brand').count(),1);
   if(process.env.KP_BROWSER_OUTPUT)await page.screenshot({path:path.join(process.env.KP_BROWSER_OUTPUT,'web-mobile.png')});
+  // WiFi sessions must bootstrap fully and disable radio-changing operations
+  // while retaining credential edits and the complete Save operation.
+  connection='wifi';await page.reload();await page.waitForFunction(()=>!document.getElementById('wifi-fields').disabled);
+  assert(await page.locator('#scan-wifi').isDisabled());assert(await page.locator('#test-wifi').isDisabled());
+  assert((await page.locator('#wifi-status').textContent()).includes('当前通过 WiFi 配置'));
+  await page.locator('#wifi-ssid').fill('updated-network');await page.locator('#wifi-password').fill('updated-pass');
+  await page.locator('#save').click();await page.waitForFunction(()=>document.getElementById('dirty').textContent==='全部设置已保存');
+  assert.equal(wifi.ssid,'updated-network');assert(await page.locator('#scan-wifi').isDisabled());assert(await page.locator('#test-wifi').isDisabled());
+  connection='hotspot';await page.reload();await page.waitForFunction(()=>!document.getElementById('wifi-fields').disabled);
+  assert(!(await page.locator('#scan-wifi').isDisabled()));assert(!(await page.locator('#test-wifi').isDisabled()));
   assert.deepEqual(legacyWrites,[]);assert.deepEqual(errors,[]);await browser.close();
   console.log('Browser unified save, failed-save retry, staged defaults/clearing, Wi-Fi scan/test, saved-password display, identity, gestures, manual/recorded keys, steps, import/export and fixed mobile layout: PASS');
 }

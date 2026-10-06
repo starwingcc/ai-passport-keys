@@ -203,7 +203,7 @@
   root.Keypad={settingsDefaults,validateSettings,saveSettings,wifiJobMessage,wifiPayload,homeDefaults,validateHome,timePayload,exportFile,parseImport,applyImport,fileLimit,keys,modCodes,media,defaults,capture,actionLabel,sequenceLabel,titleLabel,capacity,validate,validateText,addStep,removeStep,moveStep,addProfile,removeProfile};
   if(typeof document==='undefined')return;
   let pendingImport=null;
-  let config,session='',selected=0,gesture=0,editing=0,dirty=false,busy=false,recording=null;
+  let config,session='',selected=0,gesture=0,editing=0,dirty=false,busy=false,recording=null,lanWifi=false;
   let home,homeDirty=false,wifi,wifiDirty=false,wifiNetworks=[],wifiRevision=0,wifiSavedPassword='',wifiKeepAllowed=true;
   const $=id=>document.getElementById(id);
   function status(text,error=false){$('status').textContent=text;$('status').className=error?'error':'';}
@@ -337,7 +337,8 @@
     $('wifi-ssid').value=wifi.ssid;$('wifi-password').value=password;
     $('wifi-password').placeholder=wifi.has_password?'密码已保存，留空保持不变':'无密码网络可留空';
     $('wifi-saved').textContent=wifi.ssid?'已保存自动校时网络':'尚未配置自动校时';
-    $('wifi-status').textContent=(wifi.clock_valid?'设备已有有效时间。':'设备尚未校时。')+'配置热点开启时，自动校时暂停；退出热点后尝试连接。';
+    $('wifi-status').textContent=(wifi.clock_valid?'设备已有有效时间。':'设备尚未校时。')+(lanWifi?'当前通过 WiFi 配置；扫描与连接测试请使用本机热点。网络修改在退出配置后生效。':'本机热点开启时，自动校时暂停；退出配置后尝试连接。');
+    $('scan-wifi').disabled=$('test-wifi').disabled=lanWifi;
   }
   async function wifiLoad(password=''){
     const r=await fetch('/api/wifi',{headers:{'X-Session':session},signal:AbortSignal.timeout(8000)});
@@ -503,19 +504,19 @@
     wifiSavedPassword=settings.wifi.password;wifiKeepAllowed=true;
     wifi={...wifi,ssid:settings.wifi.ssid,has_password:!!settings.wifi.password};
     dirty=homeDirty=wifiDirty=false;$('home-saved').textContent='工牌已保存';wifiRender(password);dirtyStatus();
-    $('wifi-status').textContent=settings.wifi.ssid?'网络已保存，退出热点后开始自动校时。':'自动校时网络已清除。';
-    status('完整配置已保存到 Passport。退出热点后生效。');
+    $('wifi-status').textContent=settings.wifi.ssid?'网络已保存，退出配置后开始自动校时。':'自动校时网络已清除。';
+    status('完整配置已保存到 Passport。退出配置后生效。');
   }));
   $('defaults').addEventListener('click',()=>{
     if(!config||busy||!confirm('恢复默认会重置编辑区的工牌、Wi-Fi 与全部按键情景。保存后生效，是否继续？'))return;
     cancelRecording(false);const settings=settingsDefaults();config=settings.config;home=settings.home;editing=0;
     homeRender();homeChanged();$('wifi-ssid').value='';$('wifi-password').value='';wifiKeepAllowed=false;wifiChanged();changed();render();
   });
-  $('exit').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存的修改，仍要退出热点？'))return;operation(async()=>{await request('/api/exit');status('热点正在关闭。设备返回设置；长按 OK 进入首页，再选择“开始控制”。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='会话已结束';});});
-  $('forget').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存修改，清除配对将结束网页会话，仍要继续？'))return;if(!confirm('设备将退出热点并显示确认页，请在设备上确认清除配对。'))return;operation(async()=>{await request('/api/forget');status('请在 Passport 确认清除配对。热点正在关闭。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='请在设备确认';});});
+  $('exit').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存的修改，仍要退出配置？'))return;operation(async()=>{await request('/api/exit');status('配置正在关闭。设备返回Passport配置；长按 OK 返回设置，再长按进入首页，再选择“开始控制”。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='会话已结束';});});
+  $('forget').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存修改，清除配对将结束网页会话，仍要继续？'))return;if(!confirm('设备将退出配置并显示确认页，请在设备上确认清除配对。'))return;operation(async()=>{await request('/api/forget');status('请在 Passport 确认清除配对。配置正在关闭。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='请在设备确认';});});
   window.addEventListener('beforeunload',e=>{if(dirty||homeDirty||wifiDirty){e.preventDefault();e.returnValue='';}});
   fetch('/api/config',{signal:AbortSignal.timeout(8000)}).then(async r=>{
-    if(!r.ok)throw Error('读取设置会话失败');session=(await r.json()).session;
+    if(!r.ok)throw Error('读取设置会话失败');const info=await r.json();session=info.session;lanWifi=info.connection==='wifi';
     const response=await fetch('/api/settings',{headers:{'X-Session':session},signal:AbortSignal.timeout(8000)});
     if(!response.ok)throw Error('读取完整配置失败');const settings=await response.json();validateSettings(settings,true);
     config=settings.config;home=settings.home;wifiSavedPassword=settings.wifi.password;editing=config.active_profile;
@@ -523,5 +524,5 @@
     await wifiLoad(wifiSavedPassword);dirtyStatus();const job=await wifiJobRead();
     if(job.kind===1&&job.state===5)wifiScanRender(job);
     if(job.busy)await operation(()=>wifiJobWait(job.id,wifiRevision));else if(job.kind===2&&job.state!==0)wifiTestRender(job);
-  }).catch(e=>{status('无法读取配置：'+e.message+'。请确认已连接 Passport 热点，然后刷新。',true);$('dirty').textContent='连接失败';});
+  }).catch(e=>{status('无法读取配置：'+e.message+'。请确认仍连接设备所用的网络，然后刷新。',true);$('dirty').textContent='连接失败';});
 })(globalThis);

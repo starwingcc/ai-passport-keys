@@ -67,6 +67,7 @@ static void effect(void *user, kp_effect_t event, const kp_action_t *action) {
     case KP_SAVE_SYSTEM: s_save_system = true; break;
     case KP_AP_START: kp_network_service_ap(true); break;
     case KP_AP_STOP: kp_network_service_ap(false); break;
+    case KP_WIFI_START: kp_network_service_config(true, true); break;
     case KP_TRANSFER_START: kp_network_service_transfer(true); break;
     case KP_TRANSFER_STOP: kp_network_service_transfer(false); break;
     case KP_CLEAR_BOND: s_forget = true; break;
@@ -198,17 +199,22 @@ void app_main(void) {
         }
         kp_network_view_t network; kp_network_service_get(&network);
         s_model.transfer = network.transfer;
-        if (network.ap != previous_ap) {
-            if (network.ap == KP_AP_OFF && previous_ap != KP_AP_OFF) {
+        bool chosen_wifi = s_model.lan.wifi;
+        s_model.lan = network.lan;
+        if (network.lan.state == KP_AP_OFF && (s_model.page == KP_WIFI_CONFIRM || s_model.page == KP_HOTSPOT)) s_model.lan.wifi = chosen_wifi;
+        if (network.lan.state != previous_ap) {
+            if (network.lan.state == KP_AP_OFF && previous_ap != KP_AP_OFF) {
                 s_ap_active = false; kp_store_get(&s_model.config); ++s_model.config_revision;
-                kp_store_home_get(&home); message("热点已关闭");
-                if (s_model.page == KP_HOTSPOT) { s_model.page = KP_SETTINGS; s_model.selected = 3; }
+                kp_store_home_get(&home); message("配置已关闭");
+                if (s_model.page == KP_HOTSPOT) { s_model.page = KP_LAN; s_model.selected = network.lan.wifi ? 1 : 0; }
                 if (network.forget_requested) { s_model.page = KP_FORGET; s_model.selected = 0; }
-            } else if (network.ap == KP_AP_STARTING) message("正在开启热点");
-            else if (network.ap == KP_AP_ACTIVE) { s_ap_active = true; message("配置完成后长按 OK 返回"); }
-            else if (network.ap == KP_AP_STOPPING) message("正在关闭热点");
-            else if (network.ap == KP_AP_FAILED) { s_model.page = KP_HOTSPOT; message("热点操作失败，长按重试"); }
-            previous_ap = network.ap; resync_input();
+            } else if (network.lan.state == KP_AP_STARTING) { s_ap_active = false; message("正在开启配置"); }
+            else if (network.lan.state == KP_AP_ACTIVE) { s_ap_active = true; message("配置完成后长按 OK 返回"); }
+            else if (network.lan.state == KP_AP_STOPPING) { s_ap_active = false; message("正在关闭配置"); }
+            else if (network.lan.state == KP_AP_FAILED || network.lan.state == KP_AP_NO_WIFI) {
+                s_ap_active = false; s_model.page = KP_HOTSPOT; message("配置未开启，长按返回");
+            }
+            previous_ap = network.lan.state; resync_input();
         }
         if (s_forget) {
             s_forget = false; resync_input();

@@ -17,8 +17,21 @@ static void *web_malloc(size_t size) {
 // Exercise the actual embedded files and production handlers. HTTP response
 // length is independent from the bounded writes performed by the TCP transport.
 #define malloc web_malloc
+#define send web_socket_send
+#define recv web_socket_recv
+#define select web_select
+#define setsockopt web_setsockopt
+#define shutdown web_shutdown
+#define close web_close
 #include "../main/keyboard/keypad_web.c"
+#include "../main/keyboard/keypad_transfer_io.c"
 #undef malloc
+#undef send
+#undef recv
+#undef select
+#undef setsockopt
+#undef shutdown
+#undef close
 __asm__(".data\n"
         ".globl _binary_index_html_start\n_binary_index_html_start:\n"
         ".incbin \"main/web/index.html\"\n.byte 0\n"
@@ -49,7 +62,8 @@ kp_network_status_t kp_network_status(void){return KP_NET_PAUSED;}
 uint64_t kp_store_time_read(uint64_t now){(void)now;return 0;}
 static kp_config_t committed;
 static kp_home_config_t committed_home; static kp_clock_t test_clock;
-int64_t esp_timer_get_time(void){return 1000000;}
+static uint32_t clock_ms=1000,save_delay;
+int64_t esp_timer_get_time(void){return (int64_t)clock_ms*1000;}
 void kp_store_home_get(kp_home_config_t *out){*out=committed_home;}
 esp_err_t kp_store_home_save(const kp_home_config_t *home){if(fail_alloc)return ESP_FAIL;committed_home=*home;return ESP_OK;}
 bool kp_store_time_sync(uint64_t epoch,uint64_t now){return kp_clock_sync(&test_clock,epoch,now);}
@@ -63,9 +77,22 @@ static esp_netif_t netif, station_netif;
 static httpd_uri_t routes[18];
 static unsigned route_count, wifi_started, wifi_initialized;
 static bool fail_http_start;
+static unsigned socket_calls,largest_socket_send,aborts,graceful_closes,closes,queue_calls;
+static int io_mode,aborted_fd,pending_fd=-1;
+static bool abort_linger;
+static bool fail_override,fail_queue,fail_http_stop;
+static void (*pending_work)(void *);
+static void *pending_arg;
 
 static void reset_response(void) {
+    // Model HTTPD closing a failed response before accepting a reused fd.
+    if (s_http) {
+        client_t *c=client(10);
+        if(c&&c->failed)close_session(s_http,10);
+        if(!client(10))assert(open_session(s_http,10)==ESP_OK);
+    }
     response_size = largest_send = send_calls = finished = 0;
+    socket_calls=largest_socket_send=0;
     fail_send_at = 0; status = "200 OK"; content_type = NULL;
     response[0] = 0;
 }
@@ -76,6 +103,47 @@ static bool collect(void *user, const char *data, size_t count) {
     response_size += count; response[response_size] = 0;
     return true;
 }
+ssize_t web_socket_send(int fd,const void *data,size_t count,int flags) {
+    assert(client(fd)&&flags==MSG_DONTWAIT&&count<=1440);
+    ++socket_calls;
+    if(count>largest_socket_send)largest_socket_send=(unsigned)count;
+    if(io_mode==1){errno=ENOMEM;return -1;}
+    if(io_mode==2)clock_ms+=10; // slow, but continuously progressing HTTP
+    // Temporary buffer pressure and positive short writes exercise the same
+    // transport used by the real configuration handlers, including large JS.
+    if(socket_calls%3==0){errno=EAGAIN;return -1;}
+    if(count>113)count=113;
+    assert(collect(NULL,data,count));return (ssize_t)count;
+}
+ssize_t web_socket_recv(int fd,void *data,size_t count,int flags) {
+    assert(client(fd)&&count==1&&flags==(MSG_PEEK|MSG_DONTWAIT));
+    if(fd==pending_fd){*(char *)data='G';return 1;}
+    errno=EAGAIN;return -1;
+}
+int web_select(int count,fd_set *readable,fd_set *writable,fd_set *errors,struct timeval *wait) {
+    assert(!readable&&!errors&&wait);
+    if(!count){assert(!writable);clock_ms+=(uint32_t)(wait->tv_usec/1000);return 0;}
+    assert(writable);return 1;
+}
+int web_setsockopt(int fd,int level,int option,const void *value,socklen_t size) {
+    assert(client(fd)&&level==SOL_SOCKET&&option==SO_LINGER&&size==sizeof(struct linger));
+    const struct linger *linger=value;assert(linger->l_onoff==1&&linger->l_linger==0);abort_linger=true;return 0;
+}
+int web_shutdown(int fd,int how){
+    assert(client(fd)&&how==SHUT_RDWR);
+    if(abort_linger){++aborts;aborted_fd=fd;}else ++graceful_closes;
+    abort_linger=false;return 0;
+}
+int web_close(int fd){assert(fd>=10&&fd<20);++closes;return 0;}
+int httpd_req_to_sockfd(httpd_req_t *req){return req->fd?req->fd:10;}
+esp_err_t httpd_sess_set_send_override(httpd_handle_t http,int fd,httpd_send_func_t fn) {
+    assert(http==routes&&client(fd)&&fn==send_full);return fail_override?ESP_FAIL:ESP_OK;
+}
+esp_err_t httpd_queue_work(httpd_handle_t http,void (*work)(void *),void *arg) {
+    assert(http==routes&&!pending_work);++queue_calls;if(fail_queue)return ESP_FAIL;
+    pending_work=work;pending_arg=arg;return ESP_OK;
+}
+static void run_work(void){assert(pending_work);void (*work)(void *)=pending_work;pending_work=NULL;work(pending_arg);}
 esp_err_t httpd_resp_send_chunk(httpd_req_t *req, const char *data, ssize_t count) {
     (void)req;
     assert(count >= 0);
@@ -83,7 +151,7 @@ esp_err_t httpd_resp_send_chunk(httpd_req_t *req, const char *data, ssize_t coun
     if (fail_send_at == send_calls || count > 512) return ESP_FAIL;
     if (!count) { assert(!data); ++finished; return ESP_OK; }
     if ((size_t)count > largest_send) largest_send = count;
-    collect(NULL, data, count); return ESP_OK;
+    return send_full(s_http,httpd_req_to_sockfd(req),data,(size_t)count,0)==count?ESP_OK:ESP_FAIL;
 }
 esp_err_t httpd_resp_send(httpd_req_t *req, const char *data, ssize_t count) {
     (void)req;
@@ -91,7 +159,8 @@ esp_err_t httpd_resp_send(httpd_req_t *req, const char *data, ssize_t count) {
     ++send_calls;
     if(fail_send_at==send_calls)return ESP_FAIL;
     if((size_t)count>largest_send)largest_send=(size_t)count;
-    collect(NULL,data,(size_t)count);++finished;return ESP_OK;
+    if(send_full(s_http,httpd_req_to_sockfd(req),data,(size_t)count,0)!=count)return ESP_FAIL;
+    ++finished;return ESP_OK;
 }
 esp_err_t httpd_resp_sendstr(httpd_req_t *req, const char *text) {
     return httpd_resp_send(req, text, -1);
@@ -135,15 +204,22 @@ bool kp_store_settings_read(kp_store_settings_reader_t reader, void *user) {
 esp_err_t kp_store_settings_save(const kp_settings_t *settings) {
     assert(!reading && kp_settings_valid(settings,false)); ++save_calls;
     if (fail_save) return ESP_FAIL;
+    clock_ms+=save_delay;
     committed=settings->config;committed_home=settings->home;committed_wifi=settings->wifi;
     return ESP_OK;
 }
 esp_err_t httpd_start(httpd_handle_t *out, const httpd_config_t *c) {
-    assert(c->max_uri_handlers==18 && c->max_open_sockets==3 && c->stack_size==6144 && c->lru_purge_enable);
+    assert(c->max_uri_handlers==18 && c->max_open_sockets==6 && c->stack_size==6144 && !c->lru_purge_enable);
+    assert(c->backlog_conn==1&&c->send_wait_timeout==2&&c->recv_wait_timeout==2);
+    assert(c->open_fn==open_session&&c->close_fn==close_session);
     if (fail_http_start) return ESP_FAIL;
-    *out=routes; route_count=0; return ESP_OK;
+    *out=routes; route_count=0;assert(open_session(*out,10)==ESP_OK);return ESP_OK;
 }
-esp_err_t httpd_stop(httpd_handle_t h) { assert(h==routes); route_count=0; return ESP_OK; }
+esp_err_t httpd_stop(httpd_handle_t h) {
+    assert(h==routes);if(fail_http_stop)return ESP_FAIL;
+    for(unsigned i=0;i<HTTP_SOCKETS;++i)if(s_clients[i].used)close_session(h,s_clients[i].fd);
+    pending_work=NULL;route_count=0;return ESP_OK;
+}
 esp_err_t httpd_register_uri_handler(httpd_handle_t h, const httpd_uri_t *route) {
     assert(h==routes && route_count<18); routes[route_count++]=*route; return ESP_OK;
 }
@@ -231,7 +307,7 @@ int main(void) {
     fail_alloc=false;req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&!strcmp(committed_home.name,"星翼"));
     req.method=HTTP_GET;reset_response();assert(api(&req)==ESP_OK&&finished==1&&strstr(response,"星翼"));
     req=(httpd_req_t){.uri="/api/time",.method=HTTP_POST,.host="192.168.4.1",.session=s_session,.body="{\"epoch\":1791167040}",.content_len=20};
-    req.content_len=strlen(req.body);reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&kp_clock_read(&test_clock,2000)==1791167041);
+    req.content_len=strlen(req.body);reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&kp_clock_read(&test_clock,test_clock.monotonic_ms+1000)==1791167041);
     req.body="{\"epoch\":0}";req.content_len=strlen(req.body);req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"400 Bad Request")&&test_clock.epoch==1791167040);
     req=(httpd_req_t){.uri="/api/wifi",.method=HTTP_GET,.host="192.168.4.1"};
     reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"403 Forbidden"));
@@ -277,7 +353,7 @@ int main(void) {
     fail_alloc=true;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"500 Internal Server Error"));
     fail_alloc=false;fail_save=true;req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"500 Internal Server Error"));
     assert(!memcmp(&committed,&all_before.config,sizeof(committed))&&!memcmp(&committed_home,&all_before.home,sizeof(committed_home))&&!memcmp(&committed_wifi,&all_before.wifi,sizeof(committed_wifi)));
-    fail_save=false;req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK"));
+    fail_save=false;save_delay=3000;req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK"));save_delay=0;
     assert(!memcmp(&committed,&all_next.config,sizeof(committed))&&!memcmp(&committed_home,&all_next.home,sizeof(committed_home))&&!memcmp(&committed_wifi,&all_next.wifi,sizeof(committed_wifi)));
     req.body="{\"version\":1}";req.content_len=strlen(req.body);req.received=0;
     unsigned saves_before=save_calls;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"400 Bad Request")&&save_calls==saves_before);
@@ -292,5 +368,63 @@ int main(void) {
     assert(kp_web_stop()==ESP_FAIL&&wifi_started&&wifi_initialized&&netifs==2);fail_setup_stop=false;
     fail_wifi_stop=true;assert(kp_web_stop()==ESP_FAIL&&wifi_started&&wifi_initialized&&netifs==2);fail_wifi_stop=false;
     assert(kp_web_stop()==ESP_OK&&!wifi_started&&!wifi_initialized&&!netifs&&!setup_active);
-    puts("Keypad HTTP bounded assets, zero-copy GET, failures and rollback: PASS");
+    // STA configuration owns HTTP only; it neither creates nor stops Wi-Fi.
+    assert(kp_web_start_wifi("192.168.1.50",NULL)==ESP_OK&&!wifi_initialized&&!wifi_started&&!netifs&&!setup_active);
+    req=(httpd_req_t){.uri="/api/config",.method=HTTP_GET,.host="192.168.1.50"};
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&strstr(response,"\"connection\":\"wifi\""));
+    req.host="192.168.1.50:80";reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK"));
+    req.host="192.168.4.1";reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"403 Forbidden"));
+    req.host="192.168.1.50";req.method=HTTP_POST;req.uri="/api/wifi/scan";req.session=s_session;
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"409 Conflict"));
+
+    // A browser can retain six connections across HTML/JS/CSS refreshes.
+    // Failed override installation must not consume one of those slots.
+    fail_override=true;assert(open_session(s_http,11)==ESP_FAIL&&!client(11));fail_override=false;
+    for(int fd=11;fd<16;++fd)assert(open_session(s_http,fd)==ESP_OK);
+    unsigned aborted=aborts;
+    for(unsigned refresh=0;refresh<2;++refresh)for(unsigned i=0;i<4;++i){
+        httpd_req_t asset={.uri=files[i].uri,.fd=10+(int)i};reset_response();
+        assert(static_file(&asset)==ESP_OK&&finished==1&&socket_calls>1&&largest_socket_send<=1440);
+        assert(response_size==(size_t)(files[i].end-files[i].start-1)&&!memcmp(response,files[i].start,response_size));
+        assert(!client(asset.fd)->failed&&client(asset.fd)->io.waits>0&&aborts==aborted);
+    }
+    // Model a fresh pool of idle/preconnected sockets. Receive timeouts alone
+    // cannot reclaim sockets that never send a request into HTTPD's select().
+    for(int fd=10;fd<16;++fd)close_session(s_http,fd);
+    for(int fd=10;fd<16;++fd)assert(open_session(s_http,fd)==ESP_OK);
+    clock_ms+=HTTP_IDLE_MS-1;
+    unsigned queued=queue_calls;for(unsigned i=0;i<50;++i)kp_web_poll(clock_ms);
+    assert(queue_calls==queued+1&&pending_work);run_work();assert(aborts==aborted);
+    req=(httpd_req_t){.uri="/api/home",.method=HTTP_GET,.host="192.168.1.50",.fd=15};
+    reset_response();assert(api(&req)==ESP_OK);++clock_ms;
+    pending_fd=14;kp_web_poll(clock_ms);run_work();
+    assert(aborts==aborted&&graceful_closes==4&&!client(14)->failed&&!client(15)->failed);
+    pending_fd=-1;kp_web_poll(clock_ms);run_work();assert(aborts==aborted&&graceful_closes==5&&!client(15)->failed);
+    for(int fd=10;fd<15;++fd){assert(client(fd)->failed);close_session(s_http,fd);assert(open_session(s_http,fd)==ESP_OK);}
+    // Allocation pressure is retried for a bounded response, then aborted
+    // once. Reusing the same descriptor must not inherit the failed send.
+    req=(httpd_req_t){.uri="/app.js",.fd=10};reset_response();io_mode=1;
+    uint32_t started=clock_ms;aborted=aborts;
+    assert(static_file(&req)==ESP_FAIL&&clock_ms-started==HTTP_SEND_STALL_MS);
+    assert(aborts==aborted+1&&aborted_fd==10&&client(10)->failed&&!finished);
+    assert(send_full(s_http,10,"late",4,0)==HTTPD_SOCK_ERR_FAIL&&aborts==aborted+1);
+    io_mode=0;reset_response();assert(static_file(&req)==ESP_OK&&finished==1&&!client(10)->failed);
+    assert(response_size==(size_t)(js_end-js_start-1)&&!memcmp(response,js_start,response_size));
+    // Large resources are not WebSocket signaling frames: valid progress over
+    // more than two seconds must not truncate the browser's script.
+    io_mode=2;reset_response();started=clock_ms;aborted=aborts;
+    assert(static_file(&req)==ESP_OK&&finished==1&&clock_ms-started>KP_TRANSFER_SEND_MS);
+    assert(aborts==aborted&&response_size==(size_t)(js_end-js_start-1)&&!memcmp(response,js_start,response_size));
+    io_mode=0;
+    // A failed control-queue insertion can be retried. Stop retains ownership
+    // on failure and rejects requests/polls until HTTPD finally releases it.
+    fail_queue=true;queued=queue_calls;kp_web_poll(clock_ms);assert(queue_calls==queued+1&&!pending_work&&!atomic_load(&s_poll_queued));
+    fail_queue=false;kp_web_poll(clock_ms);assert(pending_work);
+    fail_http_stop=true;assert(kp_web_stop()==ESP_FAIL&&s_http&&atomic_load(&s_stopping));
+    queued=queue_calls;kp_web_poll(clock_ms);assert(queue_calls==queued);reset_response();assert(static_file(&req)==ESP_FAIL&&!send_calls);
+    run_work();fail_http_stop=false;
+    assert(kp_web_stop()==ESP_OK&&!wifi_initialized&&!wifi_started&&!netifs&&!setup_active);
+    queued=queue_calls;kp_web_poll(clock_ms);assert(queue_calls==queued&&!pending_work);
+    fail_http_start=true;assert(kp_web_start_wifi("192.168.1.50",NULL)!=ESP_OK&&!wifi_initialized&&!wifi_started&&!netifs&&!setup_active);fail_http_start=false;
+    puts("Keypad HTTP: real assets/transport, six-connection refresh, partial writes/backpressure, idle preconnect expiry, bounded send abort/reuse, slow-save acknowledgement and retained failed-stop ownership: PASS");
 }

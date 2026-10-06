@@ -1,5 +1,6 @@
 #include "keypad_web.h"
 #include "keypad_web_asset.h"
+#include "keypad_transfer_io.h"
 #include "keypad_store.h"
 #include "keypad_config.h"
 #include "keypad_network.h"
@@ -15,13 +16,31 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <errno.h>
 
 static httpd_handle_t s_http;
 static esp_netif_t *s_netif, *s_station_netif;
 static bool s_wifi_initialized, s_wifi_started;
+static bool s_lan_wifi;
+static char s_host[16] = "192.168.4.1";
 static char s_ssid[32], s_session[33];
 static const char s_password[] = "12345678";
 static kp_web_request_t s_request;
+#define HTTP_SOCKETS 6
+#define HTTP_IDLE_MS 2000U
+#define HTTP_SEND_STALL_MS 5000U
+#define HTTP_SEND_TOTAL_MS 30000U
+typedef struct {
+    int fd;
+    uint32_t used_at;
+    bool used, handling, sending, failed;
+    kp_transfer_io_t io;
+} client_t;
+static client_t s_clients[HTTP_SOCKETS];
+static atomic_bool s_stopping, s_poll_queued;
 extern const char index_start[] __asm__("_binary_index_html_start");
 extern const char index_end[] __asm__("_binary_index_html_end");
 extern const char js_start[] __asm__("_binary_app_js_start");
@@ -33,17 +52,116 @@ extern const char css_end[] __asm__("_binary_app_css_end");
 
 const char *kp_web_ssid(void) { return s_ssid; }
 const char *kp_web_password(void) { return s_password; }
+static uint32_t web_now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+static client_t *client(int fd) {
+    for (unsigned i = 0; i < HTTP_SOCKETS; ++i)
+        if (s_clients[i].used && s_clients[i].fd == fd) return &s_clients[i];
+    return NULL;
+}
+static void abort_session(client_t *c) {
+    if (!c || c->failed) return;
+    c->failed = true;
+    // HTTPD owns the descriptor. Abort now, then let its receive path close it;
+    // queued closures can otherwise outlive and target a reused descriptor.
+    if (!kp_transfer_io_abort(c->fd)) ESP_LOGW("keypad_web", "Cannot abort fd=%d", c->fd);
+}
+static int send_full(httpd_handle_t http, int fd, const char *data, size_t size, int flags) {
+    (void)http; (void)flags;
+    client_t *c = client(fd);
+    if (!c || c->failed) return HTTPD_SOCK_ERR_FAIL;
+    if (!c->handling || !c->sending) {
+        kp_transfer_io_begin_timed(&c->io, HTTP_SEND_STALL_MS, HTTP_SEND_TOTAL_MS);
+        if (c->handling) c->sending = true;
+    }
+    int sent = kp_transfer_io_send(&c->io, fd, data, size);
+    if (sent < 0) abort_session(c);
+    return sent < 0 ? HTTPD_SOCK_ERR_FAIL : sent;
+}
+static esp_err_t open_session(httpd_handle_t http, int fd) {
+    for (unsigned i = 0; i < HTTP_SOCKETS; ++i) if (!s_clients[i].used) {
+        s_clients[i] = (client_t){.used = true, .fd = fd, .used_at = web_now_ms()};
+        esp_err_t rc = httpd_sess_set_send_override(http, fd, send_full);
+        if (rc != ESP_OK) s_clients[i].used = false;
+        return rc;
+    }
+    return ESP_FAIL;
+}
+static void close_session(httpd_handle_t http, int fd) {
+    (void)http;
+    client_t *c = client(fd);
+    if (c) c->used = false;
+    close(fd);
+}
+static bool begin_response(int fd) {
+    client_t *c = client(fd);
+    if (atomic_load(&s_stopping) || !c || c->failed) return false;
+    // Start the send deadline on the first response byte, after any request
+    // upload or NVS commit. A slow save must not expire its acknowledgement.
+    c->handling = true;
+    c->sending = false;
+    return true;
+}
+static void end_response(int fd, const char *kind, esp_err_t rc) {
+    (void)kind;
+    client_t *c = client(fd);
+    if (!c) return;
+    uint32_t elapsed = c->sending ? web_now_ms() - c->io.started_ms : 0;
+    if (rc != ESP_OK || elapsed >= 500U)
+        ESP_LOGW("keypad_web", "TX kind=%s fd=%d rc=%d errno=%d blocked_errno=%d bytes=%u waits=%u ms=%u free=%u largest=%u dma=%u dma_largest=%u dma_min=%u",
+            kind, fd, (int)rc, c->io.error, c->io.blocked_error, (unsigned)c->io.sent, c->io.waits,
+            (unsigned)elapsed, (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_DMA));
+    c->handling = c->sending = false;
+    c->used_at = web_now_ms();
+    if (rc != ESP_OK) abort_session(c);
+}
+static void poll_work(void *arg) {
+    (void)arg;
+    if (!atomic_load(&s_stopping)) {
+        uint32_t now = web_now_ms();
+        // All configuration sessions are HTTP, so idle keep-alives and unused
+        // browser preconnects can expire even before the pool fills. Releasing
+        // them also leaves heap headroom for a later settings upload.
+        for (unsigned i = 0; i < HTTP_SOCKETS; ++i) {
+            client_t *c = &s_clients[i];
+            if (!c->used || c->failed || c->handling || (uint32_t)(now - c->used_at) < HTTP_IDLE_MS) continue;
+            // A request may already be waiting behind the current response.
+            // Peek without consuming its bytes before classifying it as idle.
+            char byte;
+            int pending = recv(c->fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+            if (pending > 0 || (pending < 0 && errno == EINTR)) continue;
+            // No request waiting is not proof that the last response has been
+            // ACKed. A normal shutdown queues FIN after that response; using
+            // the failed-send SO_LINGER=0 path here discards it and sends RST.
+            c->failed = true;
+            shutdown(c->fd, SHUT_RDWR);
+        }
+    }
+    atomic_store(&s_poll_queued, false);
+}
+void kp_web_poll(uint32_t now) {
+    (void)now;
+    if (s_http && !atomic_load(&s_stopping) && !atomic_exchange(&s_poll_queued, true))
+        if (httpd_queue_work(s_http, poll_work, NULL) != ESP_OK) atomic_store(&s_poll_queued, false);
+}
 static esp_err_t fail(httpd_req_t *req, const char *status, const char *message) {
     httpd_resp_set_status(req, status);
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
     return httpd_resp_sendstr(req, message);
 }
 static esp_err_t static_file(httpd_req_t *req) {
+    int fd = httpd_req_to_sockfd(req);
+    if (!begin_response(fd)) return ESP_FAIL;
     const char *start = index_start, *end = index_end, *type = "text/html; charset=utf-8";
     if (!strcmp(req->uri, "/app.js")) { start = js_start; end = js_end; type = "text/javascript; charset=utf-8"; }
     else if (!strcmp(req->uri, "/charset.js")) { start = charset_start; end = charset_end; type = "text/javascript; charset=utf-8"; }
     else if (!strcmp(req->uri, "/app.css")) { start = css_start; end = css_end; type = "text/css; charset=utf-8"; }
-    return kp_web_asset(req, start, end, type);
+    esp_err_t rc = kp_web_asset(req, start, end, type);
+    end_response(fd, "asset", rc);
+    return rc;
 }
 esp_err_t kp_web_asset(httpd_req_t *req, const char *start, const char *end, const char *type) {
     httpd_resp_set_type(req, type);
@@ -80,10 +198,11 @@ static bool write_config(const kp_config_t *config, void *user) {
 static bool write_settings(const kp_settings_t *settings, void *user) {
     return kp_settings_encode(settings, write_body, user);
 }
-static esp_err_t api(httpd_req_t *req) {
-    char host[32];
+static esp_err_t api_body(httpd_req_t *req) {
+    char host[32], host_port[20];
+    snprintf(host_port, sizeof(host_port), "%s:80", s_host);
     if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK ||
-        (strcmp(host, "192.168.4.1") && strcmp(host, "192.168.4.1:80")))
+        (strcmp(host, s_host) && strcmp(host, host_port)))
         return fail(req, "403 Forbidden", "请使用设备显示的地址打开配置页");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_set_type(req, "application/json");
@@ -114,7 +233,7 @@ static esp_err_t api(httpd_req_t *req) {
         esp_err_t rc = httpd_resp_send_chunk(req, "{\"config\":", 10);
         if (rc == ESP_OK && !kp_store_read(write_config, req)) rc = ESP_FAIL;
         if (rc != ESP_OK) return rc;
-        char tail[64]; snprintf(tail, sizeof(tail), ",\"session\":\"%s\"}", s_session);
+        char tail[96]; snprintf(tail, sizeof(tail), ",\"session\":\"%s\",\"connection\":\"%s\"}", s_session, s_lan_wifi ? "wifi" : "hotspot");
         rc = httpd_resp_send_chunk(req, tail, strlen(tail));
         return rc == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : rc;
     }
@@ -122,6 +241,7 @@ static esp_err_t api(httpd_req_t *req) {
     size_t limit = !strcmp(req->uri, "/api/settings") ? KP_SETTINGS_JSON_BYTES : KP_JSON_BYTES;
     if (req->content_len > limit) return fail(req, "413 Payload Too Large", "配置过大");
     if (!strcmp(req->uri, "/api/wifi/scan") || !strcmp(req->uri, "/api/wifi/test")) {
+        if (s_lan_wifi) return fail(req, "409 Conflict", "请通过本机热点扫描或测试 Wi-Fi");
         uint32_t id; esp_err_t rc;
         if (!strcmp(req->uri, "/api/wifi/scan")) {
             if (req->content_len) return fail(req, "400 Bad Request", "扫描不接受请求体");
@@ -203,15 +323,26 @@ static esp_err_t api(httpd_req_t *req) {
     if (rc == ESP_OK && s_request) s_request(forget);
     return rc;
 }
+static esp_err_t api(httpd_req_t *req) {
+    int fd = httpd_req_to_sockfd(req);
+    if (!begin_response(fd)) return ESP_FAIL;
+    esp_err_t rc = api_body(req);
+    end_response(fd, "api", rc);
+    return rc;
+}
 esp_err_t kp_web_stop(void) {
+    atomic_store(&s_stopping, true);
     if (s_http) {
         esp_err_t rc = httpd_stop(s_http);
         if (rc != ESP_OK) return rc;
         s_http = NULL;
     }
+    atomic_store(&s_poll_queued, false);
     s_session[0] = 0;
-    esp_err_t stopped = kp_wifi_setup_stop();
-    if (stopped != ESP_OK) return stopped;
+    if (s_wifi_initialized) {
+        esp_err_t stopped = kp_wifi_setup_stop();
+        if (stopped != ESP_OK) return stopped;
+    }
     if (s_wifi_started) {
         esp_err_t rc = esp_wifi_stop();
         if (rc != ESP_OK) return rc;
@@ -226,40 +357,48 @@ esp_err_t kp_web_stop(void) {
     if (s_station_netif) { esp_netif_destroy_default_wifi(s_station_netif); s_station_netif = NULL; }
     return ESP_OK;
 }
-esp_err_t kp_web_start(kp_web_request_t callback) {
+static esp_err_t start(kp_web_request_t callback, const char *ip) {
     if (s_http) return ESP_OK;
     esp_err_t rc = kp_web_stop();
     if (rc != ESP_OK) return rc;
+    s_lan_wifi = ip != NULL;
+    snprintf(s_host, sizeof(s_host), "%s", ip ? ip : "192.168.4.1");
     uint8_t mac[6]; esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     snprintf(s_ssid, sizeof(s_ssid), "Passport-Keys-%02X%02X", mac[4], mac[5]);
     for (unsigned i = 0; i < 16; ++i) snprintf(s_session + 2 * i, 3, "%02x", (unsigned)(esp_random() & 255));
     s_request = callback;
-    s_netif = esp_netif_create_default_wifi_ap();
-    if (!s_netif) return ESP_ERR_NO_MEM;
-    s_station_netif = esp_netif_create_default_wifi_sta();
-    if (!s_station_netif) { rc = ESP_ERR_NO_MEM; goto fail; }
-    wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
-    rc = esp_wifi_init(&init);
-    if (rc != ESP_OK) goto fail;
-    s_wifi_initialized = true;
-    wifi_config_t cfg = {0};
-    snprintf((char *)cfg.ap.ssid, sizeof(cfg.ap.ssid), "%s", s_ssid);
-    snprintf((char *)cfg.ap.password, sizeof(cfg.ap.password), "%s", s_password);
-    cfg.ap.ssid_len = strlen(s_ssid); cfg.ap.channel = 6; cfg.ap.max_connection = 1;
-    cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    rc = esp_wifi_set_storage(WIFI_STORAGE_RAM);
-    if (rc == ESP_OK) rc = esp_wifi_set_mode(WIFI_MODE_APSTA);
-    if (rc == ESP_OK) rc = esp_wifi_set_config(WIFI_IF_AP, &cfg);
-    wifi_config_t station = {0};
-    if (rc == ESP_OK) rc = esp_wifi_set_config(WIFI_IF_STA, &station);
-    if (rc == ESP_OK) rc = kp_wifi_setup_start();
-    if (rc == ESP_OK) rc = esp_wifi_start();
-    if (rc != ESP_OK) goto fail;
-    s_wifi_started = true;
+    if (!ip) {
+        s_netif = esp_netif_create_default_wifi_ap();
+        if (!s_netif) return ESP_ERR_NO_MEM;
+        s_station_netif = esp_netif_create_default_wifi_sta();
+        if (!s_station_netif) { rc = ESP_ERR_NO_MEM; goto fail; }
+        wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
+        rc = esp_wifi_init(&init);
+        if (rc != ESP_OK) goto fail;
+        s_wifi_initialized = true;
+        wifi_config_t cfg = {0};
+        snprintf((char *)cfg.ap.ssid, sizeof(cfg.ap.ssid), "%s", s_ssid);
+        snprintf((char *)cfg.ap.password, sizeof(cfg.ap.password), "%s", s_password);
+        cfg.ap.ssid_len = strlen(s_ssid); cfg.ap.channel = 6; cfg.ap.max_connection = 1;
+        cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
+        rc = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+        if (rc == ESP_OK) rc = esp_wifi_set_mode(WIFI_MODE_APSTA);
+        if (rc == ESP_OK) rc = esp_wifi_set_config(WIFI_IF_AP, &cfg);
+        wifi_config_t station = {0};
+        if (rc == ESP_OK) rc = esp_wifi_set_config(WIFI_IF_STA, &station);
+        if (rc == ESP_OK) rc = kp_wifi_setup_start();
+        if (rc == ESP_OK) rc = esp_wifi_start();
+        if (rc != ESP_OK) goto fail;
+        s_wifi_started = true;
+    }
+    memset(s_clients, 0, sizeof(s_clients));
+    atomic_store(&s_stopping, false);
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
-    http.max_open_sockets = 3; http.max_uri_handlers = 18;
-    http.lru_purge_enable = true; http.stack_size = 6144;
-    http.recv_wait_timeout = 5; http.send_wait_timeout = 5;
+    http.max_open_sockets = HTTP_SOCKETS; http.max_uri_handlers = 18;
+    http.backlog_conn = 1;
+    http.lru_purge_enable = false; http.stack_size = 6144;
+    http.recv_wait_timeout = 2; http.send_wait_timeout = 2;
+    http.open_fn = open_session; http.close_fn = close_session;
     rc = httpd_start(&s_http, &http);
     if (rc != ESP_OK) goto fail;
     const httpd_uri_t routes[] = {
@@ -290,4 +429,9 @@ esp_err_t kp_web_start(kp_web_request_t callback) {
 fail:
     kp_web_stop();
     return rc;
+}
+esp_err_t kp_web_start(kp_web_request_t callback) { return start(callback, NULL); }
+esp_err_t kp_web_start_wifi(const char *ip, kp_web_request_t callback) {
+    if (!ip || !*ip || strlen(ip) >= sizeof(s_host)) return ESP_ERR_INVALID_ARG;
+    return start(callback, ip);
 }

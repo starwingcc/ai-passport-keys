@@ -201,7 +201,6 @@ LICENSE                  Repository license
 ## Documentation index
 
 Application on this branch: [Passport Keys Bluetooth keyboard](assets/passport-keys.md).
-Next development proposal: [Bidirectional browser file transfer](assets/passport-transfer-plan.md).
 
 Engineering and contribution guides define the rules; examples and archives
 provide reference material. Choose the entry that matches your task.

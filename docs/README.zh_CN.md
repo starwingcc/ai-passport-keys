@@ -196,7 +196,6 @@ LICENSE                  仓库许可证
 ## 文档索引
 
 本分支应用：[Passport Keys 蓝牙键盘](assets/passport-keys.zh_CN.md)。
-后续开发提案：[浏览器双向文件流转](assets/passport-transfer-plan.zh_CN.md)。
 
 工程与协作文档定义开发规则，示例与档案提供参考资料。按当前任务选择入口即可。
 

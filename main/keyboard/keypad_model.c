@@ -285,17 +285,21 @@ void kp_system_saved(kp_model_t *m, bool success) {
 }
 void kp_hotspot_exit(kp_model_t *m) {
     if (m->page != KP_HOTSPOT) return;
-    page(m, KP_SETTINGS);
+    page(m, KP_LAN);
+    m->selected = m->lan.wifi ? 1 : 0;
     emit(m, KP_AP_STOP, NULL);
 }
 static void back(kp_model_t *m) {
     switch (m->page) {
     case KP_CONSOLE: case KP_SETTINGS: page(m, KP_MENU); break;
     case KP_HOTSPOT: kp_hotspot_exit(m); break;
-    case KP_FORGET: case KP_AP_CONFIRM: page(m, KP_SETTINGS); break;
+    case KP_FORGET: page(m, KP_SETTINGS); break;
+    case KP_AP_CONFIRM: page(m, KP_LAN); break;
+    case KP_WIFI_CONFIRM: page(m, KP_LAN); m->selected = 1; break;
+    case KP_LAN: page(m, KP_SETTINGS); m->selected = 1; break;
     case KP_PROFILES: page(m, KP_MENU); break;
     case KP_SCREEN: page(m, KP_SETTINGS); break;
-    case KP_TRANSFER: page(m, KP_SETTINGS); m->selected = 1; break;
+    case KP_TRANSFER: page(m, KP_SETTINGS); m->selected = 2; break;
     case KP_SYSTEM:
         if (!m->system_saving) page(m, KP_SETTINGS);
         break;
@@ -349,8 +353,8 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
         if (target == KP_PROFILES) m->selected = m->config.active_profile;
     } else if (m->page == KP_PROFILES) emit(m, KP_SELECT_PROFILE, NULL);
     else if (m->page == KP_SETTINGS) {
-        kp_page_t target = m->selected == 0 ? KP_SCREEN : m->selected == 1 ? KP_TRANSFER :
-                           m->selected == 2 ? KP_SYSTEM : m->selected == 3 ? KP_AP_CONFIRM : KP_FORGET;
+        kp_page_t target = m->selected == 0 ? KP_SCREEN : m->selected == 1 ? KP_LAN :
+                           m->selected == 2 ? KP_TRANSFER : m->selected == 3 ? KP_SYSTEM : KP_FORGET;
         page(m, target);
         if (target == KP_TRANSFER) m->selected = m->transfer.enabled ? 1 : 0;
         if (target == KP_SYSTEM) {
@@ -361,10 +365,17 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
         m->screen_setting = m->selected;
         m->screen_draft = m->screen_config; m->screen_save_failed = false;
         page(m, KP_SCREEN_EDIT);
-    } else if (m->page == KP_AP_CONFIRM) {
+    } else if (m->page == KP_LAN) {
+        bool wifi = m->selected == 1;
+        page(m, wifi ? KP_WIFI_CONFIRM : KP_AP_CONFIRM);
+        m->lan.wifi = wifi;
+    } else if (m->page == KP_AP_CONFIRM || m->page == KP_WIFI_CONFIRM) {
         bool confirm = m->selected == 1;
-        page(m, confirm ? KP_HOTSPOT : KP_SETTINGS);
-        if (confirm) emit(m, KP_AP_START, NULL);
+        bool wifi = m->page == KP_WIFI_CONFIRM;
+        if (confirm && wifi && !m->lan.configured) return;
+        page(m, confirm ? KP_HOTSPOT : KP_LAN);
+        m->selected = confirm ? 0 : wifi ? 1 : 0;
+        if (confirm) emit(m, wifi ? KP_WIFI_START : KP_AP_START, NULL);
     } else if (m->page == KP_FORGET) {
         bool confirm = m->selected == 1; // Cancel is initially selected.
         page(m, KP_SETTINGS);

@@ -24,6 +24,7 @@ ssize_t test_send(int fd,const void *data,size_t size,int flags) {
     if(mode==3) { clock_ms+=600; }
     if(mode==4) return 0;
     if(mode==5) { errno=ENOMEM;return -1; }
+    if(mode==6&&calls%2==1) { errno=EAGAIN;return -1; }
     if(!mode&&calls%3==0) { errno=EAGAIN;return -1; }
     if(size>113)size=113; // positive short writes, including midway through payload
     assert(received_size+size<=sizeof(received));
@@ -34,7 +35,7 @@ int test_select(int count,fd_set *r,fd_set *w,fd_set *x,struct timeval *timeout)
     assert(!r&&!x&&timeout);
     if(!count) { assert(!w);clock_ms+=(uint32_t)(timeout->tv_usec/1000);return 0; }
     assert(count==42&&w&&FD_ISSET(41,w));
-    if(mode==1) { clock_ms+=(uint32_t)(timeout->tv_sec*1000+timeout->tv_usec/1000);return 0; }
+    if(mode==1||mode==6) { clock_ms+=(uint32_t)(timeout->tv_sec*1000+timeout->tv_usec/1000);return 0; }
     return 1; // includes spuriously writable while allocation fails
 }
 int test_setsockopt(int fd,int level,int option,const void *value,socklen_t size) {
@@ -55,18 +56,31 @@ int main(void) {
     assert(io.sent==4100&&io.waits>0&&!io.error);
     reset(1);kp_transfer_io_begin(&io);
     assert(kp_transfer_io_send(&io,41,payload,sizeof(payload))<0&&io.error==ETIMEDOUT&&clock_ms==2000);
-    assert(!io.sent&&io.waits==1&&io.blocked_error==EAGAIN);
+    assert(!io.sent&&io.waits==20&&io.blocked_error==EAGAIN);
     reset(2);kp_transfer_io_begin(&io);
     assert(kp_transfer_io_send(&io,41,payload,1)<0&&io.error==ECONNRESET);
     unsigned before=calls;assert(kp_transfer_io_send(&io,41,payload,1)<0&&calls==before);
     reset(3);kp_transfer_io_begin(&io);
     assert(kp_transfer_io_send(&io,41,payload,sizeof(payload))<0&&io.error==ETIMEDOUT&&io.sent>0);
     assert(calls==4); // progress cannot renew a transaction's deadline
+    // HTTP allows a slow response but still bounds a stalled receiver and the
+    // total time spent on one client. Defaults above retain the WS contract.
+    reset(3);kp_transfer_io_begin_timed(&io,5000,30000);
+    assert(kp_transfer_io_send(&io,41,payload,sizeof(payload))==sizeof(payload));
+    assert(clock_ms>2000&&io.sent==sizeof(payload)&&!memcmp(received,payload,sizeof(payload)));
+    mode=1;before=clock_ms;
+    assert(kp_transfer_io_send(&io,41,payload,1)<0&&io.error==ETIMEDOUT&&clock_ms-before==5000);
+    reset(3);kp_transfer_io_begin_timed(&io,5000,3000);
+    assert(kp_transfer_io_send(&io,41,payload,sizeof(payload))<0&&io.error==ETIMEDOUT&&clock_ms==3000);
     reset(4);kp_transfer_io_begin(&io);
     assert(kp_transfer_io_send(&io,41,payload,1)<0&&io.error==ECONNRESET);
     reset(5);kp_transfer_io_begin(&io);
     assert(kp_transfer_io_send(&io,41,payload,1)<0&&io.error==ETIMEDOUT&&clock_ms==2000);
     assert(io.waits==2000&&io.blocked_error==ENOMEM); // no tight allocation spin
+    // Space below select's low-water mark still permits positive short writes.
+    reset(6);kp_transfer_io_begin_timed(&io,5000,30000);
+    assert(kp_transfer_io_send(&io,41,payload,sizeof(payload))==sizeof(payload));
+    assert(clock_ms>2000&&io.waits>0&&!memcmp(received,payload,sizeof(payload)));
     reset(0);clock_ms=UINT32_MAX-5;kp_transfer_io_begin(&io);clock_ms=10;
     assert(kp_transfer_io_send(&io,41,payload,1)==1); // uptime wrap is not expiry
     assert(kp_transfer_io_abort(41)&&abort_stage==2);

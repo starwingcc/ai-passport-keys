@@ -149,15 +149,18 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     static kp_home_config_t previous_home;
     static uint64_t previous_minute;
     static kp_transfer_view_t previous_transfer;
+    static kp_lan_view_t previous_lan;
     if (cached && revision == m->config_revision && previous_profile == m->config.active_profile &&
         previous_page == m->page && previous_selected == m->selected &&
         !memcmp(&previous_transfer, &m->transfer, sizeof(m->transfer)) &&
+        !memcmp(&previous_lan, &m->lan, sizeof(m->lan)) &&
         !memcmp(&previous_feedback, &m->feedback, sizeof(m->feedback)) && !memcmp(&previous_ble, &ble, sizeof(ble)) &&
         battery == previous_battery && !strcmp(previous_message, message) &&
         !strcmp(previous_ssid, ssid) && !strcmp(previous_password, password) &&
         !memcmp(&previous_home, home, sizeof(*home)) && (m->page != KP_MENU || previous_minute == epoch / 60)) return;
     if (!s_title || !bsp_lvgl_lock(1000)) return;
     previous_transfer = m->transfer;
+    previous_lan = m->lan;
     if (s_transfer_qr && (m->page != KP_TRANSFER || m->transfer.state != KP_TRANSFER_READY)) {
         lv_obj_delete(s_transfer_qr); s_transfer_qr = NULL; s_qr_url[0] = 0;
     }
@@ -171,7 +174,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     snprintf(previous_message, sizeof(previous_message), "%s", message);
     snprintf(previous_ssid, sizeof(previous_ssid), "%s", ssid);
     snprintf(previous_password, sizeof(previous_password), "%s", password);
-    const char *titles[] = {"开始控制", "Passport", "设置", "热点配置", "清除配对", "情景列表", "热点配置", "屏幕", "屏幕", "配对系统", "文件流转"};
+    const char *titles[] = {"开始控制", "Passport", "设置", "通过本机热点", "清除配对", "情景列表", "通过本机热点", "屏幕", "屏幕", "配对系统", "文件流转", "Passport配置", "通过 WiFi"};
     bool command = m->page == KP_CONSOLE && m->feedback.visible;
     hidden(s_title, false);
     lv_obj_set_pos(s_title, 18, 20); lv_obj_set_width(s_title, 151);
@@ -179,6 +182,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     lv_obj_set_style_text_font(s_title, command ? &passport_font_16 : &passport_font_20, 0);
     if (m->page == KP_SYSTEM || m->page == KP_TRANSFER) lv_obj_set_style_text_font(s_title, &passport_font_20_menu, 0);
     lv_label_set_text(s_title, command ? kp_text(&m->config, m->config.profiles[m->config.active_profile].name) : titles[m->page]);
+    if (m->page == KP_HOTSPOT && m->lan.wifi) lv_label_set_text(s_title, "通过 WiFi");
     if (battery >= 0) lv_label_set_text_fmt(s_battery, "%d%%", battery);
     else lv_label_set_text(s_battery, "--");
     lv_label_set_text(s_state, ble.paused ? "蓝牙已暂停" : ble.failed ? "蓝牙异常" : ble.ready ? "蓝牙已连接" :
@@ -332,7 +336,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
             lv_obj_set_pos(count, 124, 238); lv_obj_set_size(count, 98, 24);
             lv_obj_set_style_text_font(count, &passport_font_16, 0); lv_obj_set_style_text_color(count, lv_color_hex(INK), 0);
             lv_label_set_text_fmt(count, "在线 %u 台", t->peers);
-        } else if (t->state == KP_TRANSFER_NO_WIFI) lv_label_set_text(s_body, "请先进入热点配置\n保存 Wi-Fi 后再开启");
+        } else if (t->state == KP_TRANSFER_NO_WIFI) lv_label_set_text(s_body, "请先通过本机热点\n保存 Wi-Fi 后再开启");
         else if (t->state == KP_TRANSFER_FAILED) lv_label_set_text(s_body, "请检查已保存的 Wi-Fi\n选择开启可重试连接");
         else if (t->state == KP_TRANSFER_CONNECTING) lv_label_set_text(s_body, "正在连接已保存的 Wi-Fi\n连接成功后显示访问地址");
         else if (t->state == KP_TRANSFER_RECONNECTING) lv_label_set_text(s_body, "连接已断开，正在重连\n重连后更新访问地址");
@@ -474,38 +478,51 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
                          kp_text(&m->config, m->config.profiles[i].name), i == m->config.active_profile ? " *" : "");
             }
             lv_label_set_text(s_footer, "上下选择，OK 切换");
-        } else if (m->page == KP_MENU || m->page == KP_SETTINGS || m->page == KP_FORGET || m->page == KP_AP_CONFIRM) {
+        } else if (m->page == KP_MENU || m->page == KP_SETTINGS || m->page == KP_FORGET || m->page == KP_AP_CONFIRM || m->page == KP_LAN || m->page == KP_WIFI_CONFIRM) {
             hidden(s_body, true);
             const char *menu[] = {"开始控制", "情景列表", "设置"};
-            const char *settings[] = {"屏幕", "文件流转", "配对系统", "热点配置", "清除蓝牙配对"};
+            const char *settings[] = {"屏幕", "Passport配置", "文件流转", "配对系统", "清除蓝牙配对"};
+            const char *lan[] = {"通过本机热点", "通过 WiFi"};
             const char *forget[] = {"取消", "确认清除"};
             const char *ap[] = {"取消", "开启"};
-            const char **entries = m->page == KP_MENU ? menu : m->page == KP_SETTINGS ? settings : m->page == KP_FORGET ? forget : ap;
+            const char **entries = m->page == KP_MENU ? menu : m->page == KP_SETTINGS ? settings : m->page == KP_FORGET ? forget : m->page == KP_LAN ? lan : ap;
             unsigned count = m->page == KP_SETTINGS ? KP_SETTINGS_COUNT : m->page == KP_MENU ? 3 : 2;
             unsigned first = m->page == KP_SETTINGS ? kp_settings_first(m->selected) : 0;
             for (unsigned i = first; i < count && i < first + 4; ++i) {
                 lv_obj_t *row = menu_row(i - first, i == m->selected);
                 lv_label_set_text_fmt(row, "%s %s", i == m->selected ? ">" : " ", entries[i]);
-                if (m->page == KP_SETTINGS && (i == 1 || i == 2)) {
+                if (m->page == KP_WIFI_CONFIRM && i == 1 && !m->lan.configured)
+                    lv_obj_set_style_text_color(row, lv_color_hex(0x617467), 0);
+                if (m->page == KP_SETTINGS && (i == 2 || i == 3)) {
                     lv_obj_set_width(row, 113);
-                    lv_obj_t *value = s_screen_values[i - 1]; hidden(value, false);
+                    lv_obj_t *value = s_screen_values[i - 2]; hidden(value, false);
                     lv_obj_set_pos(value, 137, MENU_TOP + (i - first) * MENU_PITCH); lv_obj_set_size(value, 83, MENU_HEIGHT);
                     lv_obj_set_style_text_color(value, lv_color_hex(m->selected == i ? ACCENT : INK), 0);
-                    lv_label_set_text(value, i == 1 ? (m->transfer.enabled ? "已开启" : "已关闭") :
+                    lv_label_set_text(value, i == 2 ? (m->transfer.enabled ? "已开启" : "已关闭") :
                         m->system == KP_SYSTEM_MACOS ? "macOS" : "Windows");
                 }
             }
-            if (m->page == KP_FORGET || m->page == KP_AP_CONFIRM) {
+            if (m->page == KP_FORGET || m->page == KP_AP_CONFIRM || m->page == KP_WIFI_CONFIRM) {
                 hidden(s_body, false); lv_obj_set_pos(s_body, 20, 195);
-                snprintf(text, sizeof(text), "%s", m->page == KP_FORGET ? "清除后请在电脑忽略设备\n再重新连接" : m->transfer.enabled ? "开启热点会结束文件流转\n并暂时断开蓝牙" : "开启热点会暂时断开蓝牙");
+                snprintf(text, sizeof(text), "%s", m->page == KP_FORGET ? "清除后请在电脑忽略设备\n再重新连接" :
+                    m->page == KP_WIFI_CONFIRM && !m->lan.configured ? "尚未配置 WiFi\n先通过本机热点保存网络" :
+                    m->transfer.enabled ? (m->page == KP_WIFI_CONFIRM ? "开启会结束文件流转\n保持蓝牙连接" : "开启会结束文件流转\n暂时断开蓝牙") :
+                    m->page == KP_WIFI_CONFIRM ? "连接已保存的 WiFi\n保持蓝牙连接" : "开启本机热点\n暂时断开蓝牙");
                 lv_label_set_text(s_footer, "上下选择，OK 确认");
             } else lv_label_set_text(s_footer, "上下选择，OK 进入");
         } else if (m->page == KP_HOTSPOT) {
-            snprintf(text, sizeof(text), "连接此热点\n%s\n密码\n%s\n浏览器打开\nhttp://192.168.4.1", ssid, password);
+            if (m->lan.state == KP_AP_ACTIVE) {
+                if (m->lan.wifi) snprintf(text, sizeof(text), "已连接 WiFi\n%s\n浏览器打开\nhttp://%s\n请连接同一局域网", m->lan.ssid, m->lan.ip);
+                else snprintf(text, sizeof(text), "连接本机热点\n%s\n密码\n%s\n浏览器打开\nhttp://192.168.4.1", ssid, password);
+            } else if (m->lan.state == KP_AP_NO_WIFI) snprintf(text, sizeof(text), "尚未配置 WiFi\n先通过本机热点保存网络");
+            else if (m->lan.state == KP_AP_FAILED) snprintf(text, sizeof(text), "%s\n长按 OK 返回后重试", m->lan.wifi ? "WiFi 连接或服务启动失败" : "本机热点操作失败");
+            else snprintf(text, sizeof(text), "%s\n请稍候，长按 OK 取消", m->lan.state == KP_AP_STOPPING ? "正在关闭配置" : m->lan.wifi ? "正在连接 WiFi" : "正在开启本机热点");
+            lv_label_set_text(s_footer, "长按 OK 关闭并返回");
         }
         lv_label_set_text(s_body, text);
     }
     if (!home_page && m->page != KP_SCREEN && m->page != KP_SCREEN_EDIT && m->page != KP_SYSTEM && m->page != KP_TRANSFER) lv_label_set_text(s_message, message);
+    if (m->page == KP_LAN || m->page == KP_AP_CONFIRM || m->page == KP_WIFI_CONFIRM) lv_label_set_text(s_message, "");
     if (!home_page) lv_obj_set_style_text_align(s_battery, LV_TEXT_ALIGN_RIGHT, 0);
     bsp_lvgl_unlock();
 }

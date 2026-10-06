@@ -85,8 +85,10 @@ uint32_t esp_random(void);
 #define ESP_MAC_WIFI_SOFTAP 1
 esp_err_t esp_read_mac(uint8_t *, int);
 #define MALLOC_CAP_8BIT 1
+#define MALLOC_CAP_DMA 8
 size_t heap_caps_get_free_size(unsigned);
 size_t heap_caps_get_largest_free_block(unsigned);
+size_t heap_caps_get_minimum_free_size(unsigned);
 #define ESP_LOGW(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
 #define ESP_LOGI(...) ((void)0)

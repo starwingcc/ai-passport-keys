@@ -19,7 +19,7 @@
 
 应用嵌入四份只读 LVGL 字库：动态文字使用 16/20/28px、2bpp、无损 RLE 压缩，
 固定界面使用未压缩 20px、4bpp。`passport-codepoints.txt` 列出 3,886 个动态字形，
-`passport-ui-codepoints.txt` 列出 292 个固定字形。控件显式绑定字体；动态情景名称
+`passport-ui-codepoints.txt` 列出 300 个固定字形。控件显式绑定字体；动态情景名称
 与所有菜单行均使用 `passport_font_20_menu`。开始控制仍使用 16px 映射文字及固定
 20px 实体键标签。压缩后的 16/28px 字库保留原来的像素和度量。
 全部子集的位图偏移均在 20 位以内；`CONFIG_LV_FONT_FMT_TXT_LARGE=n`

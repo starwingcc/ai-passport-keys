@@ -17,7 +17,7 @@ returns or cancels the current action. Enter Start control to send keys.
 | DOWN | Backspace | Left Command+A | None | Hold Down arrow |
 | OK | Enter | None | None | Return / cancel |
 
-Settings are ordered **Screen → File transfer → Pairing system → Hotspot configuration →
+Settings are ordered **Screen → Passport configuration → File transfer → Pairing system →
 Clear Bluetooth pairing**, with four visible rows and scrolling.
 
 - **Screen**: adjust brightness and idle dim/off timers; zero disables a timer.
@@ -28,7 +28,7 @@ Clear Bluetooth pairing**, with four visible rows and scrolling.
   the running state. Hold OK returns while sharing remains enabled. The device
   shows the current URL/QR and browser count only when the service is ready.
   No saved Wi-Fi: configure it in the hotspot first. After failure select Enable
-  to retry. Restart defaults to disabled; entering the hotspot ends sharing.
+  to retry. Restart defaults to disabled; starting either configuration mode ends sharing.
 - **Pairing system**: manually select the global macOS (first-use default) or
   Windows setting. UP/DOWN previews, OK saves, hold OK returns; `*` marks the
   saved system. Failed saves retain it. Changes cancel actions and release keys.
@@ -38,15 +38,21 @@ Clear Bluetooth pairing**, with four visible rows and scrolling.
 
 ## Web configuration
 
-1. Open **Settings → Hotspot configuration** and enable it; Bluetooth pauses.
-2. Join the hotspot using the displayed name/password, then open `http://192.168.4.1`.
+1. Open **Settings → Passport configuration**, select **Device hotspot** or **WiFi**,
+   then choose **Cancel** or **Enable**. Device hotspot pauses Bluetooth until
+   configuration closes; WiFi keeps Bluetooth connected. Enabling configuration
+   ends file transfer.
+2. For **Device hotspot**, join the displayed network and open `http://192.168.4.1`.
+   For **WiFi**, a saved working network is required; use a browser in the same LAN
+   and open the device’s displayed IP. Failed connections show no configuration
+   address; hold OK to return and retry. No saved Wi-Fi disables Enable.
 3. Edit the home badge, Wi-Fi network, scenarios and keyboard/media steps; empty
    steps disable an action. **Set as current** selects the active scenario.
    Select a physical key and click/hold gesture, then use **Record** or **Manual
-   selection** to edit a keyboard step. **Save all settings**, **Exit hotspot** and
+   selection** to edit a keyboard step. **Save all settings**, **Exit configuration** and
    **Restore defaults** stay visible at the top. Click **Save all settings** once
-   to save all edits, then hold OK on the device or click **Exit hotspot** to resume
-   Bluetooth. Clearing Wi-Fi also takes effect only after saving. All three modules
+   to save all edits, then hold OK on the device or click **Exit configuration** to close
+   configuration. Clearing Wi-Fi also takes effect only after saving. All three modules
    save together; a failed save keeps the saved settings unchanged. Keep the page
    open and retry if saving cannot be confirmed.
 
@@ -56,7 +62,9 @@ keys retain their meaning; the default Command+A mapping remains fixed.
 
 **Home badge** sets identity, avatar, UTC offset and 12/24-hour time; names and
 labels allow up to 16 supported characters. Select or enter a 2.4 GHz Wi-Fi
-network, test it, then click **Save all settings**; testing does not save. The saved
+network, test it through the device hotspot, then click **Save all settings**;
+testing does not save. WiFi mode allows editing saved credentials but disables
+scanning/testing to preserve the active connection; network edits apply after exit. The saved
 Wi-Fi password appears when the page opens; use the eye button to hide or show
 it. Until time is available, the home shows `--:--`.
 
