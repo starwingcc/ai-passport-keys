@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include "../main/keyboard/keypad_ble.c"
+#include "../main/keyboard/keypad_runner.c"
 void ble_store_config_init(void) {}
 static void event(int type){struct ble_gap_event e={.type=type};gap_event(&e,NULL);}
 static void subscribe(unsigned h,bool on){struct ble_gap_event e={.type=BLE_GAP_EVENT_SUBSCRIBE,.subscribe={.attr_handle=h,.cur_notify=on}};gap_event(&e,NULL);}
@@ -19,6 +20,48 @@ static void characteristic_handle(uint16_t id, uint16_t handle) {
     struct ble_gatt_register_ctxt ctx = {.op=BLE_GATT_REGISTER_OP_CHR,
         .chr={.chr_def=&chr, .val_handle=handle}};
     registered(&ctx, NULL);
+}
+static uint8_t captured_keyboard[8];
+static unsigned captured_reports;
+static void capture_redo(uint16_t handle,const uint8_t *data,size_t size) {
+    if(captured_reports++==0){assert(handle==10&&size==8);memcpy(captured_keyboard,data,8);}
+    else {assert(captured_reports==2&&handle==20&&size==2&&!data[0]&&!data[1]);}
+}
+static void redo_branches(void) {
+    // Reproduce the reported configuration through the production runner,
+    // resolver, BLE worker and HID encoder; only notifications are simulated.
+    kp_step_t steps[]={
+        {.action={.type=KP_KEYBOARD,.modifiers=0x0a,.keys={29},.system=KP_TARGET_MACOS},.delay_ms=80},
+        {.action={.type=KP_KEYBOARD,.modifiers=0x01,.keys={28},.system=KP_TARGET_WINDOWS}}
+    };
+    kp_config_t config;kp_defaults(&config);
+    assert(kp_binding_set(&config,0,10,"重做",steps,2));
+    const kp_binding_t *binding=kp_binding(&config,10);
+    fake_notify_observer=capture_redo;
+    for(unsigned system=0;system<KP_SYSTEM_COUNT;system++){
+        kp_runner_t runner={0};kp_action_t action,resolved;unsigned reports=0,presses=0;
+        assert(kp_runner_start(&runner,&config,binding,false,system)&&runner.total==1);
+        for(unsigned now=0;now<=100;now++)if(kp_runner_request(&runner,now,&action)){
+            assert(kp_action_resolve(&action,runner.system,&resolved));
+            int before=fake_notify_count;
+            captured_reports=0;
+            assert(kp_ble_send(resolved.type==KP_NONE?NULL:&resolved)==ESP_OK);
+            assert(fake_notify_count==before+2&&captured_reports==2);
+            uint8_t expected[8]={0};
+            if(resolved.type!=KP_NONE){
+                ++presses;expected[0]=system==KP_SYSTEM_MACOS?0x0a:0x01;
+                expected[2]=system==KP_SYSTEM_MACOS?29:28;
+            }
+            assert(!memcmp(captured_keyboard,expected,sizeof(expected)));
+            ++reports;kp_runner_result(&runner,true,now);
+        }
+        assert(!runner.running&&!runner.failed&&runner.completed==1&&reports==2&&presses==1);
+        char label[100];kp_binding_label(&config,binding,system,label,sizeof(label));
+        assert(!strcmp(label,system==KP_SYSTEM_MACOS?"Shift+Command+Z":"Control+Y"));
+        assert(kp_binding_count(&config,binding,system)==runner.total);
+    }
+    fake_notify_observer=NULL;
+    puts("Redo system branches: one matching HID key-down and one release per system: PASS");
 }
 int main(void) {
     assert(kp_ble_init()==ESP_OK);synced();assert(fake_adv);
@@ -51,6 +94,7 @@ int main(void) {
     assert(kp_ble_send(&media)==ESP_ERR_NOT_SUPPORTED);
     subscribe(20,true);assert(kp_ble_send(&media)==ESP_OK&&fake_last_handle==20&&fake_last[0]==233);
     assert(kp_ble_send(NULL)==ESP_OK&&fake_last[0]==0);
+    redo_branches();
     fake_fail_alloc=true;assert(kp_ble_send(&key)==ESP_ERR_NO_MEM);fake_fail_alloc=false;
     // Boot protocol only sends the keyboard report; media is explicitly unavailable.
     fake_protocol=0;subscribe(30,true);kp_ble_poll();

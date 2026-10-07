@@ -13,22 +13,22 @@
   [['Numpad0',98,'Num 0'],['NumpadDecimal',99,'Num .'],['IntlBackslash',100,'Intl \\'],['ContextMenu',101,'Menu'],['NumpadEqual',103,'Num =']].forEach(a=>add(...a));
   for(let i=13;i<=24;i++)add('F'+i,104+i-13,'F'+i);
   const modCodes=['ControlLeft','ShiftLeft','AltLeft','MetaLeft','ControlRight','ShiftRight','AltRight','MetaRight'];
-  const modLabels=['左 Ctrl','左 Shift','左 Option','左 Command','右 Ctrl','右 Shift','右 Option','右 Command'];
+  const modLabels=['左 Ctrl','左 Shift','左 Option/Alt','左 Command','右 Ctrl','右 Shift','右 Option/Alt','右 Command'];
   const media=[[233,'音量加'],[234,'音量减'],[226,'静音'],[205,'播放 / 暂停'],[182,'上一首'],[181,'下一首']];
   const clone=x=>JSON.parse(JSON.stringify(x));
   const empty=()=>({title:'',steps:[]});
-  const newStep=()=>({type:1,modifiers:0,keys:[40],consumer:0,delay_ms:0});
-  const modNames=['Control','Shift','Option','Command','RControl','RShift','ROption','RCommand'];
+  const newStep=()=>({type:1,modifiers:0,keys:[40],consumer:0,system:0,delay_ms:0});
+  const modNames=['Control','Shift','Option/Alt','Command','RControl','RShift','ROption/Alt','RCommand'];
   const usageNames={40:'Enter',41:'Esc',42:'Backspace',43:'Tab',44:'Space',76:'Delete',79:'Right',80:'Left',81:'Down',82:'Up'};
   function actionLabel(a){
     if(a.type===2)return media.find(m=>m[0]===a.consumer)?.[1].replaceAll(' / ','')||'媒体键';
-    const names=[];if(a.logical_modifiers&1)names.push('Cmd/Ctrl');if(a.logical_modifiers&2)names.push('RCmd/Ctrl');names.push(...modNames.filter((_,i)=>a.modifiers&(1<<i)));
+    const names=modNames.filter((_,i)=>a.modifiers&(1<<i));
     for(const v of a.keys){let name;if(v>=4&&v<=29)name=String.fromCharCode(65+v-4);else if(v>=30&&v<=39)name=String((v-29)%10);else if(v>=58&&v<=69)name='F'+(v-57);else if(v>=104&&v<=115)name='F'+(v-104+13);else name=usageNames[v]||'Key'+v.toString(16).toUpperCase().padStart(2,'0');names.push(name);}
     return names.join('+');
   }
   const sequenceLabel=b=>b.steps.length?b.steps.map(actionLabel).join(' → '):'无';
   const titleLabel=b=>b.title||(b.steps.length>1?'组合指令':sequenceLabel(b));
-  function defaults(){const bindings=Array.from({length:11},empty);[[0,0,41],[3,4,0],[4,0,42],[5,8,4],[7,0,81],[8,0,40]].forEach(([slot,mod,key])=>{bindings[slot].steps=[{type:1,modifiers:mod,keys:key?[key]:[],consumer:0,delay_ms:0}];});bindings[8].title='回车';return{version:5,active_profile:0,profiles:[{name:'默认',bindings}]};}
+  function defaults(){const bindings=Array.from({length:11},empty);[[0,0,41],[3,4,0],[4,0,42],[5,8,4],[7,0,81],[8,0,40]].forEach(([slot,mod,key])=>{bindings[slot].steps=[{type:1,modifiers:mod,keys:key?[key]:[],consumer:0,system:0,delay_ms:0}];});bindings[8].title='回车';return{version:6,active_profile:0,profiles:[{name:'默认',bindings}]};}
   function capture(events){
     let modifiers=0;const pressed=new Set();
     for(const e of events){
@@ -68,16 +68,17 @@
   }
   function validate(c,stored=false){
     fields(c,['version','active_profile','profiles']);
-    if(c.version!==5||!Array.isArray(c.profiles)||!c.profiles.length||c.profiles.length>8||!Number.isInteger(c.active_profile)||c.active_profile<0||c.active_profile>=c.profiles.length)throw Error('情景配置无效。');
+    if(![5,6].includes(c.version)||!Array.isArray(c.profiles)||!c.profiles.length||c.profiles.length>8||!Number.isInteger(c.active_profile)||c.active_profile<0||c.active_profile>=c.profiles.length)throw Error('情景配置无效。');
     const names=new Set();for(const p of c.profiles){
       fields(p,['name','bindings']);validateText(p.name,16,!stored);
       if(!p.name||names.has(p.name))throw Error('情景名称不能为空或重复。');names.add(p.name);
       if(!Array.isArray(p.bindings)||p.bindings.length!==11)throw Error('每个情景必须有十一个动作。');
       for(const b of p.bindings){
         fields(b,['title','steps']);validateText(b.title,16,!stored);
-        if(!Array.isArray(b.steps)||b.steps.length>64)throw Error('每个动作最多 64 步。');
+        if(!Array.isArray(b.steps)||b.steps.length>64)throw Error('每个动作最多 64 条动作。');
         for(const [i,a] of b.steps.entries()){
-          fields(a,Object.hasOwn(a,'logical_modifiers')?['type','modifiers','keys','consumer','delay_ms','logical_modifiers']:['type','modifiers','keys','consumer','delay_ms']);
+          fields(a,['type','modifiers','keys','consumer','delay_ms',...['logical_modifiers','system'].filter(n=>Object.hasOwn(a,n))]);
+          if(Object.hasOwn(a,'system')&&(!Number.isInteger(a.system)||a.system<0||a.system>2))throw Error('适用系统无效。');
           if(Object.hasOwn(a,'logical_modifiers')&&(!Number.isInteger(a.logical_modifiers)||a.logical_modifiers<0||a.logical_modifiers>3))throw Error('Cmd/Ctrl 修饰键无效。');
           if(!Number.isInteger(a.delay_ms)||a.delay_ms<0||a.delay_ms>5000||(i===b.steps.length-1&&a.delay_ms!==0))throw Error('步骤间隔必须为 0–5000ms，最后一步为 0。');
           if(!Number.isInteger(a.modifiers)||a.modifiers<0||a.modifiers>255||!Array.isArray(a.keys)||a.keys.length>6||new Set(a.keys).size!==a.keys.length||a.keys.some(k=>!Number.isInteger(k)||!keys.some(v=>v.usage===k)))throw Error('组合键无效或包含重复按键。');
@@ -88,30 +89,34 @@
       }
     }
     if(capacity(c)>6144)throw Error('配置超过 6 KiB，请减少步骤或文字。');
-    if(utf8(JSON.stringify(c))>32768)throw Error('配置超过网页传输容量，请减少步骤。');return true;
+    for(const p of c.profiles)for(const b of p.bindings)for(const a of b.steps){
+      a.system??=0;if(a.type===1)a.modifiers|=(a.logical_modifiers&1?8:0)|(a.logical_modifiers&2?128:0);delete a.logical_modifiers;
+    }
+    c.version=6;
+    if(utf8(JSON.stringify(c))>38912)throw Error('配置超过网页传输容量，请减少步骤。');return true;
   }
   // Files are configuration-only envelopes; the HTTP session never enters them.
   const fileFormat='passport-keys',fileLimit=65536;
   function exportFile(c,kind,index=c.active_profile){
     if(kind==='configuration'){
       validateSettings(c,true);
-      return JSON.stringify({format:fileFormat,version:6,kind,settings:clone(c)});
+      return JSON.stringify({format:fileFormat,version:7,kind,settings:clone(c)});
     }
     if(kind!=='scenario')throw Error('导出类型无效。');
     validate(c,true);
     if(!Number.isInteger(index)||index<0||index>=c.profiles.length)throw Error('请选择要导出的情景。');
-    return JSON.stringify({format:fileFormat,version:5,kind,profile:clone(c.profiles[index])});
+    return JSON.stringify({format:fileFormat,version:6,kind,profile:clone(c.profiles[index])});
   }
   function parseImport(text){
     if(typeof text!=='string'||utf8(text)>fileLimit)throw Error('文件过大，最多 64 KiB。');
     let file;try{file=JSON.parse(text);}catch{throw Error('文件不是有效的 JSON。');}
-    if(file?.version===6){
+    if([6,7].includes(file?.version)&&file.kind==='configuration'){
       fields(file,['format','version','kind','settings']);
       if(file.format!==fileFormat||file.kind!=='configuration')throw Error('完整配置文件格式不匹配。');
       validateSettings(file.settings);
       return {kind:'settings',config:clone(file.settings.config),settings:clone(file.settings)};
     }
-    if(file?.version!==5)throw Error('不支持该配置文件版本。');
+    if(![5,6].includes(file?.version))throw Error('不支持该配置文件版本。');
     fields(file,['format','version','kind','profile']);
     if(file.format!==fileFormat||file.kind!=='scenario')throw Error('单情景文件格式不匹配。');
     const config={version:5,active_profile:0,profiles:[clone(file.profile)]};
@@ -135,9 +140,34 @@
     }
     validate(next);return {config:next,editing};
   }
-  function addStep(b,a=newStep()){if(b.steps.length>=64)throw Error('每个动作最多 64 步。');if(b.steps.length)b.steps.at(-1).delay_ms=80;b.steps.push({...clone(a),delay_ms:0});}
+  function addStep(b,a=newStep()){if(b.steps.length>=64)throw Error('每个动作最多 64 条动作。');if(b.steps.length)b.steps.at(-1).delay_ms=80;b.steps.push({...clone(a),system:a.system??0,delay_ms:0});}
   function removeStep(b,index){b.steps.splice(index,1);if(b.steps.length)b.steps.at(-1).delay_ms=0;}
   function moveStep(b,index,delta){const to=index+delta;if(to<0||to>=b.steps.length)return;const last=b.steps.at(-1);[b.steps[index],b.steps[to]]=[b.steps[to],b.steps[index]];if(b.steps.at(-1)!==last)last.delay_ms=80;b.steps.at(-1).delay_ms=0;}
+  // Pair only consecutive opposite system branches, from left to right.
+  const scopeOf=a=>a.system??0;
+  function stepGroups(b){
+    const groups=[];
+    for(let i=0;i<b.steps.length;i++){
+      const group=[{a:b.steps[i],index:i}];
+      if(b.steps[i+1]&&scopeOf(b.steps[i])&&scopeOf(b.steps[i+1])&&scopeOf(b.steps[i])!==scopeOf(b.steps[i+1]))group.push({a:b.steps[++i],index:i});
+      groups.push(group);
+    }
+    return groups;
+  }
+  function moveGroup(b,from,delta){
+    const groups=stepGroups(b),to=from+delta;if(to<0||to>=groups.length)return;
+    const last=b.steps.at(-1);[groups[from],groups[to]]=[groups[to],groups[from]];
+    b.steps=groups.flatMap(g=>g.map(({a})=>a));
+    if(b.steps.at(-1)!==last)last.delay_ms=80;b.steps.at(-1).delay_ms=0;
+  }
+  function removeGroup(b,index){const group=stepGroups(b)[index];if(group)for(const {index} of [...group].reverse())removeStep(b,index);}
+  function executionSteps(b,system){return stepGroups(b).flatMap((g,i)=>g.filter(({a})=>!scopeOf(a)||scopeOf(a)===system).map(({a,index})=>({a,index,number:i+1})));}
+  function devicePreview(b,system){
+    const steps=executionSteps(b,system).map(({a})=>a),execution={title:b.title,steps};
+    return {title:titleLabel(execution),sequence:sequenceLabel(execution),total:steps.length,progress:steps.length>1?steps.length+' / '+steps.length:''};
+  }
+  function changeType(a,type){return type===1?{...newStep(),system:scopeOf(a),delay_ms:a.delay_ms}:{type:2,modifiers:0,keys:[],consumer:205,system:scopeOf(a),delay_ms:a.delay_ms};}
+  function recordedStep(a,events){return {...capture(events),system:scopeOf(a),delay_ms:a.delay_ms};}
   function addProfile(c,name,copy=-1){if(c.profiles.length>=8)throw Error('最多 8 个情景。');validateText(name,16);if(!name||c.profiles.some(p=>p.name===name))throw Error('情景名称不能为空或重复。');c.profiles.push(copy<0?{name,bindings:Array.from({length:11},empty)}:{...clone(c.profiles[copy]),name});return c.profiles.length-1;}
   function removeProfile(c,index){if(c.profiles.length===1)throw Error('至少保留一个情景。');c.profiles.splice(index,1);if(c.active_profile===index)c.active_profile=0;else if(c.active_profile>index)--c.active_profile;}
   function wifiPayload(ssid,password,keep_password=false){
@@ -159,7 +189,7 @@
     fields(s.wifi,['version','ssid','password']);
     if(s.wifi.version!==1)throw Error('Wi-Fi 配置版本无效。');
     wifiPayload(s.wifi.ssid,s.wifi.password);
-    if(utf8(JSON.stringify(s))>33792)throw Error('完整配置超过网页传输容量，请减少步骤或文字。');
+    if(utf8(JSON.stringify(s))>39936)throw Error('完整配置超过网页传输容量，请减少步骤或文字。');
     return true;
   }
   async function saveSettings(settings,write,onSaved=()=>{}){
@@ -169,10 +199,11 @@
     onSaved('/api/settings',snapshot);
     return true;
   }
-  root.Keypad={settingsDefaults,validateSettings,saveSettings,wifiJobMessage,wifiPayload,homeDefaults,validateHome,timePayload,exportFile,parseImport,applyImport,fileLimit,keys,modCodes,media,defaults,capture,actionLabel,sequenceLabel,titleLabel,capacity,validate,validateText,addStep,removeStep,moveStep,addProfile,removeProfile};
+  root.Keypad={stepGroups,moveGroup,removeGroup,executionSteps,devicePreview,changeType,recordedStep,settingsDefaults,validateSettings,saveSettings,wifiJobMessage,wifiPayload,homeDefaults,validateHome,timePayload,exportFile,parseImport,applyImport,fileLimit,keys,modCodes,media,defaults,capture,actionLabel,sequenceLabel,titleLabel,capacity,validate,validateText,addStep,removeStep,moveStep,addProfile,removeProfile};
   if(typeof document==='undefined')return;
   let pendingImport=null;
   let config,session='',selected=0,gesture=0,editing=0,dirty=false,busy=false,recording=null,lanWifi=false;
+  let previewSystem;
   let home,homeDirty=false,wifi,wifiDirty=false,wifiNetworks=[],wifiRevision=0,wifiSavedPassword='',wifiKeepAllowed=true;
   const $=id=>document.getElementById(id);
   function status(text,error=false){$('status').textContent=text;$('status').className=error?'error':'';}
@@ -198,12 +229,26 @@
   function element(tag,text,cls){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(cls)el.className=cls;return el;}
   function button(text,cls,fn){const b=element('button',text,cls);b.type='button';b.addEventListener('click',()=>{try{fn();}catch(e){status(e.message,true);}});return b;}
   function select(options,value,fn){const s=element('select');for(const [v,label] of options){const o=element('option',label);o.value=v;s.append(o);}s.value=value;s.addEventListener('change',()=>fn(Number(s.value)));return s;}
-  function preview(b,gesture){const frame=element('div',undefined,'device-preview');frame.setAttribute('aria-label','设备详情预览');const band=element('div',undefined,'preview-band');band.append(element('div',titleLabel(b),'preview-title'));frame.append(element('div',config.profiles[editing].name,'preview-profile'),element('div','--%','preview-battery'),element('div',['上','下','OK'][selected]+' · '+gesture,'preview-state'),band,element('div',sequenceLabel(b),'preview-keys'),element('div','已完成','preview-status'),element('div',b.steps.length>1?b.steps.length+' / '+b.steps.length:'','preview-progress'));return frame;}
+  function preview(b,gesture){const view=devicePreview(b,previewSystem),frame=element('div',undefined,'device-preview');frame.setAttribute('aria-label','设备详情预览');const band=element('div',undefined,'preview-band');band.append(element('div',view.title,'preview-title'));frame.append(element('div',config.profiles[editing].name,'preview-profile'),element('div','--%','preview-battery'),element('div',['上','下','OK'][selected]+' · '+gesture,'preview-state'),band,element('div',view.sequence,'preview-keys'),element('div',view.total?'已完成':'无','preview-status'),element('div',view.progress,'preview-progress'));return frame;}
   const gestureNames=['单击','双击','三击','长按'];
   const binding=()=>config.profiles[editing].bindings[selected*4+gesture];
   function icon(name){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'),use=document.createElementNS(svg.namespaceURI,'use');svg.setAttribute('aria-hidden','true');use.setAttribute('href','#i-'+name);svg.append(use);return svg;}
   function tool(label,name,fn){const b=button('', 'icon-btn step-tool',fn);b.setAttribute('aria-label',label);b.title=label;b.append(icon(name));return b;}
   function wrappedSelect(options,value,fn,cls,label){const wrap=element('div',undefined,'select-wrap '+cls),choice=select(options,value,fn);choice.className='control';choice.setAttribute('aria-label',label);wrap.append(choice);return wrap;}
+  function renderExecution(b){
+    const groups=stepGroups(b),out=$('system-preview-result');out.replaceChildren();out.hidden=!groups.length;
+    if(!groups.length)return;
+    out.append(element('div','实际执行预览','execution-title'));
+    for(const system of [1,2]){
+      const row=element('div',undefined,'execution-row'),flow=element('div',undefined,'execution-flow');
+      row.append(element('span',system===1?'Windows':'Mac','execution-system system-'+system));
+      const entries=executionSteps(b,system);
+      entries.forEach(({a,number},i)=>{if(i)flow.append(element('span','→','execution-arrow'));const chip=element('span',undefined,'execution-chip');chip.append(element('span',String(number).padStart(2,'0'),'execution-number'),element('span',actionLabel(a)));flow.append(chip);});
+      if(!entries.length)flow.append(element('span','无可执行步骤','muted'));
+      row.append(flow);out.append(row);
+    }
+  }
+
   let manualEdit=null;
   function manualRender(){
     const a=manualEdit.draft,body=$('manual-body');body.replaceChildren();
@@ -211,11 +256,11 @@
     const mods=element('div',undefined,'modifier-grid');
     for(let side=0;side<2;side++){
       const column=element('div',undefined,'modifier-column');column.append(element('h4',side?'右侧修饰键':'左侧修饰键'));
-      const choices=[[side?'右 Cmd/Ctrl':'左 Cmd/Ctrl','logical_modifiers',1<<side],...modLabels.slice(side*4,side*4+4).map((label,i)=>[label,'modifiers',1<<(side*4+i)])];
+      const choices=modLabels.slice(side*4,side*4+4).map((label,i)=>[label,'modifiers',1<<(side*4+i)]);
       const options=element('div',undefined,'modifier-options');
       for(const [label,field,bit] of choices){
         const wrap=element('label'),input=element('input');input.type='checkbox';input.checked=!!(a[field]&bit);input.setAttribute('aria-label',label);
-        input.addEventListener('change',()=>{a[field]=input.checked?a[field]|bit:a[field]&~bit;if(field==='logical_modifiers'&&!a[field])delete a[field];manualRender();});
+        input.addEventListener('change',()=>{a[field]=input.checked?a[field]|bit:a[field]&~bit;manualRender();});
         wrap.append(input,document.createTextNode(label));options.append(wrap);
       }
       column.append(options);mods.append(column);
@@ -230,7 +275,7 @@
       row.append(element('span',String(i+1).padStart(2,'0')),wrap,tool('移除普通按键 '+(i+1),'trash',()=>{a.keys.splice(i,1);manualRender();}));body.append(row);
     });
     const add=button('+ 添加普通按键','add-ordinary',()=>{a.keys.push(keys.find(k=>!a.keys.includes(k.usage)).usage);manualRender();});add.disabled=a.keys.length>=6;body.append(add);
-    const empty=!a.keys.length&&!a.modifiers&&!a.logical_modifiers;
+    const empty=!a.keys.length&&!a.modifiers;
     $('manual-apply').disabled=empty;$('manual-error').textContent=empty?'至少选择一个普通按键或修饰键。':'';
   }
   function openManual(index){
@@ -243,7 +288,7 @@
     const {binding:b,index,draft}=manualEdit;b.steps[index]=draft;changed();$('key-editor').close();render();
   });
   $('action-title').addEventListener('input',()=>{binding().title=$('action-title').value;changed();});
-  $('preview').addEventListener('click',()=>{$('preview-body').replaceChildren(preview(binding(),gestureNames[gesture]));$('preview-dialog').showModal();});
+  $('preview').addEventListener('click',()=>{$('preview-heading').textContent='设备显示预览 · '+(previewSystem===1?'Windows':'Mac');$('preview-body').replaceChildren(preview(binding(),gestureNames[gesture]));$('preview-dialog').showModal();});
   $('preview-close').addEventListener('click',()=>$('preview-dialog').close());
   $('add-step').addEventListener('click',()=>{try{cancelRecording(false);addStep(binding());changed();render();}catch(e){status(e.message,true);}});
   function render(){
@@ -262,33 +307,45 @@
     });
     $('binding-summary').textContent=['上键','下键','确定键'][selected]+' · '+gestureNames[gesture];
     const fixed=selected===2&&gesture===3;$('system-action').hidden=!fixed;$('actions').hidden=fixed;if(fixed)return;
-    const b=binding(),name=gestureNames[gesture],slot=selected*4+gesture;
-    $('action-title').value=b.title;$('action-title').setAttribute('aria-label',name+'动作标题');$('step-count').textContent=b.steps.length+' / 64 步';
+    const b=binding(),name=gestureNames[gesture],slot=selected*4+gesture,groups=stepGroups(b);
+    $('action-title').value=b.title;$('action-title').setAttribute('aria-label',name+'动作标题');$('step-count').textContent=groups.length+' 步 · '+b.steps.length+' / 64 条';
     $('actions').classList.toggle('triple',gesture===2);
     $('steps').replaceChildren();document.querySelector('.table-head').hidden=!b.steps.length;
     let note=$('gesture-note');if(!note){note=element('p',undefined,'gesture-note');note.id='gesture-note';$('actions').insertBefore(note,$('steps'));}
     note.hidden=gesture!==3;note.textContent='上下键长按 200ms 触发；只有长按有步骤时，按下立即执行。单步保持到松开，多步完整执行一次。';
     if(!b.steps.length)$('steps').append(element('div','无。添加步骤后开始配置。','empty'));
-    b.steps.forEach((a,index)=>{
-      const panel=element('section',undefined,'step');panel.append(element('span',String(index+1).padStart(2,'0'),'step-index mono'));
-      panel.append(wrappedSelect([[1,'键盘组合键'],[2,'媒体控制']],a.type,v=>{cancelRecording(false);b.steps[index]=v===1?{...newStep(),delay_ms:a.delay_ms}:{type:2,modifiers:0,keys:[],consumer:205,delay_ms:a.delay_ms};changed();render();},'step-kind',name+'第'+(index+1)+'步类型'));
-      if(a.type===2)panel.append(wrappedSelect(media,a.consumer,v=>{a.consumer=v;changed();render();},'media-choice','媒体动作'));
-      else{const chord=element('div',undefined,'keys'),label=element('span',undefined,'step-chord');actionLabel(a).split('+').forEach((key,i)=>{if(i)label.append(element('span','+','plus'));label.append(element('kbd',key));});chord.append(label);panel.append(chord);}
-      const delay=element('label',undefined,'step-delay'),input=element('input');input.type='number';input.min=0;input.max=5000;input.step=1;input.value=a.delay_ms;input.disabled=index===b.steps.length-1;input.setAttribute('aria-label','第'+(index+1)+'步后等待毫秒');input.addEventListener('input',()=>{a.delay_ms=Number(input.value);changed();});
-      delay.append(element('span',index===b.steps.length-1?'最后一步':'释放后等待','delay-label'),input,document.createTextNode('ms'));delay.title=index===b.steps.length-1?'最后一步，无额外等待':'释放后等待';panel.append(delay);
-      const tools=element('div',undefined,'step-actions');
-      if(a.type===1){
-        tools.append(button('手动选键','record chord-button manual',()=>openManual(index)));
-        const rec=button('录制','record chord-button',()=>{if(recording?.slot===slot&&recording.index===index){cancelRecording();return;}cancelRecording(false);recording={slot,index,events:[],down:new Set(),button:rec,timer:null};rec.textContent='取消录制';rec.classList.add('recording');status('按下一组组合键后松开。多组操作请分别添加步骤；系统拦截时可手动配置。');});tools.append(rec);
-      }
-      const up=tool('上移第'+(index+1)+'步','up',()=>{cancelRecording(false);moveStep(b,index,-1);changed();render();});up.disabled=index===0;
-      const down=tool('下移第'+(index+1)+'步','down',()=>{cancelRecording(false);moveStep(b,index,1);changed();render();});down.disabled=index===b.steps.length-1;
-      const del=tool('删除第'+(index+1)+'步','trash',()=>{cancelRecording(false);removeStep(b,index);changed();render();});del.classList.add('delete');tools.append(up,down,del);panel.append(tools);$('steps').append(panel);
+    groups.forEach((group,gi)=>{
+      const card=element('section',undefined,'step-group'+(group.length>1?' has-variants':''));card.setAttribute('aria-label','步骤 '+(gi+1));
+      const header=element('div',undefined,'step-group-header');header.append(element('span',String(gi+1).padStart(2,'0'),'group-index mono'),element('strong','步骤'));
+      header.append(element('span',group.length>1?'Windows / Mac · 按系统执行其一':(!scopeOf(group[0].a)?'两种系统共用':'仅 '+(scopeOf(group[0].a)===1?'Windows':'Mac')),'group-hint'));
+      const groupTools=element('div',undefined,'group-tools');
+      const up=tool('上移第'+(gi+1)+'步','up',()=>{cancelRecording(false);moveGroup(b,gi,-1);changed();render();});up.disabled=gi===0;
+      const down=tool('下移第'+(gi+1)+'步','down',()=>{cancelRecording(false);moveGroup(b,gi,1);changed();render();});down.disabled=gi===groups.length-1;
+      const delGroup=tool('删除整个第'+(gi+1)+'步','trash',()=>{cancelRecording(false);for(let i=group.length-1;i>=0;i--)removeStep(b,group[i].index);changed();render();});
+      groupTools.append(up,down,delGroup);header.append(groupTools);card.append(header);
+      group.forEach(({a,index})=>{
+        const system=scopeOf(a),label='第'+(gi+1)+'步'+(system===1?'Windows':system===2?'Mac':'共用')+'版本';
+        const panel=element('div',undefined,'step variant-row system-'+system);
+        panel.append(wrappedSelect([[1,'键盘组合键'],[2,'媒体控制']],a.type,v=>{cancelRecording(false);const next=changeType(a,v);b.steps[index]=next;changed();render();},'step-kind',label+'类型'));
+        if(a.type===2)panel.append(wrappedSelect(media,a.consumer,v=>{a.consumer=v;changed();render();},'media-choice','媒体动作'));
+        else{const chord=element('div',undefined,'keys'),labelEl=element('span',undefined,'step-chord');actionLabel(a).split('+').forEach((key,i)=>{if(i)labelEl.append(element('span','+','plus'));labelEl.append(element('kbd',key));});chord.append(labelEl);panel.append(chord);}
+        panel.append(wrappedSelect([[0,'全部'],[1,'Windows'],[2,'Mac']],system,v=>{cancelRecording(false);a.system=v;changed();render();},'step-system',label+'适用系统'));
+        const delay=element('label',undefined,'step-delay'),input=element('input');input.type='number';input.min=0;input.max=5000;input.step=1;input.value=a.delay_ms;input.disabled=index===b.steps.length-1;input.setAttribute('aria-label',label+'后等待毫秒');input.addEventListener('input',()=>{a.delay_ms=Number(input.value);changed();});
+        delay.append(element('span',index===b.steps.length-1?'最后一步':'释放后等待','delay-label'),input,document.createTextNode('ms'));delay.title=index===b.steps.length-1?'最后一步，无额外等待':'释放后等待';panel.append(delay);
+        const tools=element('div',undefined,'step-actions');
+        if(a.type===1){
+          tools.append(button('手动选键','record chord-button manual',()=>openManual(index)));
+          const rec=button('录制','record chord-button',()=>{if(recording?.slot===slot&&recording.index===index){cancelRecording();return;}cancelRecording(false);recording={slot,index,events:[],down:new Set(),button:rec,timer:null};rec.textContent='取消录制';rec.classList.add('recording');status('按下一组组合键后松开。多组操作请分别添加步骤；系统拦截时可手动配置。');});tools.append(rec);
+        }
+        const del=tool('删除'+label,'trash',()=>{cancelRecording(false);removeStep(b,index);changed();render();});del.classList.add('delete');tools.append(del);panel.append(tools);card.append(panel);
+      });
+      $('steps').append(card);
     });
+    renderExecution(b);
     $('add-step').disabled=b.steps.length>=64;
   }
   function cancelRecording(message=true){if(!recording)return;clearTimeout(recording.timer);recording.button.textContent='录制';recording.button.classList.remove('recording');recording=null;if(message)status('录制已取消，原步骤未修改。');}
-  function finishRecording(){if(!recording)return;const saved=recording;try{const b=config.profiles[editing].bindings[saved.slot],old=b.steps[saved.index];b.steps[saved.index]={...capture(saved.events),delay_ms:old.delay_ms};cancelRecording(false);changed();render();status('已录制，请保存到 Passport。');}catch(e){cancelRecording(false);status(e.message,true);}}
+  function finishRecording(){if(!recording)return;const saved=recording;try{const b=config.profiles[editing].bindings[saved.slot],old=b.steps[saved.index];b.steps[saved.index]=recordedStep(old,saved.events);cancelRecording(false);changed();render();status('已录制，请保存到 Passport。');}catch(e){cancelRecording(false);status(e.message,true);}}
   document.addEventListener('keydown',e=>{if(!recording)return;e.preventDefault();e.stopPropagation();if(e.repeat)return;clearTimeout(recording.timer);recording.events.push({code:e.code,key:e.key,ctrlKey:e.ctrlKey,altKey:e.altKey,shiftKey:e.shiftKey,metaKey:e.metaKey,isComposing:e.isComposing});recording.down.add(e.code);});
   document.addEventListener('keyup',e=>{if(!recording)return;e.preventDefault();e.stopPropagation();recording.down.delete(e.code);if(!recording.down.size)finishRecording();else if(modCodes.includes(e.code))recording.timer=setTimeout(finishRecording,120);});
   window.addEventListener('blur',()=>cancelRecording());document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelRecording();});
@@ -493,6 +550,7 @@
   window.addEventListener('beforeunload',e=>{if(dirty||homeDirty||wifiDirty){e.preventDefault();e.returnValue='';}});
   fetch('/api/config',{signal:AbortSignal.timeout(8000)}).then(async r=>{
     if(!r.ok)throw Error('读取设置会话失败');const info=await r.json();session=info.session;lanWifi=info.connection==='wifi';
+    if(info.system!==0&&info.system!==1)throw Error('读取设备系统失败');previewSystem=info.system===1?1:2;
     const response=await fetch('/api/settings',{headers:{'X-Session':session},signal:AbortSignal.timeout(8000)});
     if(!response.ok)throw Error('读取完整配置失败');const settings=await response.json();validateSettings(settings,true);
     config=settings.config;home=settings.home;wifiSavedPassword=settings.wifi.password;editing=config.active_profile;

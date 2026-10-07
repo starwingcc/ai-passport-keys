@@ -212,20 +212,20 @@ int main(void) {
     quick(&m,2,1050);kp_system_saved(&m,true);assert(m.system==KP_SYSTEM_WINDOWS&&m.system_saved&&!m.system_save_failed);
     quick(&m,1,1100);assert(m.selected==0&&m.system==KP_SYSTEM_WINDOWS&&!m.system_saved);
     press(&m,2,1200);kp_tick(&m,1700);release(&m,2,1710);assert(m.page==KP_SETTINGS&&m.system==KP_SYSTEM_WINDOWS);
-    // All logical sides combine with every fixed HID modifier without changing originals.
-    for(unsigned system=0;system<KP_SYSTEM_COUNT;system++)for(unsigned flags=0;flags<4;flags++)for(unsigned mods=0;mods<256;mods++){
-        kp_action_t source={.type=KP_KEYBOARD,.modifiers=mods,.logical_modifiers=flags,.keys={4}},resolved;
+    // Fixed modifiers keep identical HID codes on both host systems.
+    for(unsigned system=0;system<KP_SYSTEM_COUNT;system++)for(unsigned mods=0;mods<256;mods++){
+        kp_action_t source={.type=KP_KEYBOARD,.modifiers=mods,.keys={4}},resolved;
         assert(kp_action_valid(&source,false)&&kp_action_resolve(&source,system,&resolved));
-        unsigned expected=mods|(flags&1?(system==KP_SYSTEM_MACOS?8:1):0)|(flags&2?(system==KP_SYSTEM_MACOS?128:16):0);
-        kp_report(&resolved,keys,media);assert(keys[0]==expected&&keys[2]==4&&!media[0]&&!resolved.logical_modifiers);
-        assert(source.modifiers==mods&&source.logical_modifiers==flags);
+        kp_report(&resolved,keys,media);assert(keys[0]==mods&&keys[2]==4&&!media[0]);
+        assert(source.modifiers==mods);
     }
-    a=(kp_action_t){.type=KP_KEYBOARD,.logical_modifiers=1};assert(kp_action_valid(&a,false));
-    kp_action_label(&a,text,sizeof(text));assert(!strcmp(text,"Cmd/Ctrl"));
-    a.logical_modifiers=2;kp_action_label(&a,text,sizeof(text));assert(!strcmp(text,"RCmd/Ctrl"));
-    kp_report(&a,keys,media);for(unsigned i=0;i<8;i++)assert(!keys[i]);
-    a.logical_modifiers=4;assert(!kp_action_valid(&a,false));
-    assert(!kp_action_resolve(&a,KP_SYSTEM_COUNT,&last));
+    a=(kp_action_t){.type=KP_KEYBOARD,.modifiers=0x44};
+    kp_action_label(&a,text,sizeof(text));assert(!strcmp(text,"Option/Alt+ROption/Alt"));
+    for(unsigned target=0;target<KP_TARGET_COUNT;target++)for(unsigned system=0;system<KP_SYSTEM_COUNT;system++){
+        a.system=target;assert(kp_action_valid(&a,false));
+        assert(kp_action_resolve(&a,system,&last)==(!target||target==(system==KP_SYSTEM_WINDOWS?KP_TARGET_WINDOWS:KP_TARGET_MACOS)));
+    }
+    a.system=3;assert(!kp_action_valid(&a,false));assert(!kp_action_resolve(&a,KP_SYSTEM_COUNT,&last));
     // Five settings scroll through four visible rows; runtime state survives Back.
     kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));m.page=KP_SETTINGS;
     for(unsigned i=0;i<KP_SETTINGS_COUNT;i++){assert(m.selected==i);assert(kp_settings_first(i)==(i==4?1U:0U));quick(&m,1,i*50);}
@@ -237,6 +237,29 @@ int main(void) {
     press(&m,2,650);kp_tick(&m,1150);release(&m,2,1160);assert(m.page==KP_SETTINGS&&m.selected==2&&m.transfer.enabled);
     quick(&m,2,1200);assert(m.page==KP_TRANSFER&&m.selected==0);m.transfer.state=KP_TRANSFER_FAILED;
     quick(&m,1,1250);quick(&m,2,1300);assert(count[KP_TRANSFER_START]==2);
-    puts("System preview/save/back and exhaustive left/right Cmd/Ctrl HID resolution: PASS");
+    // Device labels and fallback titles reflect the actual execution path.
+    kp_step_t display_steps[]={
+        {.action={.type=KP_KEYBOARD,.modifiers=10,.keys={29},.system=KP_TARGET_MACOS},.delay_ms=80},
+        {.action={.type=KP_KEYBOARD,.modifiers=1,.keys={28},.system=KP_TARGET_WINDOWS}}
+    };
+    kp_defaults(&c);assert(kp_binding_set(&c,0,10,"",display_steps,2));
+    const kp_binding_t *display_binding=kp_binding(&c,10);char label[200];
+    for(unsigned system=0;system<KP_SYSTEM_COUNT;system++){
+        const char *expected=system==KP_SYSTEM_MACOS?"Shift+Command+Z":"Control+Y";
+        assert(kp_binding_count(&c,display_binding,system)==1);
+        kp_binding_label(&c,display_binding,system,label,sizeof(label));assert(!strcmp(label,expected));
+        kp_binding_title(&c,display_binding,system,label,sizeof(label));assert(!strcmp(label,expected));
+    }
+    display_steps[1].action.system=KP_TARGET_MACOS;
+    assert(kp_binding_set(&c,0,10,"",display_steps,2));display_binding=kp_binding(&c,10);
+    kp_binding_label(&c,display_binding,KP_SYSTEM_WINDOWS,label,sizeof(label));assert(!strcmp(label,"无"));
+    kp_binding_title(&c,display_binding,KP_SYSTEM_WINDOWS,label,sizeof(label));assert(!strcmp(label,"无"));
+    kp_binding_title(&c,display_binding,KP_SYSTEM_MACOS,label,sizeof(label));assert(!strcmp(label,"组合指令"));
+    display_steps[1].action=(kp_action_t){.type=KP_MEDIA,.consumer=205};
+    assert(kp_binding_set(&c,0,10,"",display_steps,2));display_binding=kp_binding(&c,10);
+    kp_binding_label(&c,display_binding,KP_SYSTEM_WINDOWS,label,sizeof(label));assert(!strcmp(label,"播放暂停"));
+    kp_binding_label(&c,display_binding,KP_SYSTEM_MACOS,label,sizeof(label));assert(!strcmp(label,"Shift+Command+Z → 播放暂停"));
+    kp_binding_label(&c,display_binding,KP_SYSTEM_MACOS,label,1);assert(!*label);
+    puts("System preview/save/back, filtered device labels and fixed HID modifiers: PASS");
     puts("Keypad gestures, navigation, screen drafts, wake consumption and feedback: PASS");
 }

@@ -51,11 +51,12 @@ static void effect(void *user, kp_effect_t event, const kp_action_t *action) {
             break;
         }
         const kp_binding_t *binding = kp_binding(&s_model.config, s_model.triggered_slot);
-        if (!kp_runner_start(&s_runner, &s_model.config, binding, event == KP_HOLD)) break;
+        if (!kp_runner_start(&s_runner, &s_model.config, binding, event == KP_HOLD, s_model.system)) break;
         kp_set_busy(&s_model, true);
         uint32_t serial = s_model.feedback.serial + 1;
         s_model.feedback = (kp_feedback_t){.visible = true, .holding = s_runner.hold,
-            .slot = s_model.triggered_slot, .total = binding->count,
+            .slot = s_model.triggered_slot, .total = s_runner.total,
+            .system = s_runner.system,
             .state = KP_FEEDBACK_RUNNING, .serial = serial};
         message("正在执行");
         break;
@@ -77,7 +78,7 @@ static void advance_runner(void) {
     kp_action_t action;
     if (!kp_runner_request(&s_runner, now_ms(), &action)) return;
     kp_action_t resolved;
-    esp_err_t sent = kp_action_resolve(&action, s_model.system, &resolved) ?
+    esp_err_t sent = kp_action_resolve(&action, s_runner.system, &resolved) ?
                      kp_ble_send(resolved.type == KP_NONE ? NULL : &resolved) : ESP_ERR_INVALID_ARG;
     uint32_t now = now_ms();
     kp_runner_result(&s_runner, sent == ESP_OK, now);

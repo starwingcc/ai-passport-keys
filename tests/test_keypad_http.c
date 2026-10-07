@@ -61,6 +61,8 @@ esp_err_t kp_store_wifi_save(const kp_wifi_config_t *wifi){if(fail_alloc)return 
 kp_network_status_t kp_network_status(void){return KP_NET_PAUSED;}
 uint64_t kp_store_time_read(uint64_t now){(void)now;return 0;}
 static kp_config_t committed;
+static kp_system_t committed_system;
+void kp_store_system_get(kp_system_t *out){*out=committed_system;}
 static kp_home_config_t committed_home; static kp_clock_t test_clock;
 static uint32_t clock_ms=1000,save_delay;
 int64_t esp_timer_get_time(void){return (int64_t)clock_ms*1000;}
@@ -264,7 +266,10 @@ int main(void) {
     httpd_req_t req={.uri="/api/config",.method=HTTP_GET,.host="192.168.4.1"};
     reset_response(); fail_alloc=true; unsigned before=allocations;
     assert(api(&req)==ESP_OK && allocations==before && finished==1 && !reading);
-    assert(strstr(response,"\"version\":5") && strstr(response,"\"session\":") && largest_send<=256);
+    assert(strstr(response,"\"version\":6") && strstr(response,"\"session\":") && largest_send<=256);
+    assert(strstr(response,"\"system\":0}"));
+    committed_system=KP_SYSTEM_WINDOWS;reset_response();assert(api(&req)==ESP_OK&&strstr(response,"\"system\":1}"));
+    committed_system=KP_SYSTEM_MACOS;
     kp_step_t steps[KP_MAX_STEPS];
     for(unsigned i=0;i<KP_MAX_STEPS;++i)
         steps[i]=(kp_step_t){{.type=KP_KEYBOARD,.keys={4}},i+1==KP_MAX_STEPS?0:5000};

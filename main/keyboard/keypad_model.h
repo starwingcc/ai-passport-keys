@@ -7,7 +7,7 @@
 #include "keypad_lan.h"
 
 #define KP_BINDINGS 11
-#define KP_VERSION 5
+#define KP_VERSION 6
 #define KP_MAX_PROFILES 8
 #define KP_MAX_STEPS 64
 #define KP_CONFIG_BYTES 6144
@@ -21,14 +21,14 @@
 #define KP_MAX_DELAY_MS 5000U
 
 typedef enum { KP_NONE, KP_KEYBOARD, KP_MEDIA } kp_action_type_t;
-#define KP_CMD_CTRL_LEFT 1U
-#define KP_CMD_CTRL_RIGHT 2U
 typedef enum { KP_SYSTEM_MACOS, KP_SYSTEM_WINDOWS, KP_SYSTEM_COUNT } kp_system_t;
-// Keyboard logical flags share the type-specific payload with media usage,
-// never the eight standard HID modifier bits. Each persisted step uses 12 bytes.
+// Version 6 stores the target in the old payload high byte. Media usages fit
+// in one byte; version 5 keyboard logical flags are migrated to fixed Command.
+// Each persisted step remains 12 bytes.
+typedef enum { KP_TARGET_ALL, KP_TARGET_WINDOWS, KP_TARGET_MACOS, KP_TARGET_COUNT } kp_target_t;
 typedef struct {
     uint8_t type, modifiers, keys[6];
-    union { uint16_t consumer; uint16_t logical_modifiers; };
+    uint8_t consumer, system;
 } kp_action_t;
 typedef struct { kp_action_t action; uint16_t delay_ms; } kp_step_t;
 // Offsets refer to data, never to pointers or native heap allocations.
@@ -48,6 +48,8 @@ _Static_assert(sizeof(kp_config_t) == KP_CONFIG_BYTES, "configuration budget");
 _Static_assert(sizeof(kp_binding_t) == 4, "binding layout");
 _Static_assert(offsetof(kp_config_t, data) == 392, "configuration header");
 _Static_assert(sizeof(kp_step_t) == 12, "persisted step layout");
+_Static_assert(offsetof(kp_action_t, consumer) == 8 && offsetof(kp_action_t, system) == 9 &&
+               offsetof(kp_step_t, delay_ms) == 10, "version 5 migration offsets");
 
 typedef enum { KP_CONSOLE, KP_MENU, KP_SETTINGS, KP_HOTSPOT, KP_FORGET, KP_PROFILES,
                KP_SCREEN, KP_SCREEN_EDIT, KP_SYSTEM, KP_TRANSFER, KP_LAN } kp_page_t;
@@ -63,6 +65,7 @@ typedef enum { KP_FEEDBACK_RUNNING, KP_FEEDBACK_DONE, KP_FEEDBACK_FAILED } kp_fe
 typedef struct {
     bool visible, holding;
     uint8_t slot, completed, total;
+    kp_system_t system;
     kp_feedback_state_t state;
     uint32_t until, serial;
 } kp_feedback_t;
@@ -101,14 +104,18 @@ bool kp_text_valid(const char *text, unsigned max_chars, bool multiline);
 bool kp_text_utf8_valid(const char *text, unsigned max_chars, bool multiline);
 bool kp_codepoint_supported(uint32_t codepoint);
 bool kp_action_valid(const kp_action_t *action, bool allow_none);
+bool kp_action_applies(const kp_action_t *action, kp_system_t system);
+// Upgrade an untrusted version 5 NVS candidate, then validate the full record.
+bool kp_config_upgrade(kp_config_t *config);
 bool kp_action_resolve(const kp_action_t *action, kp_system_t system, kp_action_t *out);
 void kp_defaults(kp_config_t *config);
 bool kp_key_valid(unsigned key);
 bool kp_config_valid(const kp_config_t *config);
 void kp_report(const kp_action_t *action, uint8_t keyboard[8], uint8_t consumer[2]);
 void kp_action_label(const kp_action_t *action, char *out, size_t size);
-void kp_binding_label(const kp_config_t *config, const kp_binding_t *binding, char *out, size_t size);
-void kp_binding_title(const kp_config_t *config, const kp_binding_t *binding, char *out, size_t size);
+unsigned kp_binding_count(const kp_config_t *config, const kp_binding_t *binding, kp_system_t system);
+void kp_binding_label(const kp_config_t *config, const kp_binding_t *binding, kp_system_t system, char *out, size_t size);
+void kp_binding_title(const kp_config_t *config, const kp_binding_t *binding, kp_system_t system, char *out, size_t size);
 void kp_init(kp_model_t *model, const kp_config_t *config, kp_emit_t emit, void *user);
 void kp_input(kp_model_t *model, unsigned key, bool down, uint32_t now);
 void kp_tick(kp_model_t *model, uint32_t now);

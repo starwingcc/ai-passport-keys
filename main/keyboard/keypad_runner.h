@@ -5,11 +5,12 @@ typedef struct {
     const kp_config_t *config;
     kp_binding_t binding;
     bool running, pending, hold, failed;
-    uint8_t index, completed;
+    uint8_t index, completed, total;
+    kp_system_t system;
     kp_run_phase_t phase;
     uint32_t deadline;
 } kp_runner_t;
-bool kp_runner_start(kp_runner_t *runner, const kp_config_t *config, const kp_binding_t *binding, bool hold);
+bool kp_runner_start(kp_runner_t *runner, const kp_config_t *config, const kp_binding_t *binding, bool hold, kp_system_t system);
 // Request one report; acknowledge it using the actual completion timestamp.
 bool kp_runner_request(kp_runner_t *runner, uint32_t now, kp_action_t *action);
 void kp_runner_result(kp_runner_t *runner, bool success, uint32_t now);

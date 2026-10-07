@@ -4,7 +4,8 @@
 #include "keypad_wifi.h"
 #include "keypad_wifi_setup.h"
 #include "keypad_settings.h"
-#define KP_JSON_BYTES 32768U
+// Version 6 adds a target field per action without enlarging the NVS arena.
+#define KP_JSON_BYTES 38912U
 // Add bounded room for badge/network metadata beyond the shortcut JSON budget.
 #define KP_SETTINGS_JSON_BYTES (KP_JSON_BYTES + KP_HOME_JSON_BYTES)
 // read returns bytes read, 0 at EOF, or -1 on transport failure.

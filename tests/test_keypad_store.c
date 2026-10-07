@@ -172,10 +172,19 @@ int main(void){
         stored_system[0]=fault==0?99:1;stored_system[1]=fault==1?2:1;system_size=fault==2?1:2;
         assert(kp_store_init()==ESP_OK);kp_store_system_get(&system);assert(system==KP_SYSTEM_MACOS);
     }
-    // Logical flags and fixed HID bits survive save/reboot.
-    kp_defaults(&c);kp_step_t s=(kp_step_t){.action={.type=KP_KEYBOARD,.logical_modifiers=3,.modifiers=2,.keys={4}}};
-    assert(kp_binding_set(&c,0,0,"",&s,1)&&kp_store_save(&c)==ESP_OK&&kp_store_init()==ESP_OK);
-    kp_store_get(&actual);assert(kp_binding_step(&actual,kp_binding(&actual,0),0,&s)&&s.action.logical_modifiers==3&&s.action.modifiers==2);
+    // The v5 NVS layout upgrades system targets and Command migration in place, preserving other settings.
+    kp_defaults(&c);kp_step_t s=(kp_step_t){.action={.type=KP_KEYBOARD,.modifiers=2,.keys={4}}};
+    assert(kp_binding_set(&c,0,0,"",&s,1)&&kp_store_save(&c)==ESP_OK);
+    stored_settings.config.version=5;
+    unsigned offset=kp_binding(&stored_settings.config,0)->steps*2U;
+    stored_settings.config.data[offset+8]=3; // Old uint16 logical_modifiers low byte.
+    stored_settings.config.data[offset+9]=0;
+    assert(kp_store_init()==ESP_OK);kp_store_get(&actual);
+    assert(actual.version==KP_VERSION&&kp_binding_step(&actual,kp_binding(&actual,0),0,&s)&&s.action.modifiers==0x8a&&!s.action.consumer&&!s.action.system);
+    assert(stored_settings.config.version==KP_VERSION); // Migration is persisted.
+    s.action.system=KP_TARGET_WINDOWS;
+    assert(kp_binding_set(&actual,0,0,"",&s,1)&&kp_store_save(&actual)==ESP_OK&&kp_store_init()==ESP_OK);
+    kp_store_get(&actual);assert(kp_binding_step(&actual,kp_binding(&actual,0),0,&s)&&s.action.system==KP_TARGET_WINDOWS&&s.action.modifiers==0x8a);
     // All web settings occupy one blob, and failed saves replace no active module.
     kp_settings_t before_all,next_all;
     assert(kp_store_settings_read(copy_settings,&before_all)&&!locked);
@@ -203,6 +212,6 @@ int main(void){
     assert(kp_store_settings_save(&next_all)==ESP_OK&&settings_size==offsetof(kp_settings_t,config)+KP_CONFIG_BYTES);
     assert(kp_store_init()==ESP_OK&&kp_store_settings_read(copy_settings,&actual_all)&&!memcmp(&actual_all,&next_all,sizeof(next_all)));
     puts("Complete NVS record, current format, malformed records, atomic saves and full-capacity restart: PASS");
-    puts("System/screen NVS isolation, logical flags, failed saves and clock invalidation: PASS");
+    puts("System/screen NVS isolation, system targets and Command migration, failed saves and clock invalidation: PASS");
     puts("Home/Wi-Fi complete-record persistence, cold boot, save failures and clearing: PASS");
 }

@@ -236,7 +236,8 @@ static esp_err_t api_body(httpd_req_t *req) {
         esp_err_t rc = httpd_resp_send_chunk(req, "{\"config\":", 10);
         if (rc == ESP_OK && !kp_store_read(write_config, req)) rc = ESP_FAIL;
         if (rc != ESP_OK) return rc;
-        char tail[96]; snprintf(tail, sizeof(tail), ",\"session\":\"%s\",\"connection\":\"%s\"}", s_session, s_lan_wifi ? "wifi" : "hotspot");
+        kp_system_t system; kp_store_system_get(&system);
+        char tail[112]; snprintf(tail, sizeof(tail), ",\"session\":\"%s\",\"connection\":\"%s\",\"system\":%u}", s_session, s_lan_wifi ? "wifi" : "hotspot", (unsigned)system);
         rc = httpd_resp_send_chunk(req, tail, strlen(tail));
         return rc == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : rc;
     }

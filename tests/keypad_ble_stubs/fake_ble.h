@@ -71,6 +71,7 @@ static struct ble_npl_event *fake_pending;
 static struct ble_gap_conn_desc fake_desc;
 static uint8_t fake_last[8];
 static uint16_t fake_last_handle;
+static void (*fake_notify_observer)(uint16_t handle,const uint8_t *data,size_t size);
 static int fake_bonds;
 static int fake_connections, fake_adv_error;
 static ble_addr_t fake_peer;
@@ -93,7 +94,7 @@ static inline int ble_addr_cmp(const ble_addr_t*a,const ble_addr_t*b){return mem
 static inline int ble_store_clear(void){if(fake_fail_clear)return -1;fake_bonds=0;return 0;}
 static inline struct os_mbuf *ble_hs_mbuf_from_flat(const void *p,size_t n){if(fake_fail_alloc)return NULL;struct os_mbuf *b=calloc(1,sizeof(*b));if(b){memcpy(b->data,p,n);b->len=n;}return b;}
 static inline void os_mbuf_free_chain(struct os_mbuf*b){free(b);}
-static inline int ble_gatts_notify_custom(uint16_t conn,uint16_t h,struct os_mbuf*b){(void)conn;fake_notify_count++;fake_last_handle=h;memcpy(fake_last,b->data,b->len);free(b);return 0;}
+static inline int ble_gatts_notify_custom(uint16_t conn,uint16_t h,struct os_mbuf*b){(void)conn;fake_notify_count++;fake_last_handle=h;memcpy(fake_last,b->data,b->len);if(fake_notify_observer)fake_notify_observer(h,b->data,b->len);free(b);return 0;}
 static inline int ble_att_svr_read_local(uint16_t h,struct os_mbuf**b){*b=h==fake_descriptor_handle?ble_hs_mbuf_from_flat(fake_report_ref,2):ble_hs_mbuf_from_flat(&fake_protocol,1);return *b?0:1;}
 static inline int ble_hs_mbuf_to_flat(struct os_mbuf*b,void*p,size_t n,void*out){(void)out;if(b->len<n)return 1;memcpy(p,b->data,n);return 0;}
 static inline void ble_npl_event_init(struct ble_npl_event*e,void(*f)(struct ble_npl_event*),void*a){(void)a;e->fn=f;}

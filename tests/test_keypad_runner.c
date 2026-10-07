@@ -10,7 +10,7 @@ typedef struct { kp_model_t model; kp_runner_t runner; uint32_t now; unsigned st
 static void model_effect(void *user,kp_effect_t effect,const kp_action_t *action) {
     (void)action;runtime_t *rt=user;
     if(effect==KP_TAP||effect==KP_HOLD){
-        assert(kp_runner_start(&rt->runner,&rt->model.config,kp_binding(&rt->model.config,rt->model.triggered_slot),effect==KP_HOLD));
+        assert(kp_runner_start(&rt->runner,&rt->model.config,kp_binding(&rt->model.config,rt->model.triggered_slot),effect==KP_HOLD,rt->model.system));
         ++rt->starts;kp_set_busy(&rt->model,true);
     }else if(effect==KP_RELEASE){++rt->releases;kp_runner_release(&rt->runner,rt->now);}
     else if(effect==KP_CANCEL){++rt->cancels;kp_runner_cancel(&rt->runner);}
@@ -45,53 +45,68 @@ int main(void) {
     kp_step_t steps[2]={{{.type=KP_KEYBOARD,.modifiers=8,.keys={4}},100},{{.type=KP_KEYBOARD,.keys={0x4c}},0}};
     assert(kp_binding_set(&c,0,4,"全选后删除",steps,2));
     const kp_binding_t *b=kp_binding(&c,4);
-    assert(kp_runner_start(&r,&c,b,false));assert(!kp_runner_start(&r,&c,b,false));
+    assert(kp_runner_start(&r,&c,b,false,KP_SYSTEM_MACOS));assert(!kp_runner_start(&r,&c,b,false,KP_SYSTEM_MACOS));
     assert(request(&r,0,8,4));assert(!request(&r,10,0,0)); // one in-flight report
     kp_runner_result(&r,true,25); // deadlines use acknowledgement time, not scheduling time
     assert(!request(&r,64,0,0));assert(request(&r,65,0,0));kp_runner_result(&r,true,70);
     assert(r.completed==1&&r.running);assert(!request(&r,169,0,0));
     assert(request(&r,170,0,0x4c));kp_runner_result(&r,true,175);
     assert(request(&r,215,0,0));kp_runner_result(&r,true,216);assert(!r.running&&!r.failed&&r.completed==2);
-    char label[100];kp_binding_label(&c,b,label,sizeof(label));assert(!strcmp(label,"Command+A → Delete"));
-    kp_binding_title(&c,b,label,sizeof(label));assert(!strcmp(label,"全选后删除"));
+    char label[100];kp_binding_label(&c,b,KP_SYSTEM_MACOS,label,sizeof(label));assert(!strcmp(label,"Command+A → Delete"));
+    kp_binding_title(&c,b,KP_SYSTEM_MACOS,label,sizeof(label));assert(!strcmp(label,"全选后删除"));
     // Multi-step holds run once and physical release cannot truncate the macro.
-    assert(kp_runner_start(&r,&c,b,true)&&!r.hold);assert(request(&r,0,8,4));kp_runner_result(&r,true,0);
+    assert(kp_runner_start(&r,&c,b,true,KP_SYSTEM_MACOS)&&!r.hold);assert(request(&r,0,8,4));kp_runner_result(&r,true,0);
     kp_runner_release(&r,10);assert(!request(&r,39,0,0));assert(request(&r,40,0,0));kp_runner_result(&r,true,40);
     assert(request(&r,140,0,0x4c));kp_runner_result(&r,true,140);assert(request(&r,180,0,0));kp_runner_result(&r,true,180);assert(!r.running);
     // Single-step hold releases only on the physical edge.
-    b=kp_binding(&c,3);assert(kp_runner_start(&r,&c,b,true));assert(request(&r,0,4,0));kp_runner_result(&r,true,0);
+    b=kp_binding(&c,3);assert(kp_runner_start(&r,&c,b,true,KP_SYSTEM_MACOS));assert(request(&r,0,4,0));kp_runner_result(&r,true,0);
     assert(!request(&r,10000,0,0));kp_runner_release(&r,10001);assert(request(&r,10001,0,0));kp_runner_result(&r,true,10001);assert(!r.running);
     // Release arriving in the same input batch as the hold becomes a bounded tap.
-    assert(kp_runner_start(&r,&c,b,true));kp_runner_release(&r,0);assert(!r.hold);
+    assert(kp_runner_start(&r,&c,b,true,KP_SYSTEM_MACOS));kp_runner_release(&r,0);assert(!r.hold);
     assert(request(&r,0,4,0));kp_runner_result(&r,true,0);assert(request(&r,40,0,0));kp_runner_result(&r,true,40);assert(!r.running);
     // Failure and cancellation never replay completed steps.
-    b=kp_binding(&c,4);assert(kp_runner_start(&r,&c,b,false));assert(request(&r,0,8,4));kp_runner_result(&r,false,1);
+    b=kp_binding(&c,4);assert(kp_runner_start(&r,&c,b,false,KP_SYSTEM_MACOS));assert(request(&r,0,8,4));kp_runner_result(&r,false,1);
     assert(r.failed&&!r.running&&!request(&r,100,0,0));
-    assert(kp_runner_start(&r,&c,b,false));assert(request(&r,0,8,4));kp_runner_result(&r,true,0);kp_runner_cancel(&r);
+    assert(kp_runner_start(&r,&c,b,false,KP_SYSTEM_MACOS));assert(request(&r,0,8,4));kp_runner_result(&r,true,0);kp_runner_cancel(&r);
     assert(!request(&r,1000,0,0));
     // Wrap around and zero delay.
     steps[0].delay_ms=0;assert(kp_binding_set(&c,0,4,"",steps,2));b=kp_binding(&c,4);
-    assert(kp_runner_start(&r,&c,b,false));assert(request(&r,UINT32_MAX-20,8,4));kp_runner_result(&r,true,UINT32_MAX-20);
+    assert(kp_runner_start(&r,&c,b,false,KP_SYSTEM_MACOS));assert(request(&r,UINT32_MAX-20,8,4));kp_runner_result(&r,true,UINT32_MAX-20);
     assert(!request(&r,18,0,0));assert(request(&r,19,0,0));kp_runner_result(&r,true,19);
     assert(request(&r,19,0,0x4c));kp_runner_result(&r,true,19);assert(request(&r,59,0,0));kp_runner_result(&r,true,59);
     assert(!r.running&&r.completed==2);
-    // Resolve every macro step at the send boundary, preserving its stored action.
-    kp_step_t adaptive[KP_MAX_STEPS];
-    for(unsigned i=0;i<KP_MAX_STEPS;i++)adaptive[i]=(kp_step_t){.action={.type=KP_KEYBOARD,.logical_modifiers=(i%3)+1,.modifiers=2,.keys={4+i%26}},.delay_ms=0};
-    assert(kp_binding_set(&c,0,0,"",adaptive,KP_MAX_STEPS));
+    // Opposite system branches execute one report pair, with no skipped waits.
+    kp_step_t branches[]={
+        {.action={.type=KP_KEYBOARD,.modifiers=1,.keys={6},.system=KP_TARGET_WINDOWS},.delay_ms=5000},
+        {.action={.type=KP_KEYBOARD,.modifiers=8,.keys={6},.system=KP_TARGET_MACOS},.delay_ms=70},
+        {.action={.type=KP_MEDIA,.consumer=233,.system=KP_TARGET_WINDOWS},.delay_ms=5000},
+        {.action={.type=KP_KEYBOARD,.keys={4}},.delay_ms=0}
+    };
+    assert(kp_binding_set(&c,0,0,"",branches,4));
+    assert(kp_runner_start(&r,&c,kp_binding(&c,0),false,KP_SYSTEM_MACOS)&&r.total==2);
+    assert(request(&r,0,8,6)&&r.index==1);kp_runner_result(&r,true,20);
+    assert(request(&r,60,0,0));kp_runner_result(&r,true,65);
+    assert(!request(&r,134,0,0));assert(request(&r,135,0,4)&&r.index==3);kp_runner_result(&r,true,135);
+    assert(request(&r,175,0,0));kp_runner_result(&r,true,175);assert(!r.running&&r.completed==2);
+    assert(kp_runner_start(&r,&c,kp_binding(&c,0),false,KP_SYSTEM_WINDOWS)&&r.total==3);
+    assert(request(&r,0,1,6));kp_runner_result(&r,true,0);assert(request(&r,40,0,0));kp_runner_result(&r,true,40);
+    assert(!request(&r,5039,0,0));kp_action_t action;
+    assert(kp_runner_request(&r,5040,&action)&&action.type==KP_MEDIA&&action.consumer==233&&r.index==2);
+    kp_runner_result(&r,true,5040);assert(request(&r,5080,0,0));kp_runner_result(&r,true,5080);
+    kp_runner_cancel(&r);assert(!kp_runner_request(&r,10080,&action));
+    // Effective single-action holds keep the key down, even with skipped siblings.
+    branches[0].delay_ms=80;branches[1].delay_ms=0;
+    assert(kp_binding_set(&c,0,1,"",branches,2));
     for(unsigned system=0;system<KP_SYSTEM_COUNT;system++){
-        assert(kp_runner_start(&r,&c,kp_binding(&c,0),false));
-        for(unsigned i=0;i<KP_MAX_STEPS;i++){
-            kp_action_t source,resolved;uint8_t keyboard[8],consumer[2];
-            assert(kp_runner_request(&r,i*40,&source)&&kp_action_resolve(&source,system,&resolved));
-            kp_report(&resolved,keyboard,consumer);
-            unsigned flags=(i%3)+1,expected=2|(flags&1?(system==0?8:1):0)|(flags&2?(system==0?128:16):0);
-            assert(keyboard[0]==expected&&keyboard[2]==4+i%26&&!consumer[0]&&source.logical_modifiers==flags);
-            kp_runner_result(&r,true,i*40);assert(kp_runner_request(&r,(i+1)*40,&source));
-            assert(source.type==KP_NONE);kp_runner_result(&r,true,(i+1)*40);
-        }
-        assert(!r.running&&r.completed==KP_MAX_STEPS);
+        assert(kp_runner_start(&r,&c,kp_binding(&c,1),true,system)&&r.total==1&&r.hold);
+        assert(request(&r,0,system==KP_SYSTEM_MACOS?8:1,6));kp_runner_result(&r,true,0);
+        assert(!request(&r,5000,0,0));kp_runner_release(&r,5001);assert(request(&r,5001,0,0));
+        kp_runner_result(&r,true,5001);assert(!r.running&&r.completed==1);
     }
+    branches[0].delay_ms=0;assert(kp_binding_set(&c,0,2,"",branches,1));
+    assert(!kp_runner_start(&r,&c,kp_binding(&c,2),false,KP_SYSTEM_MACOS)&&!r.running);
+    assert(kp_runner_start(&r,&c,kp_binding(&c,2),false,KP_SYSTEM_WINDOWS));
+    assert(request(&r,0,1,6));kp_runner_result(&r,false,1);assert(r.failed&&!r.running);
     integration();
     puts("Keypad macro timing, acknowledgement, hold, cancellation and failure: PASS");
 }

@@ -23,7 +23,7 @@ returns or cancels the current action. Enter Start control to send keys.
 
 | Button | Single click | Double click | Triple click | Hold |
 | --- | --- | --- | --- | --- |
-| UP | Esc | None | None | Hold left Option |
+| UP | Esc | None | None | Hold left Option/Alt |
 | DOWN | Backspace | Left Command+A | None | Hold Down arrow |
 | OK | Enter | None | None | Return / cancel |
 
@@ -61,8 +61,18 @@ Clear Bluetooth pairing**.
    edits, then hold OK on the device or click **Exit configuration**. A failed
    save leaves the saved settings unchanged; keep the page open and retry.
 
-Left/right **Cmd/Ctrl** sends the corresponding Command on macOS or Ctrl on Windows,
-including macros. Fixed modifiers and recorded keys retain their meaning.
+Each keyboard or media action targets **All**, **Windows** or **Mac**. The device
+runs All and matching actions using the saved pairing system, skipping other
+actions and their waits. Adjacent Windows/Mac actions share a numbered step card;
+move or delete the whole card, or edit/delete each branch. Bottom execution previews
+show both systems with shared numbering. Device display previews and on-device
+summaries follow the saved system. Limits count actual actions: 64 per gesture,
+sharing 6 KiB across scenarios.
+
+**Ctrl**, **Shift**, **Option/Alt** and **Command** are independent fixed modifiers.
+Old left/right Cmd/Ctrl settings become fixed left/right Command when loaded or
+imported; actions without a target apply to All. A hold with one executable action
+lasts until release; multiple executable actions run once.
 
 **Home badge** sets identity, avatar, UTC offset and 12/24-hour time. Names and
 labels allow up to 16 supported characters; the clock shows `--:--` until time

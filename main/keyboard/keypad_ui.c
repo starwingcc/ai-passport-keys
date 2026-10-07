@@ -353,7 +353,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         hidden(s_body, false); lv_obj_set_pos(s_body, 20, 195); lv_obj_set_size(s_body, 200, 24);
         lv_obj_set_style_text_color(s_body, lv_color_hex(0xa3b5a5), 0);
         lv_obj_set_style_text_line_space(s_body, 0, 0); lv_label_set_long_mode(s_body, LV_LABEL_LONG_DOT);
-        lv_label_set_text_fmt(s_body, "Cmd/Ctrl键 对应 %s", m->selected == KP_SYSTEM_MACOS ? "Cmd" : "Ctrl");
+        lv_label_set_text_fmt(s_body, "执行共用 + %s", m->selected == KP_SYSTEM_MACOS ? "Mac" : "Windows");
         lv_label_set_text(s_message, m->system_saving ? "正在保存" : m->system_save_failed ? "保存失败，请重试" :
                           m->system_saved ? "已保存" : "长按 OK 返回");
         lv_obj_set_style_text_color(s_message, lv_color_hex(m->system_save_failed || m->system_saved ? ACCENT : 0xa3b5a5), 0);
@@ -417,8 +417,8 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     } else if (command) {
         const kp_binding_t *b = kp_binding(&m->config, m->feedback.slot);
         char title[128], sequence[512];
-        kp_binding_title(&m->config, b, title, sizeof(title));
-        kp_binding_label(&m->config, b, sequence, sizeof(sequence));
+        kp_binding_title(&m->config, b, m->feedback.system, title, sizeof(title));
+        kp_binding_label(&m->config, b, m->feedback.system, sequence, sizeof(sequence));
         const char *keys[] = {"上", "下", "OK"}; const char *gestures[] = {"单击", "双击", "三击", "长按"};
         lv_obj_set_pos(s_state, 18, 56);
         lv_obj_set_style_text_color(s_state, lv_color_hex(0xa3b5a5), 0);
@@ -455,7 +455,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
                 const kp_binding_t *b = kp_binding(&m->config, i * 4 + j);
                 bool fixed = i == 2 && j == 3;
                 if (fixed) snprintf(action, sizeof(action), "返回");
-                else kp_binding_title(&m->config, b, action, sizeof(action));
+                else kp_binding_title(&m->config, b, m->system, action, sizeof(action));
                 // Literal '#' in user titles must not become a color command.
                 unsigned n = 0;
                 for (unsigned k = 0; action[k]; ++k) {

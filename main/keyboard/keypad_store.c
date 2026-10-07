@@ -38,8 +38,9 @@ esp_err_t kp_store_init(void) {
         kp_settings_t *settings = calloc(1, sizeof(*settings));
         if (!settings) { nvs_close(nvs); return ESP_ERR_NO_MEM; }
         rc = nvs_get_blob(nvs, "settings_v1", settings, &settings_size);
-        bool valid = rc == ESP_OK && kp_settings_valid(settings, true) && settings_size == kp_settings_size(settings);
-        if (valid) s_settings = *settings;
+        bool migrated = settings->config.version == 5;
+        bool valid = rc == ESP_OK && kp_config_upgrade(&settings->config) && kp_settings_valid(settings, true) && settings_size == kp_settings_size(settings);
+        if (valid) { s_settings = *settings; if (migrated) (void)persist(nvs, settings); }
         free(settings);
         if (valid) { nvs_close(nvs); return ESP_OK; }
     }

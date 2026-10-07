@@ -10,7 +10,7 @@ async function main(){
   const browser=await chromium.launch({headless:true,chromiumSandbox:true,executablePath:process.env.KP_BROWSER_EXECUTABLE});
   const page=await browser.newPage({viewport:{width:1120,height:900}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  let device=K.defaults(),posts=0,failSave=false,connection='hotspot';
+  let device=K.defaults(),posts=0,failSave=false,connection='hotspot',deviceSystem=0;
   let job={id:0,kind:0,state:0,busy:false,connected:false,ssid:'',networks:[]},scanPosts=0,testPosts=0,testBody,testState=6,pollFailures=0,lostTestResponse=false,testLinkFailures=0,testRestoreFailure=false,restorePolls=0,testRestorePolls=0;
   let scanNetworks=[{ssid:'nearby-test-network',rssi:-35,secured:true},{ssid:'open-test-network',rssi:-55,secured:false},{ssid:'<b>literal-name</b>',rssi:-65,secured:true}];
   let wifi={ssid:"",has_password:false,state:5,clock_valid:false},wifiPassword="",wifiPosts=0,wifiBody,failWifi=false,settingsPosts=0;
@@ -59,7 +59,7 @@ async function main(){
       assert.equal(request.headers()['x-session'],'test-session');
       return route.fulfill({json:wifi});
     }
-    if(url.pathname==='/api/config')return route.fulfill({json:{config:device,session:'test-session',connection}});
+    if(url.pathname==='/api/config')return route.fulfill({json:{config:device,session:'test-session',connection,system:deviceSystem}});
     const files={'/':'index.html','/app.js':'app.js','/charset.js':'charset.js','/app.css':'app.css'};
     const file=files[url.pathname];if(!file)return route.fulfill({status:404});
     return route.fulfill({body:fs.readFileSync(path.join(__dirname,'../main/web',file)),contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',headers:{'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'"}});
@@ -179,21 +179,21 @@ async function main(){
   // Manual selection retains every left/right modifier and all ordinary usages.
   await page.locator('.tab[data-key="0"]').click();await page.locator('.event[data-event="0"]').click();
   await page.locator('.manual').first().click();const manual=page.locator('#key-editor');
-  assert.deepEqual(await manual.locator('.modifier-column').nth(0).locator('label').allTextContents(),['左 Cmd/Ctrl','左 Ctrl','左 Shift','左 Option','左 Command']);
-  assert.deepEqual(await manual.locator('.modifier-column').nth(1).locator('label').allTextContents(),['右 Cmd/Ctrl','右 Ctrl','右 Shift','右 Option','右 Command']);
+  assert.deepEqual(await manual.locator('.modifier-column').nth(0).locator('label').allTextContents(),['左 Ctrl','左 Shift','左 Option/Alt','左 Command']);
+  assert.deepEqual(await manual.locator('.modifier-column').nth(1).locator('label').allTextContents(),['右 Ctrl','右 Shift','右 Option/Alt','右 Command']);
   assert.equal(await manual.locator('select option').count(),K.keys.length);
-  await manual.getByLabel('左 Cmd/Ctrl',{exact:true}).check();await manual.getByLabel('右 Cmd/Ctrl',{exact:true}).check();
+  await manual.getByLabel('左 Command',{exact:true}).check();await manual.getByLabel('右 Command',{exact:true}).check();
   await manual.getByLabel('左 Shift',{exact:true}).check();
-  assert.equal(await manual.locator('.chord-preview').textContent(),'Cmd/Ctrl+RCmd/Ctrl+Shift+Esc');
+  assert.equal(await manual.locator('.chord-preview').textContent(),'Shift+Command+RCommand+Esc');
   await page.locator('#manual-apply').click();
-  assert.equal(await page.locator('.step-chord').first().textContent(),'Cmd/Ctrl+RCmd/Ctrl+Shift+Esc');
+  assert.equal(await page.locator('.step-chord').first().textContent(),'Shift+Command+RCommand+Esc');
   await page.locator('#save').click();await page.waitForFunction(()=>document.getElementById('dirty').textContent==='全部设置已保存');
-  assert.equal(device.profiles[0].bindings[0].steps[0].logical_modifiers,3);assert.equal(device.profiles[0].bindings[0].steps[0].modifiers,2);
+  assert(!('logical_modifiers' in device.profiles[0].bindings[0].steps[0]));assert.equal(device.profiles[0].bindings[0].steps[0].modifiers,0x8a);
   await page.reload();await page.waitForFunction(()=>!document.getElementById('editor').disabled);
   await page.locator('.manual').first().click();
-  assert(await manual.getByLabel('左 Cmd/Ctrl',{exact:true}).isChecked());assert(await manual.getByLabel('右 Cmd/Ctrl',{exact:true}).isChecked());
-  await manual.getByLabel('左 Command',{exact:true}).check();await page.locator('#manual-cancel').click();
-  assert.equal(await page.locator('.step-chord').first().textContent(),'Cmd/Ctrl+RCmd/Ctrl+Shift+Esc');
+  assert(await manual.getByLabel('左 Command',{exact:true}).isChecked());assert(await manual.getByLabel('右 Command',{exact:true}).isChecked());
+  await manual.getByLabel('左 Command',{exact:true}).uncheck();await page.locator('#manual-cancel').click();
+  assert.equal(await page.locator('.step-chord').first().textContent(),'Shift+Command+RCommand+Esc');
   await page.waitForFunction(()=>!document.getElementById('wifi-fields').disabled);
   // One click saves edits in all three modules. Invalid drafts prevent every write.
   await page.locator('#home-badge').fill('ALL');await page.locator('#wifi-ssid').fill('unified-network');
@@ -215,7 +215,7 @@ async function main(){
   const fullDownloadPromise=page.waitForEvent('download');await page.locator('#export-toggle').click();await page.locator('#export-all').click();
   const fullDownload=await fullDownloadPromise,fullText=fs.readFileSync(await fullDownload.path(),'utf8');
   const completeBackup=JSON.parse(fullText);
-  assert.equal(completeBackup.version,6);assert.deepEqual(completeBackup.settings.config,device);
+  assert.equal(completeBackup.version,7);assert.deepEqual(completeBackup.settings.config,device);
   assert.deepEqual(completeBackup.settings.home,home);assert.equal(completeBackup.settings.wifi.password,'test-pass');
   assert(!fullText.includes('test-session'));
   await page.locator('#home-badge').fill('DRAFT');await page.locator('#wifi-ssid').fill('draft-network');
@@ -268,25 +268,25 @@ async function main(){
   await page.locator('#new-profile').click();assert.equal(await page.locator('#steps .step').count(),0);
   await page.locator('#add-step').click();await page.locator('#add-step').click();
   assert.equal(await page.locator('#steps .step').count(),2);
-  assert.equal(await page.getByLabel('第1步后等待毫秒',{exact:true}).inputValue(),'80');
-  assert(await page.getByLabel('第2步后等待毫秒',{exact:true}).isDisabled());
-  await page.getByLabel('第1步后等待毫秒',{exact:true}).fill('325');
+  assert.equal(await page.getByLabel('第1步共用版本后等待毫秒',{exact:true}).inputValue(),'80');
+  assert(await page.getByLabel('第2步共用版本后等待毫秒',{exact:true}).isDisabled());
+  await page.getByLabel('第1步共用版本后等待毫秒',{exact:true}).fill('325');
   await page.locator('#steps .step').first().getByRole('button',{name:'录制',exact:true}).click();
   await page.keyboard.down('ControlRight');await page.keyboard.down('KeyC');await page.keyboard.up('KeyC');await page.keyboard.up('ControlRight');
   assert.equal(await page.locator('.step-chord').first().textContent(),'RControl+C');
   await page.locator('#steps .step').first().getByRole('button',{name:'录制',exact:true}).click();
   await page.locator('#steps .step').first().getByRole('button',{name:'取消录制',exact:true}).click();
   assert.equal(await page.locator('.step-chord').first().textContent(),'RControl+C');
-  await page.getByLabel('单击第2步类型',{exact:true}).selectOption('2');
+  await page.getByLabel('第2步共用版本类型',{exact:true}).selectOption('2');
   assert.equal(await page.getByLabel('媒体动作',{exact:true}).locator('option').count(),6);
   await page.getByLabel('媒体动作',{exact:true}).selectOption('233');
   await page.getByLabel('上移第2步',{exact:true}).click();
-  assert.equal(await page.getByLabel('单击第1步类型',{exact:true}).inputValue(),'2');
-  assert.equal(await page.getByLabel('第1步后等待毫秒',{exact:true}).inputValue(),'80');
+  assert.equal(await page.getByLabel('第1步共用版本类型',{exact:true}).inputValue(),'2');
+  assert.equal(await page.getByLabel('第1步共用版本后等待毫秒',{exact:true}).inputValue(),'80');
   await page.getByLabel('下移第1步',{exact:true}).click();
-  await page.getByLabel('删除第2步',{exact:true}).click();
-  assert.equal(await page.getByLabel('第1步后等待毫秒',{exact:true}).inputValue(),'0');
-  assert(await page.getByLabel('第1步后等待毫秒',{exact:true}).isDisabled());
+  await page.getByLabel('删除整个第2步',{exact:true}).click();
+  assert.equal(await page.getByLabel('第1步共用版本后等待毫秒',{exact:true}).inputValue(),'0');
+  assert(await page.getByLabel('第1步共用版本后等待毫秒',{exact:true}).isDisabled());
   await page.locator('.manual').first().click();
   for(let i=1;i<6;i++)await manual.getByRole('button',{name:'+ 添加普通按键',exact:true}).click();
   assert(await manual.getByRole('button',{name:'+ 添加普通按键',exact:true}).isDisabled());
@@ -362,6 +362,21 @@ async function main(){
   assert.equal(wifi.ssid,'updated-network');assert(await page.locator('#scan-wifi').isEnabled());assert(await page.locator('#test-wifi').isEnabled());
   connection='hotspot';await page.reload();await page.waitForFunction(()=>!document.getElementById('wifi-fields').disabled);
   assert(!(await page.locator('#scan-wifi').isDisabled()));assert(!(await page.locator('#test-wifi').isDisabled()));
+  device=K.defaults();device.profiles[0].bindings[10]={title:'重做',steps:[
+    {type:1,modifiers:10,keys:[29],consumer:0,system:2,delay_ms:80},
+    {type:1,modifiers:1,keys:[28],consumer:0,system:1,delay_ms:0}
+  ]};
+  for(const width of [1120,320])for(const system of [0,1]){
+    deviceSystem=system;await page.setViewportSize({width,height:900});await page.reload();
+    await page.waitForFunction(()=>!document.getElementById('wifi-fields').disabled);
+    await page.getByRole('tab',{name:'OK 确定键',exact:false}).click();await page.getByRole('tab',{name:'三击',exact:true}).click();
+    await page.locator('#preview').click();
+    assert.equal(await page.locator('#preview-heading').textContent(),'设备显示预览 · '+(system?'Windows':'Mac'));
+    assert.equal(await page.locator('.preview-keys').textContent(),system?'Control+Y':'Shift+Command+Z');
+    assert.equal(await page.locator('.preview-progress').textContent(),'');
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.locator('#preview-close').click();
+  }
   assert.deepEqual(separateWrites,[]);assert.deepEqual(errors,[]);await browser.close();
   console.log('Browser unified save, failed-save retry, staged defaults/clearing, Wi-Fi scan/test, saved-password display, identity, gestures, manual/recorded keys, steps, import/export and fixed mobile layout: PASS');
 }

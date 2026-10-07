@@ -32,7 +32,7 @@ bool kp_profile_name_set(kp_config_t *c, unsigned profile, const char *name) {
            put_text(c, name, &c->profiles[profile].name);
 }
 bool kp_action_valid(const kp_action_t *a, bool allow_none) {
-    if (!a || a->type > KP_MEDIA) return false;
+    if (!a || a->type > KP_MEDIA || a->system >= KP_TARGET_COUNT) return false;
     bool any = a->modifiers != 0;
     for (unsigned i = 0; i < 6; ++i) {
         if (!a->keys[i]) continue;
@@ -41,7 +41,7 @@ bool kp_action_valid(const kp_action_t *a, bool allow_none) {
         for (unsigned j = 0; j < i; ++j) if (a->keys[j] == a->keys[i]) return false;
     }
     if (a->type == KP_KEYBOARD)
-        return (any || a->logical_modifiers) && !(a->logical_modifiers & ~3U);
+        return any && !a->consumer;
     if (a->type == KP_MEDIA) {
         for (unsigned i = 0; i < sizeof(media) / sizeof(media[0]); ++i)
             if (a->consumer == media[i]) return !any;
@@ -49,16 +49,14 @@ bool kp_action_valid(const kp_action_t *a, bool allow_none) {
     }
     return allow_none && !any && !a->consumer;
 }
+bool kp_action_applies(const kp_action_t *a, kp_system_t system) {
+    return a && (unsigned)system < KP_SYSTEM_COUNT &&
+           (a->system == KP_TARGET_ALL ||
+            a->system == (system == KP_SYSTEM_WINDOWS ? KP_TARGET_WINDOWS : KP_TARGET_MACOS));
+}
 bool kp_action_resolve(const kp_action_t *a, kp_system_t system, kp_action_t *out) {
-    if (!out || (unsigned)system >= KP_SYSTEM_COUNT || !kp_action_valid(a, true)) return false;
+    if (!out || !kp_action_valid(a, true) || !kp_action_applies(a, system)) return false;
     *out = *a;
-    if (a->type == KP_KEYBOARD) {
-        if (a->logical_modifiers & KP_CMD_CTRL_LEFT)
-            out->modifiers |= system == KP_SYSTEM_MACOS ? 0x08 : 0x01;
-        if (a->logical_modifiers & KP_CMD_CTRL_RIGHT)
-            out->modifiers |= system == KP_SYSTEM_MACOS ? 0x80 : 0x10;
-        out->logical_modifiers = 0;
-    }
     return true;
 }
 bool kp_binding_set(kp_config_t *c, unsigned profile, unsigned slot,
@@ -115,6 +113,30 @@ bool kp_config_valid(const kp_config_t *c) {
     }
     return true;
 }
+bool kp_config_upgrade(kp_config_t *c) {
+    if (!c) return false;
+    if (c->version == KP_VERSION) return kp_config_valid(c);
+    if (c->version != 5 || c->profile_count > KP_MAX_PROFILES || c->used > sizeof(c->data)) return false;
+    for (unsigned p = 0; p < c->profile_count; ++p) {
+        for (unsigned i = 0; i < KP_BINDINGS; ++i) {
+            const kp_binding_t *b = &c->profiles[p].bindings[i];
+            if (b->count > KP_MAX_STEPS) return false;
+            for (unsigned j = 0; j < b->count; ++j) {
+                kp_step_t step;
+                if (!kp_binding_step(c, b, j, &step) || step.action.system) return false;
+                if (step.action.type == KP_KEYBOARD) {
+                    unsigned logical = step.action.consumer;
+                    if (logical > 3) return false;
+                    step.action.modifiers |= (logical & 1 ? 0x08 : 0) | (logical & 2 ? 0x80 : 0);
+                    step.action.consumer = 0;
+                }
+                memcpy(c->data + b->steps * 2U + j * sizeof(step), &step, sizeof(step));
+            }
+        }
+    }
+    c->version = KP_VERSION;
+    return kp_config_valid(c);
+}
 void kp_defaults(kp_config_t *c) {
     static const kp_action_t actions[KP_BINDINGS] = {
         [0] = {.type = KP_KEYBOARD, .keys = {0x29}},
@@ -137,7 +159,6 @@ void kp_report(const kp_action_t *a, uint8_t keyboard[8], uint8_t consumer[2]) {
     memset(consumer, 0, 2);
     if (!a) return;
     if (a->type == KP_KEYBOARD) {
-        if (a->logical_modifiers) return; // Only resolved actions reach HID.
         keyboard[0] = a->modifiers;
         memcpy(keyboard + 2, a->keys, 6);
     } else if (a->type == KP_MEDIA) {
@@ -158,9 +179,7 @@ void kp_action_label(const kp_action_t *a, char *out, size_t size) {
         for (unsigned i = 0; i < 6; ++i) if (media[i] == a->consumer) snprintf(out, size, "%s", labels[i]);
         return;
     }
-    const char *mods[] = {"Control", "Shift", "Option", "Command", "RControl", "RShift", "ROption", "RCommand"};
-    if (a->logical_modifiers & KP_CMD_CTRL_LEFT) append(out, size, "Cmd/Ctrl");
-    if (a->logical_modifiers & KP_CMD_CTRL_RIGHT) append(out, size, "RCmd/Ctrl");
+    const char *mods[] = {"Control", "Shift", "Option/Alt", "Command", "RControl", "RShift", "ROption/Alt", "RCommand"};
     for (unsigned i = 0; i < 8; ++i) if (a->modifiers & (1U << i)) append(out, size, mods[i]);
     for (unsigned i = 0; i < 6; ++i) {
         unsigned k = a->keys[i];
@@ -186,26 +205,37 @@ void kp_action_label(const kp_action_t *a, char *out, size_t size) {
         append(out, size, name);
     }
 }
-void kp_binding_label(const kp_config_t *c, const kp_binding_t *b, char *out, size_t size) {
+unsigned kp_binding_count(const kp_config_t *c, const kp_binding_t *b, kp_system_t system) {
+    unsigned count = 0;
+    if (b) for (unsigned i = 0; i < b->count; ++i) {
+        kp_step_t step;
+        if (!kp_binding_step(c, b, i, &step)) return 0;
+        if (kp_action_applies(&step.action, system)) ++count;
+    }
+    return count;
+}
+void kp_binding_label(const kp_config_t *c, const kp_binding_t *b, kp_system_t system, char *out, size_t size) {
     if (!size) return;
     out[0] = 0;
     if (!b || !b->count) { snprintf(out, size, "无"); return; }
     for (unsigned i = 0; i < b->count; ++i) {
         kp_step_t step; char action[192];
         if (!kp_binding_step(c, b, i, &step)) return;
+        if (!kp_action_applies(&step.action, system)) continue;
         kp_action_label(&step.action, action, sizeof(action));
-        size_t used = strlen(out), needed = strlen(action) + (i ? 5 : 0);
+        size_t used = strlen(out), needed = strlen(action) + (used ? 5 : 0);
         if (used + needed + 1 > size) {
             if (used + 4 <= size) memcpy(out + used, "…", 4);
             return;
         }
-        snprintf(out + used, size - used, "%s%s", i ? " → " : "", action);
+        snprintf(out + used, size - used, "%s%s", used ? " → " : "", action);
     }
+    if (!*out) snprintf(out, size, "无");
 }
-void kp_binding_title(const kp_config_t *c, const kp_binding_t *b, char *out, size_t size) {
+void kp_binding_title(const kp_config_t *c, const kp_binding_t *b, kp_system_t system, char *out, size_t size) {
     if (b && *kp_text(c, b->title)) snprintf(out, size, "%s", kp_text(c, b->title));
-    else if (b && b->count > 1) snprintf(out, size, "组合指令");
-    else kp_binding_label(c, b, out, size);
+    else if (kp_binding_count(c, b, system) > 1) snprintf(out, size, "组合指令");
+    else kp_binding_label(c, b, system, out, size);
 }
 static void emit(kp_model_t *m, kp_effect_t e, const kp_action_t *a) {
     if (m->emit) m->emit(m->user, e, a);

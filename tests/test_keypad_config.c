@@ -24,6 +24,20 @@ int main(int argc,char **argv){
     // Lock the current packed word layout.
     kp_binding_t descriptor={.title=5735,.steps=2868,.count=64};uint32_t word;
     memcpy(&word,&descriptor,sizeof(word));assert(word==(5735U|(2868U<<13)|(64U<<25)));
+    // Validate legacy binary migration independently from the JSON conversion.
+    for(unsigned logical=0;logical<4;logical++)for(unsigned modifiers=0;modifiers<256;modifiers++){
+        kp_config_t old;kp_defaults(&old);
+        kp_step_t legacy_step={.action={.type=KP_KEYBOARD,.modifiers=modifiers,.keys={4,5}}};
+        assert(kp_binding_set(&old,0,0,"",&legacy_step,1));
+        unsigned offset=kp_binding(&old,0)->steps*2U;old.version=5;
+        old.data[offset+8]=logical;old.data[offset+9]=0;
+        assert(kp_config_upgrade(&old)&&old.version==KP_VERSION);
+        assert(kp_binding_step(&old,kp_binding(&old,0),0,&legacy_step));
+        assert(legacy_step.action.modifiers==(modifiers|(logical&1?8:0)|(logical&2?128:0)));
+        assert(!legacy_step.action.consumer&&!legacy_step.action.system&&legacy_step.action.keys[0]==4&&legacy_step.action.keys[1]==5);
+    }
+    kp_config_t broken;kp_defaults(&broken);broken.version=5;
+    broken.data[kp_binding(&broken,0)->steps*2U+8]=4;assert(!kp_config_upgrade(&broken));
     kp_config_t c,decoded;kp_defaults(&c);assert(kp_config_encode(&c,write_json,NULL));
     assert(kp_config_decode_string(encoded,&decoded));
     assert(decoded.profile_count==1&&decoded.active_profile==0&&kp_binding(&decoded,8)->count==1);
@@ -52,17 +66,26 @@ int main(int argc,char **argv){
     cJSON_SetNumberValue(cJSON_GetObjectItem(root,"version"),2);assert(!decode(root,&decoded));
     cJSON_SetNumberValue(cJSON_GetObjectItem(root,"version"),KP_VERSION);
     cJSON_AddNumberToObject(step,"logical_modifiers",3);assert(decode(root,&decoded));
-    kp_step_t logical;assert(kp_binding_step(&decoded,kp_binding(&decoded,0),0,&logical)&&logical.action.logical_modifiers==3);
+    kp_step_t logical;assert(kp_binding_step(&decoded,kp_binding(&decoded,0),0,&logical)&&logical.action.modifiers==0x88&&logical.action.consumer==0&&logical.action.system==0);
     for(unsigned flags=4;flags<=256;flags+=252){cJSON_SetNumberValue(cJSON_GetObjectItem(step,"logical_modifiers"),flags);assert(!decode(root,&decoded));}
     cJSON_SetNumberValue(cJSON_GetObjectItem(step,"logical_modifiers"),1);
     cJSON_SetNumberValue(cJSON_GetObjectItem(step,"consumer"),1);assert(!decode(root,&decoded));
     cJSON_SetNumberValue(cJSON_GetObjectItem(step,"consumer"),0);
     cJSON_SetNumberValue(cJSON_GetObjectItem(root,"version"),4);assert(!decode(root,&decoded));
     cJSON_DeleteItemFromObject(step,"logical_modifiers");assert(!decode(root,&decoded));
-    for(unsigned version=1;version<KP_VERSION;version++){
+    for(unsigned version=1;version<5;version++){
         cJSON_SetNumberValue(cJSON_GetObjectItem(root,"version"),version);assert(!decode(root,&decoded));
     }
     cJSON_SetNumberValue(cJSON_GetObjectItem(root,"version"),KP_VERSION);assert(decode(root,&decoded));
+    cJSON_DeleteItemFromObject(step,"system");cJSON_SetNumberValue(cJSON_GetObjectItem(root,"version"),5);
+    assert(decode(root,&decoded)&&decoded.version==KP_VERSION);
+    assert(kp_binding_step(&decoded,kp_binding(&decoded,0),0,&logical)&&logical.action.system==KP_TARGET_ALL);
+    cJSON_AddNumberToObject(step,"system",KP_TARGET_MACOS);assert(decode(root,&decoded));
+    assert(kp_binding_step(&decoded,kp_binding(&decoded,0),0,&logical)&&logical.action.system==KP_TARGET_MACOS);
+    cJSON_SetNumberValue(cJSON_GetObjectItem(step,"system"),3);assert(!decode(root,&decoded));
+    cJSON_SetNumberValue(cJSON_GetObjectItem(step,"system"),1.5);assert(!decode(root,&decoded));
+    cJSON_SetNumberValue(cJSON_GetObjectItem(step,"system"),0);
+    cJSON_AddNumberToObject(step,"system",0);assert(!decode(root,&decoded));
     cJSON_Delete(root);
     assert(!kp_config_decode_string("{}",&decoded));assert(!kp_config_decode_string("{\"version\":02}",&decoded));
     char *trailing=malloc(strlen(encoded)+4);assert(trailing);sprintf(trailing,"%s {}",encoded);assert(!kp_config_decode_string(trailing,&decoded));free(trailing);
