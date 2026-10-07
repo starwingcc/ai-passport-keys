@@ -3,8 +3,8 @@
 #include "../main/keyboard/keypad_ble.c"
 #include "../main/keyboard/keypad_runner.c"
 void ble_store_config_init(void) {}
-static void event(int type){struct ble_gap_event e={.type=type};gap_event(&e,NULL);}
-static void subscribe(unsigned h,bool on){struct ble_gap_event e={.type=BLE_GAP_EVENT_SUBSCRIBE,.subscribe={.attr_handle=h,.cur_notify=on}};gap_event(&e,NULL);}
+static void event(int type){struct ble_gap_event e={.type=type};e.connect.conn_handle=fake_conn_handle;e.enc_change.conn_handle=fake_conn_handle;e.disconnect.conn.conn_handle=fake_conn_handle;e.passkey.conn_handle=fake_conn_handle;gap_event(&e,NULL);}
+static void subscribe(unsigned h,bool on){struct ble_gap_event e={.type=BLE_GAP_EVENT_SUBSCRIBE,.subscribe={.conn_handle=fake_conn_handle,.attr_handle=h,.cur_notify=on}};gap_event(&e,NULL);}
 static void report_handle(uint8_t id, uint8_t type, uint16_t handle) {
     ble_uuid16_t uuid = BLE_UUID16_INIT(0x2908);
     struct fake_dsc dsc = {.uuid=&uuid.u, .arg=&handle};
@@ -63,6 +63,74 @@ static void redo_branches(void) {
     fake_notify_observer=NULL;
     puts("Redo system branches: one matching HID key-down and one release per system: PASS");
 }
+static void early_connection_events(void) {
+    kp_action_t key={.type=KP_KEYBOARD,.keys={40}};
+    fake_desc.sec_state.encrypted=true;fake_desc.sec_state.bonded=true;
+    fake_desc.sec_state.key_size=16;
+    for(unsigned subscribe_first=0;subscribe_first<2;subscribe_first++) {
+        unsigned terminated=fake_terminate_count, security=fake_security_count;
+        if(subscribe_first)subscribe(10,true);
+        event(BLE_GAP_EVENT_ENC_CHANGE);
+        if(!subscribe_first)subscribe(10,true);
+        subscribe(20,true);
+        // The peer must still be checked by CONNECT before sending any input.
+        assert(!kp_ble_status().connected&&!kp_ble_status().ready);
+        assert(kp_ble_send(&key)==ESP_ERR_INVALID_STATE);
+        assert(fake_terminate_count==(int)terminated);
+        event(BLE_GAP_EVENT_CONNECT);
+        assert(kp_ble_status().ready&&kp_ble_status().secure);
+        assert(fake_security_count==security);
+        assert(kp_ble_send(&key)==ESP_OK);
+        event(BLE_GAP_EVENT_DISCONNECT);
+        assert(!kp_ble_status().secure&&!kp_ble_status().keyboard_subscribed);
+    }
+    // A CONNECT snapshot can already be encrypted, even without an ENC_CHANGE.
+    subscribe(10,true);event(BLE_GAP_EVENT_CONNECT);
+    assert(kp_ble_status().ready);
+    // Late events from a previous connection cannot clear the current state.
+    unsigned terminated=fake_terminate_count;
+    struct ble_gap_event stale={.type=BLE_GAP_EVENT_ENC_CHANGE,
+        .enc_change={.conn_handle=9}};
+    gap_event(&stale,NULL);
+    stale=(struct ble_gap_event){.type=BLE_GAP_EVENT_SUBSCRIBE,
+        .subscribe={.conn_handle=9,.attr_handle=10,.cur_notify=false}};
+    gap_event(&stale,NULL);
+    stale=(struct ble_gap_event){.type=BLE_GAP_EVENT_DISCONNECT,
+        .disconnect={.conn={.conn_handle=9}}};
+    gap_event(&stale,NULL);
+    assert(kp_ble_status().ready&&fake_terminate_count==(int)terminated);
+    event(BLE_GAP_EVENT_DISCONNECT);
+    event(BLE_GAP_EVENT_CONNECT);
+    assert(kp_ble_status().secure&&!kp_ble_status().keyboard_subscribed&&!kp_ble_status().ready);
+    event(BLE_GAP_EVENT_DISCONNECT);
+    // The usual unencrypted CONNECT still requests security and waits for it.
+    fake_desc.sec_state.encrypted=false;
+    unsigned security=fake_security_count;
+    event(BLE_GAP_EVENT_CONNECT);subscribe(10,true);
+    assert(fake_security_count==security+1&&!kp_ble_status().secure&&!kp_ble_status().ready);
+    fake_desc.sec_state.encrypted=true;event(BLE_GAP_EVENT_ENC_CHANGE);
+    assert(kp_ble_status().ready);
+    event(BLE_GAP_EVENT_DISCONNECT);
+    // Early failure terminates the event's real handle. NimBLE reports a failed
+    // CONNECT if that connection ended before the success callback was sent.
+    struct ble_gap_event failed={.type=BLE_GAP_EVENT_ENC_CHANGE,
+        .enc_change={.conn_handle=fake_conn_handle,.status=5}};
+    gap_event(&failed,NULL);
+    assert(!kp_ble_status().ready&&fake_last_terminate_handle==fake_conn_handle);
+    failed=(struct ble_gap_event){.type=BLE_GAP_EVENT_CONNECT,
+        .connect={.conn_handle=fake_conn_handle,.status=5}};
+    gap_event(&failed,NULL);
+    assert(s_conn==BLE_HS_CONN_HANDLE_NONE&&!kp_ble_status().secure&&fake_adv);
+    // A different bonded peer remains rejected even if early events were valid.
+    fake_bonds=1;fake_peer.val[0]=7;fake_desc.peer_id_addr.val[0]=9;
+    event(BLE_GAP_EVENT_ENC_CHANGE);subscribe(10,true);
+    assert(!kp_ble_status().ready);
+    terminated=fake_terminate_count;event(BLE_GAP_EVENT_CONNECT);
+    assert(fake_terminate_count==(int)terminated+1&&!kp_ble_status().ready);
+    event(BLE_GAP_EVENT_DISCONNECT);
+    fake_bonds=0;fake_desc.peer_id_addr.val[0]=0;
+    puts("Keypad BLE encryption and subscriptions before CONNECT: PASS");
+}
 int main(void) {
     assert(kp_ble_init()==ESP_OK);synced();assert(fake_adv);
     assert(ble_hs_cfg.sm_io_cap==BLE_SM_IO_CAP_NO_IO && !ble_hs_cfg.sm_mitm);
@@ -81,6 +149,7 @@ int main(void) {
     characteristic_handle(0x2a22, 30);
     characteristic_handle(0x2a4e, 40);
     assert(s_input[0]==10 && s_input[1]==20 && s_boot==30 && s_protocol_handle==40);
+    early_connection_events();
     fake_desc.sec_state.encrypted=true;fake_desc.sec_state.authenticated=true;
     fake_desc.sec_state.bonded=true;fake_desc.sec_state.key_size=16;
     kp_action_t key={.type=KP_KEYBOARD,.keys={40}},media={.type=KP_MEDIA,.consumer=233};

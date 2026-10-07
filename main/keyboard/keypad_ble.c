@@ -150,56 +150,86 @@ static bool allowed_peer(const struct ble_gap_conn_desc *desc) {
     if (ble_store_util_bonded_peers(peers, &count, 1)) return false;
     return count == 0 || ble_addr_cmp(&peers[0], &desc->peer_id_addr) == 0;
 }
+static bool secure_connection(const struct ble_gap_conn_desc *desc) {
+    return desc->sec_state.encrypted && desc->sec_state.bonded &&
+           desc->sec_state.key_size == 16;
+}
+static void begin_connection(uint16_t handle) {
+    // Encryption and restored subscriptions can arrive before CONNECT while
+    // NimBLE waits for remote feature exchange. Reset only for a new handle.
+    if (s_conn == handle) return;
+    s_conn = handle;
+    s_notify[0] = s_notify[1] = s_boot_notify = s_encrypted = false;
+    s_boot_mode = false;
+}
+static void clear_connection(void) {
+    s_conn = BLE_HS_CONN_HANDLE_NONE;
+    s_encrypted = s_notify[0] = s_notify[1] = s_boot_notify = s_boot_mode = false;
+    portENTER_CRITICAL(&s_mux);
+    s_status.connected = s_status.ready = false; ++s_status.generation;
+    portEXIT_CRITICAL(&s_mux);
+    readiness();
+}
 static int gap_event(struct ble_gap_event *event, void *arg) {
     (void)arg;
     struct ble_gap_conn_desc desc;
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
         ESP_LOGI("keypad_ble", "Connect status=%d handle=%u", event->connect.status, event->connect.conn_handle);
-        if (event->connect.status) { advertise(); break; }
-        s_conn = event->connect.conn_handle;
-        s_notify[0] = s_notify[1] = s_boot_notify = s_encrypted = false;
-        s_boot_mode = false;
+        if (event->connect.status) {
+            if (s_conn == event->connect.conn_handle) clear_connection();
+            advertise(); break;
+        }
+        begin_connection(event->connect.conn_handle);
         portENTER_CRITICAL(&s_mux);
         s_status.connected = true; s_status.ready = s_status.failed = false; ++s_status.generation;
         portEXIT_CRITICAL(&s_mux);
         if (kp_ble_status().paused || ble_gap_conn_find(s_conn, &desc) || !allowed_peer(&desc)) {
             ESP_LOGW("keypad_ble", "Rejecting peer: paused, missing connection, or different bond");
+            s_encrypted = false;
             ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
         } else {
-            int rc = ble_gap_security_initiate(s_conn);
-            ESP_LOGI("keypad_ble", "Security initiate rc=%d", rc);
-            if (rc && rc != BLE_HS_EALREADY && rc != BLE_HS_EBUSY) {
-                portENTER_CRITICAL(&s_mux); s_status.failed = true; portEXIT_CRITICAL(&s_mux);
+            s_encrypted = secure_connection(&desc);
+            if (desc.sec_state.encrypted && !s_encrypted) {
+                ESP_LOGW("keypad_ble", "Rejecting encrypted connection without a bond and 16-byte key");
                 ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+            } else if (!s_encrypted) {
+                int rc = ble_gap_security_initiate(s_conn);
+                ESP_LOGI("keypad_ble", "Security initiate rc=%d", rc);
+                if (rc && rc != BLE_HS_EALREADY && rc != BLE_HS_EBUSY) {
+                    portENTER_CRITICAL(&s_mux); s_status.failed = true; portEXIT_CRITICAL(&s_mux);
+                    ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+                }
             }
+            ESP_LOGI("keypad_ble", "Connect security encrypted=%d bonded=%d key_size=%u keyboard_notify=%d",
+                     desc.sec_state.encrypted, desc.sec_state.bonded, desc.sec_state.key_size,
+                     s_boot_mode ? s_boot_notify : s_notify[0]);
         }
         readiness();
         break;
     case BLE_GAP_EVENT_DISCONNECT:
+        if (s_conn != BLE_HS_CONN_HANDLE_NONE && event->disconnect.conn.conn_handle != s_conn) break;
         ESP_LOGI("keypad_ble", "Disconnect reason=%d", event->disconnect.reason);
-        s_conn = BLE_HS_CONN_HANDLE_NONE; s_encrypted = false;
-        s_notify[0] = s_notify[1] = s_boot_notify = false;
-        portENTER_CRITICAL(&s_mux);
-        s_status.connected = s_status.ready = false; ++s_status.generation;
-        portEXIT_CRITICAL(&s_mux);
-        readiness();
+        clear_connection();
         advertise();
         break;
     case BLE_GAP_EVENT_ENC_CHANGE: {
-        int found = ble_gap_conn_find(s_conn, &desc);
+        uint16_t handle = event->enc_change.conn_handle;
+        int found = ble_gap_conn_find(handle, &desc);
         if (found) memset(&desc, 0, sizeof(desc));
-        ESP_LOGI("keypad_ble", "Security status=%d lookup=%d encrypted=%d authenticated=%d bonded=%d key_size=%u",
+        ESP_LOGI("keypad_ble", "Security status=%d lookup=%d encrypted=%d authenticated=%d bonded=%d key_size=%u handle=%u",
                  event->enc_change.status, found, desc.sec_state.encrypted,
-                 desc.sec_state.authenticated, desc.sec_state.bonded, desc.sec_state.key_size);
-        s_encrypted = !event->enc_change.status && !found &&
-                      desc.sec_state.encrypted && desc.sec_state.bonded &&
-                      desc.sec_state.key_size == 16;
+                 desc.sec_state.authenticated, desc.sec_state.bonded, desc.sec_state.key_size, handle);
+        if (found) break; // A stale event must not change or terminate another connection.
+        begin_connection(handle);
+        s_encrypted = !event->enc_change.status && secure_connection(&desc);
         readiness();
-        if (!s_encrypted) ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+        if (!s_encrypted) ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
         break;
     }
     case BLE_GAP_EVENT_SUBSCRIBE:
+        if (ble_gap_conn_find(event->subscribe.conn_handle, &desc)) break;
+        begin_connection(event->subscribe.conn_handle);
         ESP_LOGD("keypad_ble", "Subscribe handle=%u notify=%d keyboard=%u consumer=%u boot=%u",
                  event->subscribe.attr_handle, event->subscribe.cur_notify, s_input[0], s_input[1], s_boot);
         for (unsigned i = 0; i < 2; ++i)
