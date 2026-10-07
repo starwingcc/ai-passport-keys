@@ -9,64 +9,46 @@
   <script defer src="/transfer.js"></script>
 </head>
 <body>
-  <svg class="sr-only" aria-hidden="true"><defs>
-    <symbol id="i-send" viewBox="0 0 20 20"><path d="m3 9 14-6-6 14-2-6-6-2Zm6 2 8-8"/></symbol>
-    <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></symbol>
-    <symbol id="i-file" viewBox="0 0 20 20"><path d="M11 2H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7l-5-5Zm0 0v5h5M7 11h6M7 14h4"/></symbol>
-  </defs></svg>
-
-  <header class="topbar"><div class="top-inner">
-    <a class="brand" href="/transfer" aria-label="Passport 内容流转">
-      <span class="brand-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="3"/><path d="M9 7h6M9 11h6m-6 4h2m2 0h2"/></svg></span>
-      <strong>PASSPORT</strong><span class="slash"></span><span class="title">内容流转</span>
-    </a>
-    <div class="connection" role="status"><i id="lamp"></i><span id="connection">正在连接</span><button id="reconnect" class="btn small" type="button" hidden>重新连接</button></div>
-  </div></header>
-
-  <main class="layout">
-    <aside class="sidebar" aria-label="设备与接收端">
-      <section class="panel device-panel" aria-labelledby="devices-heading">
-        <div class="panel-top"><h2 id="devices-heading"><span class="section-num">01</span>设备</h2><span id="online" class="tag">在线 0 台</span></div>
-        <div class="identity">
-          <label class="field" for="name"><span>本机名称</span><input class="control" id="name" maxlength="16" autocomplete="off" placeholder="输入设备名称"></label>
-          <button id="rename" class="btn small" type="button">更新名称</button>
-        </div>
-        <div class="device-list"><p class="field-label">在线设备</p><div id="peers" class="peers"><p class="empty">等待其他设备打开此页</p></div></div>
-        <div class="recipient"><label class="field" for="target"><span>发送给</span><span class="select-wrap"><select class="control" id="target"><option value="all">所有在线设备</option></select></span></label></div>
+<svg class="sr-only" aria-hidden="true"><defs>
+  <symbol id="i-send" viewBox="0 0 20 20"><path d="m3 9 14-6-6 14-2-6-6-2Zm6 2 8-8"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></symbol>
+  <symbol id="i-file" viewBox="0 0 20 20"><path d="M11 2H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7l-5-5Zm0 0v5h5M7 11h6M7 14h4"/></symbol>
+  <symbol id="i-photo" viewBox="0 0 20 20"><rect x="2.5" y="2.5" width="15" height="15" rx="2"/><circle cx="7" cy="7" r="1.5"/><path d="m3 15 4-4 3 3 3-5 4 6"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 20 20"><rect x="7" y="7" width="10" height="11" rx="2"/><path d="M12 7V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></symbol>
+  <symbol id="i-check" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5"/><path d="m6 10 2.5 2.5L14 7"/></symbol>
+  <symbol id="i-info" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5"/><path d="M10 9v5m0-8v.2"/></symbol>
+  <symbol id="i-download" viewBox="0 0 20 20"><path d="M10 2v10m-4-4 4 4 4-4M3 13v4h14v-4"/></symbol>
+</defs></svg>
+<header class="topbar"><div class="top-inner">
+  <a class="brand" href="/transfer" aria-label="Passport 内容流转"><span class="brand-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="3"/><path d="M9 7h6M9 11h6m-6 4h2m2 0h2"/></svg></span><strong>PASSPORT</strong><span class="slash"></span><span class="title">内容流转</span></a>
+  <div class="connection" role="status"><i id="lamp"></i><span id="connection">正在连接</span><button id="reconnect" class="btn small" type="button" hidden>重新连接</button></div>
+</div></header>
+<main class="layout">
+  <aside class="sidebar" aria-label="设备">
+    <section class="panel device-panel" aria-labelledby="devices-heading">
+      <div class="panel-top"><h2 id="devices-heading"><span class="section-num">01</span>设备</h2><span id="online" class="tag">在线 0 台</span></div>
+      <div class="identity"><div class="identity-heading"><label for="name">本机名称</label><button id="rename" class="btn small" type="button">更新名称</button></div><input class="control" id="name" maxlength="16" autocomplete="off" placeholder="输入设备名称"></div>
+      <div class="device-list"><p class="field-label">在线设备</p><div id="peers" class="peers"><p class="empty">等待其他设备打开此页</p></div></div>
+    </section>
+    <p class="network-note">设备需在同一网络。传输时保持网页打开，手机保持前台。</p>
+  </aside>
+  <div class="content">
+    <div class="page-heading"><h1>发送与接收</h1><div class="recipient"><label for="target">发送给</label><span class="select-wrap"><select class="control" id="target"><option value="all">所有在线设备</option></select></span></div></div>
+    <div class="exchange-grid">
+      <section class="panel text-panel" aria-labelledby="text-heading">
+        <div class="panel-top"><h2 id="text-heading"><span class="section-num">02</span>文字</h2><span class="small">最多 8,000 字节</span></div>
+        <div class="composer"><label class="sr-only" for="text">发送文字</label><textarea class="control" id="text" rows="5" placeholder="输入文字或粘贴链接"></textarea><div class="send-row"><button id="send-text" class="btn primary" type="button"><svg aria-hidden="true"><use href="#i-send"/></svg>发送文字</button></div></div>
+        <div id="texts" class="texts" aria-label="文字记录" aria-live="polite"></div>
       </section>
-      <p class="network-note">设备需在同一网络。传输时保持网页打开，手机保持前台。</p>
-    </aside>
-
-    <div class="content">
-      <div class="page-heading"><h1>发送与接收</h1></div>
-      <div class="exchange-grid">
-        <section class="panel text-panel" aria-labelledby="text-heading">
-          <div class="panel-top"><h2 id="text-heading"><span class="section-num">02</span>文字</h2><span class="small">最多 8,000 字节</span></div>
-          <div class="composer">
-            <label class="sr-only" for="text">发送文字</label>
-            <textarea class="control" id="text" rows="5" placeholder="输入文字或粘贴链接"></textarea>
-            <div class="send-row"><button id="send-text" class="btn primary" type="button"><svg aria-hidden="true"><use href="#i-send"/></svg>发送文字</button></div>
-          </div>
-          <div id="texts" class="texts" aria-label="文字记录" aria-live="polite"></div>
-        </section>
-
-        <section class="panel files-panel" aria-labelledby="files-heading">
-          <div class="panel-top"><h2 id="files-heading"><span class="section-num">03</span>文件与图片</h2><span class="small">最多共享 8 个</span></div>
-          <div class="files-body">
-            <label class="file-drop" for="files"><span class="upload-icon"><svg aria-hidden="true"><use href="#i-plus"/></svg></span><span><strong>选择文件或图片</strong><small>接收端按需下载</small></span><input id="files" type="file" multiple></label>
-            <div id="catalog" class="catalog"><p class="empty">暂无共享文件</p></div>
-          </div>
-          <div class="panel-foot"><svg aria-hidden="true"><use href="#i-file"/></svg><p id="save-mode" class="small"></p></div>
-        </section>
-      </div>
-
-      <section class="panel history-panel" aria-labelledby="history-heading">
-        <div class="panel-top"><h2 id="history-heading"><span class="section-num">04</span>传输记录</h2><button id="clear" class="btn text small" type="button">清除已结束记录</button></div>
-        <div id="transfers" aria-live="polite"><p class="empty">暂无传输记录</p></div>
+      <section class="panel files-panel" aria-labelledby="files-heading">
+        <div class="panel-top"><h2 id="files-heading"><span class="section-num">03</span>文件与图片</h2><span class="small">最多共享 8 个</span></div>
+        <div class="files-body"><label class="file-drop" for="files"><span class="upload-icon"><svg aria-hidden="true"><use href="#i-plus"/></svg></span><span><strong>选择文件或图片</strong><small>接收端按需下载</small></span><input id="files" type="file" multiple></label><div id="catalog" class="catalog"><p class="empty">暂无共享文件</p></div></div>
+        <div class="panel-foot"><svg aria-hidden="true"><use href="#i-file"/></svg><p id="save-mode" class="small"></p></div>
       </section>
-      <div id="notice" role="status" class="notice" hidden></div>
-      <footer class="page-footer">内容在浏览器之间传输，Passport 不保存。</footer>
     </div>
-  </main>
+    <div id="notice" role="status" aria-live="polite" class="notice" hidden></div>
+    <footer class="page-footer">内容在浏览器之间传输，Passport 不保存。</footer>
+  </div>
+</main>
 </body>
 </html>

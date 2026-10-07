@@ -301,10 +301,10 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         const char *states[] = {"已关闭", "未配置 Wi-Fi", "已开启 · 正在连接 Wi-Fi", "已开启 · Wi-Fi 已连接",
                                 "已开启 · Wi-Fi 正在重连", "已开启 · 连接或服务失败", "正在关闭"};
         lv_label_set_text(s_state, states[t->state]);
-        const char *choices[] = {"开启", "关闭"};
+        const char *choices[] = {"关闭", "开启"};
         for (unsigned i = 0; i < 2; ++i)
             lv_label_set_text_fmt(menu_row(i, m->selected == i), "%s %s%s", m->selected == i ? ">" : " ",
-                choices[i], t->enabled == (i == 0) ? " *" : "");
+                choices[i], t->enabled == (i == 1) ? " *" : "");
         hidden(s_body, false); lv_obj_set_pos(s_body, 20, 186); lv_obj_set_size(s_body, 200, 68);
         lv_label_set_text(s_footer, "上下选择，OK 确认");
         lv_label_set_text(s_message, t->enabled ? "返回后仍保持开启" : "长按 OK 返回");

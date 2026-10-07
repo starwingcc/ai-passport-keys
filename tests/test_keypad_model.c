@@ -228,14 +228,14 @@ int main(void) {
     // Five settings scroll through four visible rows; runtime state survives Back.
     kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));m.page=KP_SETTINGS;
     for(unsigned i=0;i<KP_SETTINGS_COUNT;i++){assert(m.selected==i);assert(kp_settings_first(i)==(i==4?1U:0U));quick(&m,1,i*50);}
-    assert(m.selected==0);quick(&m,1,300);quick(&m,1,325);quick(&m,2,350);assert(m.page==KP_TRANSFER&&m.selected==0&&!m.transfer.enabled);
+    assert(m.selected==0);quick(&m,1,300);quick(&m,1,325);quick(&m,2,350);assert(m.page==KP_TRANSFER&&m.selected==1&&!m.transfer.enabled);
     quick(&m,2,400);assert(count[KP_TRANSFER_START]==1&&!m.transfer.enabled);
     m.transfer.enabled=true;m.transfer.state=KP_TRANSFER_CONNECTING;
-    quick(&m,1,450);quick(&m,2,500);assert(count[KP_TRANSFER_STOP]==1);
-    m.transfer.state=KP_TRANSFER_STOPPING;quick(&m,2,550);quick(&m,0,600);assert(count[KP_TRANSFER_STOP]==1&&m.selected==1);
+    quick(&m,0,450);quick(&m,2,500);assert(count[KP_TRANSFER_STOP]==1);
+    m.transfer.state=KP_TRANSFER_STOPPING;quick(&m,2,550);quick(&m,1,600);assert(count[KP_TRANSFER_STOP]==1&&m.selected==0);
     press(&m,2,650);kp_tick(&m,1150);release(&m,2,1160);assert(m.page==KP_SETTINGS&&m.selected==2&&m.transfer.enabled);
-    quick(&m,2,1200);assert(m.page==KP_TRANSFER&&m.selected==1);m.transfer.state=KP_TRANSFER_FAILED;
-    quick(&m,0,1250);quick(&m,2,1300);assert(count[KP_TRANSFER_START]==2);
+    quick(&m,2,1200);assert(m.page==KP_TRANSFER&&m.selected==0);m.transfer.state=KP_TRANSFER_FAILED;
+    quick(&m,1,1250);quick(&m,2,1300);assert(count[KP_TRANSFER_START]==2);
     puts("System preview/save/back and exhaustive left/right Cmd/Ctrl HID resolution: PASS");
     puts("Keypad gestures, navigation, screen drafts, wake consumption and feedback: PASS");
 }

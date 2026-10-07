@@ -322,7 +322,7 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
     } else if (m->page == KP_TRANSFER) {
         if (m->transfer.state == KP_TRANSFER_STOPPING) return;
         if (key < 2) m->selected = (m->selected + 1) % 2;
-        else emit(m, m->selected ? KP_TRANSFER_STOP : KP_TRANSFER_START, NULL);
+        else emit(m, m->selected ? KP_TRANSFER_START : KP_TRANSFER_STOP, NULL);
     } else if (m->page == KP_SYSTEM) {
         if (m->system_saving) return;
         if (key < 2) {
@@ -356,7 +356,7 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
         kp_page_t target = m->selected == 0 ? KP_SCREEN : m->selected == 1 ? KP_LAN :
                            m->selected == 2 ? KP_TRANSFER : m->selected == 3 ? KP_SYSTEM : KP_FORGET;
         page(m, target);
-        if (target == KP_TRANSFER) m->selected = m->transfer.enabled ? 1 : 0;
+        if (target == KP_TRANSFER) m->selected = m->transfer.enabled ? 0 : 1;
         if (target == KP_SYSTEM) {
             m->selected = m->system;
             m->system_saved = m->system_save_failed = false;

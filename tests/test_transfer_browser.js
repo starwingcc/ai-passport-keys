@@ -18,26 +18,38 @@ async function main(){
     browser=await chromium.launch({headless:true,chromiumSandbox:true,executablePath:process.env.KP_BROWSER_EXECUTABLE,args:[]});
     const context=await browser.newContext({acceptDownloads:true});const a=await context.newPage(),b=await context.newPage();if(process.env.KP_RTC_DEBUG)for(const [i,page] of [a,b].entries()){page.on('console',msg=>console.log('browser',i,msg.text()));await page.addInitScript(()=>{const Original=RTCPeerConnection;window.RTCPeerConnection=class extends Original{constructor(...args){super(...args);for(const type of ['connectionstatechange','iceconnectionstatechange','icecandidate','signalingstatechange'])this.addEventListener(type,e=>console.log(type,this.connectionState,this.iceConnectionState,this.signalingState,e.candidate?.candidate));}};});}for(const page of [a,b])page.on('pageerror',e=>errors.push(e.message));
     await a.goto(url);await b.goto(url);for(const page of [a,b])await page.waitForFunction(()=>PassportTransfer.peers.size===2);
+    await a.locator('#name').fill('我的电脑');await a.locator('#rename').click();
+    await b.locator('#name').fill('我的手机');await b.locator('#rename').click();
+    await a.waitForFunction(()=>[...PassportTransfer.peers.values()].includes('我的手机'));
     const secure=await a.evaluate(()=>isSecureContext);assert.equal(secure,ip==='127.0.0.1');
     await a.locator('#text').fill('中文第一行\nemoji 😀\n<script>纯文本</script>');await a.locator('#send-text').click();
     await b.waitForFunction(()=>PassportTransfer.texts.some(t=>t.text.includes('😀'))).catch(async e=>{console.error('A',await a.evaluate(()=>({notice:document.getElementById('notice').textContent,links:[...PassportTransfer.links.values()].map(l=>({state:l.pc.connectionState,ice:l.pc.iceConnectionState,signal:l.pc.signalingState}))})));console.error('B',await b.evaluate(()=>({notice:document.getElementById('notice').textContent,links:[...PassportTransfer.links.values()].map(l=>({state:l.pc.connectionState,ice:l.pc.iceConnectionState,signal:l.pc.signalingState}))})));throw e;});await a.waitForFunction(()=>PassportTransfer.texts.some(t=>t.status==='接收端已确认'));
     assert.equal(await b.locator('.received-text script').count(),0);
+    await b.locator('.received-text').getByRole('button',{name:'复制',exact:true}).click();
+    await b.locator('.received-text').getByRole('button',{name:'已复制',exact:true}).waitFor({state:'visible'});
     output=fs.mkdtempSync(path.join(os.tmpdir(),'passport-rtc-'));const filePath=path.join(output,'100MiB.bin');
     const block=crypto.randomBytes(1024*1024);const fd=fs.openSync(filePath,'w');for(let i=0;i<100;i++)fs.writeSync(fd,block);fs.closeSync(fd);
     const hash=async p=>{const h=crypto.createHash('sha256');for await(const chunk of fs.createReadStream(p))h.update(chunk);return h.digest('hex');};
     await a.locator('#files').setInputFiles(filePath);await b.locator('#catalog button').first().click();
     await b.waitForFunction(()=>PassportTransfer.history[0]?.url,null,{timeout:240000});
     assert.equal(await b.evaluate(()=>PassportTransfer.history[0].offset),100*1024*1024);assert.equal(await b.evaluate(()=>PassportTransfer.history[0].sha256),await hash(filePath));
-    const downloadPromise=b.waitForEvent('download');await b.locator('#transfers a').first().click();const download=await downloadPromise;assert.equal(await hash(await download.path()),await hash(filePath));
-    await a.waitForFunction(()=>PassportTransfer.history[0]?.done);assert((await a.locator('#transfers').textContent()).includes('接收端已校验'));
+    const received=b.locator('#catalog .item').filter({hasText:'100MiB.bin'});
+    assert.equal(await received.locator('.item-actions button').count(),0);
+    const downloadPromise=b.waitForEvent('download');await received.getByRole('link',{name:'保存文件',exact:true}).click();const download=await downloadPromise;assert.equal(await hash(await download.path()),await hash(filePath));
+    await a.waitForFunction(()=>PassportTransfer.history[0]?.done);assert((await a.locator('#catalog').textContent()).includes('接收端已校验'));
     // Cancel a second transfer, then prove both contexts can establish another connection.
-    await b.locator('#clear').click();await b.locator('#catalog button').first().click();await b.waitForFunction(()=>PassportTransfer.history[0]?.offset>0);await b.locator('#transfers button').first().click();
+    await b.waitForFunction(()=>PassportTransfer.history[0]?.reserved===0);await received.getByRole('button',{name:'接收',exact:true}).click();await b.waitForFunction(()=>PassportTransfer.history[0]?.offset>0);await received.getByRole('button',{name:'取消',exact:true}).click();
     await a.waitForFunction(()=>PassportTransfer.history[0]?.error);assert(await b.evaluate(()=>PassportTransfer.history[0].canceled));
     // Broadcast and specific-recipient text; targeted metadata is not offered to other receivers.
     const c=await context.newPage();c.on('pageerror',e=>errors.push(e.message));await c.goto(url);
+    await c.locator('#name').fill('工作电脑');await c.locator('#rename').click();
     for(const page of [a,b,c])await page.waitForFunction(()=>PassportTransfer.peers.size===3);
     await a.locator('#text').fill('广播文字');await a.locator('#send-text').click();
     for(const page of [b,c])await page.waitForFunction(()=>PassportTransfer.texts.some(t=>t.text==='广播文字'));
+    await a.waitForFunction(()=>PassportTransfer.texts.find(t=>t.text==='广播文字')?.status==='接收端已确认');
+    await a.locator('.received-text').filter({hasText:'广播文字'}).waitFor({state:'visible'});
+    assert.equal(await a.locator('.received-text').filter({hasText:'广播文字'}).count(),1);
+    assert.equal(await a.evaluate(()=>PassportTransfer.texts.find(t=>t.text==='广播文字').recipients.length),2);
     const bid=await b.evaluate(()=>PassportTransfer.self);
     await a.locator('#target').selectOption(String(bid));await a.locator('#text').fill('仅指定设备');await a.locator('#send-text').click();
     await b.waitForFunction(()=>PassportTransfer.texts.some(t=>t.text==='仅指定设备'));assert(!await c.evaluate(()=>PassportTransfer.texts.some(t=>t.text==='仅指定设备')));
@@ -47,9 +59,26 @@ async function main(){
     assert(!await c.locator('#catalog').textContent().then(t=>t.includes('空文件.txt')));
     await b.locator('#catalog .item').filter({hasText:'空文件.txt'}).getByRole('button',{name:'接收',exact:true}).click();
     await b.waitForFunction(()=>PassportTransfer.history[0]?.url&&PassportTransfer.history[0].file.size===0);
-    const emptyDownloadPromise=b.waitForEvent('download');await b.locator('#transfers a').first().click();
+    assert.equal(await b.locator('#notice').getAttribute('data-tone'),'connected');
+    if(process.env.KP_BROWSER_OUTPUT){fs.mkdirSync(process.env.KP_BROWSER_OUTPUT,{recursive:true});await a.setViewportSize({width:1440,height:1100});await a.screenshot({path:path.join(process.env.KP_BROWSER_OUTPUT,'transfer-desktop.png'),fullPage:true});await b.setViewportSize({width:390,height:844});await b.screenshot({path:path.join(process.env.KP_BROWSER_OUTPUT,'transfer-mobile.png'),fullPage:true});}
+    const emptyDownloadPromise=b.waitForEvent('download');await b.locator('#catalog .item').filter({hasText:'空文件.txt'}).getByRole('link',{name:'保存文件',exact:true}).click();
     assert.equal(fs.statSync(await (await emptyDownloadPromise).path()).size,0);
     await a.waitForFunction(()=>PassportTransfer.history[0]?.done);await c.close();
+    // A secure receiver retains the existing file-picker streaming path.
+    const d=await context.newPage();d.on('pageerror',e=>errors.push(e.message));
+    await d.addInitScript(()=>{window.savedParts=[];window.sinkClosed=false;window.showSaveFilePicker=async()=>({createWritable:async()=>({write:async part=>savedParts.push(part.slice()),close:async()=>{sinkClosed=true;},abort:async()=>{savedParts=[];}})});});
+    await d.goto(`http://127.0.0.1:${server.address().port}/transfer`);
+    for(const page of [a,b,d])await page.waitForFunction(()=>PassportTransfer.peers.size===3);
+    await a.locator('#target').selectOption(String(await d.evaluate(()=>PassportTransfer.self)));
+    const direct=Buffer.from('直接写文件 / direct file sink\n'.repeat(1024));
+    await a.locator('#files').setInputFiles({name:'直接保存.txt',mimeType:'text/plain',buffer:direct});
+    const directRow=d.locator('#catalog .item').filter({hasText:'直接保存.txt'});
+    await directRow.getByRole('button',{name:'接收',exact:true}).click();
+    await d.waitForFunction(()=>sinkClosed&&PassportTransfer.history[0]?.done);
+    assert.equal(await d.evaluate(async()=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await new Blob(savedParts).arrayBuffer())),v=>v.toString(16).padStart(2,'0')).join('')),crypto.createHash('sha256').update(direct).digest('hex'));
+    assert.equal(await directRow.getByRole('link',{name:'保存文件',exact:true}).count(),0);
+    await directRow.getByText(/已校验并保存/).waitFor({state:'visible'});
+    await d.close();
     await a.reload();await b.waitForFunction(()=>PassportTransfer.peers.size===2);await b.waitForFunction(()=>!document.querySelector('#catalog button'));
     assert.equal(await b.evaluate(()=>PassportTransfer.links.size),0);
     // Shutdown must close a live channel, rather than merely an empty map.
@@ -58,8 +87,7 @@ async function main(){
     for(const page of [a,b])assert(await page.evaluate(()=>[...PassportTransfer.links.values()].some(l=>l.pc.connectionState==='connected'&&l.dc.readyState==='open')));
     for(const s of sessions.values())send(s,{type:'end'});for(const page of [a,b])await page.waitForFunction(()=>PassportTransfer.links.size===0&&document.getElementById('connection').textContent==='流转已关闭');
     assert.deepEqual(errors,[]);
-    if(process.env.KP_BROWSER_OUTPUT){fs.mkdirSync(process.env.KP_BROWSER_OUTPUT,{recursive:true});await a.setViewportSize({width:1440,height:1100});await a.screenshot({path:path.join(process.env.KP_BROWSER_OUTPUT,'transfer-desktop.png'),fullPage:true});await b.setViewportSize({width:390,height:844});await b.screenshot({path:path.join(process.env.KP_BROWSER_OUTPUT,'transfer-mobile.png'),fullPage:true});}
-    console.log(JSON.stringify({result:'PASS',browser:browser.version(),url,secureContext:secure,bytes:100*1024*1024,sha256:await hash(filePath),save:'browser download',testResolvedMdns:!!process.env.KP_RTC_RESOLVE_MDNS,checks:['Chinese/newline/emoji','100 MiB saved hash','cancel','broadcast','specified recipient','zero-byte saved file','refresh removes source','shutdown closes RTC']}));
+    console.log(JSON.stringify({result:'PASS',browser:browser.version(),url,secureContext:secure,bytes:100*1024*1024,sha256:await hash(filePath),save:'browser download and file-picker sink',testResolvedMdns:!!process.env.KP_RTC_RESOLVE_MDNS,checks:['Chinese/newline/emoji','direct copy','100 MiB saved hash','inline cancel/save','save releases budget','cancel','single broadcast record','specified recipient','zero-byte saved file','file-picker sink hash','refresh removes source','shutdown closes RTC']}));
   }finally{
     try{await browser?.close();}
     finally{
