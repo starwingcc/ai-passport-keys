@@ -8,7 +8,7 @@
 
 先读 [AGENTS.zh_CN.md](../../AGENTS.zh_CN.md)、[AI 开发指南](../development/ai-guide.zh_CN.md)
 和必需的 [Passport 技能](../../skills/README.zh_CN.md)。应用代码在 `main/main.c`、
-`main/keyboard/`，网页在 `main/web/`。板级逻辑复用 `components/bsp`，保留存储兼容性，
+`main/keyboard/`，网页在 `main/web/`。板级逻辑复用 `components/bsp`，
 设备文字遵循[字体指南](../../assets/README.zh_CN.md#passport-keys-字库)。
 测试位于 `tests/`；修改期间运行静态门禁，交付前运行完整门禁。
 刷机、设备测试及 Git 写入需要用户授权。
@@ -59,8 +59,7 @@ Wi-Fi 需要 2.4 GHz 网络。本机热点支持扫描和连接测试，测试�
 WiFi 配置方式禁用扫描和测试，网络修改在保存并退出配置后生效。
 
 **导出完整配置**备份工牌、Wi-Fi 和全部按键情景，包含明文 Wi-Fi 密码，请妥善保管文件。
-导入会将配置加载到编辑区，保存后生效；单情景导出只分享按键。
-旧版仅含情景的导入文件保留当前编辑的工牌与 Wi-Fi。
+导入会将配置加载到编辑区，保存后生效；单情景导出只分享按键，导入时保留当前工牌与 Wi-Fi。
 
 **恢复默认配置**在保存后重置工牌、Wi-Fi 与全部按键情景。
 屏幕、配对系统及蓝牙配对设置仍独立于这份配置。

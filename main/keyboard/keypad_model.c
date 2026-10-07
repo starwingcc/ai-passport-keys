@@ -115,36 +115,22 @@ bool kp_config_valid(const kp_config_t *c) {
     }
     return true;
 }
-bool kp_legacy_valid(const kp_legacy_config_t *c) {
-    if (!c || c->version != 1) return false;
-    for (unsigned i = 0; i < KP_LEGACY_BINDINGS; ++i)
-        if (!kp_action_valid(&c->bindings[i], true) ||
-            (c->bindings[i].type == KP_KEYBOARD && c->bindings[i].consumer)) return false;
-    return true;
-}
-bool kp_migrate(const kp_legacy_config_t *old, kp_config_t *c) {
-    if (!kp_legacy_valid(old)) return false;
-    kp_config_empty(c);
-    if (!kp_profile_add(c, "默认")) return false;
-    for (unsigned i = 0; i < KP_LEGACY_BINDINGS; ++i) {
-        kp_step_t step = {.action = old->bindings[i]};
-        bool enter = step.action.type == KP_KEYBOARD && !step.action.modifiers && step.action.keys[0] == 0x28;
-        for (unsigned j = 1; j < 6; ++j) if (step.action.keys[j]) enter = false;
-        const char *title = enter ? "回车" : "";
-        unsigned slot = (i / 3) * 4 + (i % 3 == 2 ? 3 : i % 3);
-        if (!kp_binding_set(c, 0, slot, title, &step, step.action.type == KP_NONE ? 0 : 1)) return false;
-    }
-    return true;
-}
 void kp_defaults(kp_config_t *c) {
-    kp_legacy_config_t old = {.version = 1};
-    old.bindings[0] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x29}};
-    old.bindings[2] = (kp_action_t){.type = KP_KEYBOARD, .modifiers = 0x04};
-    old.bindings[3] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x2a}};
-    old.bindings[4] = (kp_action_t){.type = KP_KEYBOARD, .modifiers = 0x08, .keys = {0x04}};
-    old.bindings[5] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x51}};
-    old.bindings[6] = (kp_action_t){.type = KP_KEYBOARD, .keys = {0x28}};
-    (void)kp_migrate(&old, c);
+    static const kp_action_t actions[KP_BINDINGS] = {
+        [0] = {.type = KP_KEYBOARD, .keys = {0x29}},
+        [3] = {.type = KP_KEYBOARD, .modifiers = 0x04},
+        [4] = {.type = KP_KEYBOARD, .keys = {0x2a}},
+        [5] = {.type = KP_KEYBOARD, .modifiers = 0x08, .keys = {0x04}},
+        [7] = {.type = KP_KEYBOARD, .keys = {0x51}},
+        [8] = {.type = KP_KEYBOARD, .keys = {0x28}},
+    };
+    kp_config_empty(c);
+    (void)kp_profile_add(c, "默认");
+    for (unsigned i = 0; i < KP_BINDINGS; ++i) {
+        if (actions[i].type == KP_NONE) continue;
+        kp_step_t step = {.action = actions[i]};
+        (void)kp_binding_set(c, 0, i, i == 8 ? "回车" : "", &step, 1);
+    }
 }
 void kp_report(const kp_action_t *a, uint8_t keyboard[8], uint8_t consumer[2]) {
     memset(keyboard, 0, 8);

@@ -93,37 +93,14 @@
   // Files are configuration-only envelopes; the HTTP session never enters them.
   const fileFormat='passport-keys',fileLimit=65536;
   function exportFile(c,kind,index=c.active_profile){
-    if(kind==='configuration'&&Object.hasOwn(c,'config')){
+    if(kind==='configuration'){
       validateSettings(c,true);
       return JSON.stringify({format:fileFormat,version:6,kind,settings:clone(c)});
     }
+    if(kind!=='scenario')throw Error('导出类型无效。');
     validate(c,true);
-    if(kind==='scenario'){
-      if(!Number.isInteger(index)||index<0||index>=c.profiles.length)throw Error('请选择要导出的情景。');
-      return JSON.stringify({format:fileFormat,version:5,kind,profile:clone(c.profiles[index])});
-    }
-    if(kind!=='configuration')throw Error('导出类型无效。');
-    return JSON.stringify({format:fileFormat,version:5,kind,active_profile:c.active_profile,profiles:clone(c.profiles)});
-  }
-  function upgradeProfiles(profiles,version){
-    if(!Array.isArray(profiles)||!profiles.length||profiles.length>8)throw Error('文件情景数量无效。');
-    return profiles.map(p=>{
-      fields(p,['name','bindings']);
-      if(!Array.isArray(p.bindings)||p.bindings.length!==(version>=4?11:8))throw Error('文件动作槽位数量无效。');
-      const bindings=p.bindings.map(b=>{
-        const steps=()=>{if(!Array.isArray(b.steps))throw Error('文件步骤无效。');return b.steps.map(a=>{fields(a,version===5&&Object.hasOwn(a,'logical_modifiers')?['type','modifiers','keys','consumer','delay_ms','logical_modifiers']:['type','modifiers','keys','consumer','delay_ms']);return clone(a);});};
-        if(version===2){
-          fields(b,['title','description','steps']);
-          if(typeof b.description!=='string'||Array.from(b.description).length>64)throw Error('旧版动作说明无效。');
-          for(const line of b.description.split('\n'))validateText(line,64);
-          return {title:b.title,steps:steps()};
-        }
-        fields(b,['title','steps']);return {title:b.title,steps:steps()};
-      });
-      if(version>=4)return {name:p.name,bindings};
-      // v2/v3: UP single/double/hold, DOWN single/double/hold, OK single/double.
-      return {name:p.name,bindings:[bindings[0],bindings[1],empty(),bindings[2],bindings[3],bindings[4],empty(),bindings[5],bindings[6],bindings[7],empty()]};
-    });
+    if(!Number.isInteger(index)||index<0||index>=c.profiles.length)throw Error('请选择要导出的情景。');
+    return JSON.stringify({format:fileFormat,version:5,kind,profile:clone(c.profiles[index])});
   }
   function parseImport(text){
     if(typeof text!=='string'||utf8(text)>fileLimit)throw Error('文件过大，最多 64 KiB。');
@@ -134,18 +111,11 @@
       validateSettings(file.settings);
       return {kind:'settings',config:clone(file.settings.config),settings:clone(file.settings)};
     }
-    if(!file||![2,3,4,5].includes(file.version))throw Error('不支持该配置文件版本。');
-    let kind,profiles,active;
-    if(Object.hasOwn(file,'format')){
-      if(file.format!==fileFormat)throw Error('文件格式不匹配。');kind=file.kind;
-      if(kind==='scenario'){fields(file,['format','version','kind','profile']);profiles=[file.profile];active=0;}
-      else if(kind==='configuration'){fields(file,['format','version','kind','active_profile','profiles']);profiles=file.profiles;active=file.active_profile;}
-      else throw Error('文件导入类型无效。');
-    }else{
-      fields(file,['version','active_profile','profiles']);kind='configuration';profiles=file.profiles;active=file.active_profile;
-    }
-    const config={version:5,active_profile:active,profiles:upgradeProfiles(profiles,file.version)};
-    validate(config);return {kind,config};
+    if(file?.version!==5)throw Error('不支持该配置文件版本。');
+    fields(file,['format','version','kind','profile']);
+    if(file.format!==fileFormat||file.kind!=='scenario')throw Error('单情景文件格式不匹配。');
+    const config={version:5,active_profile:0,profiles:[clone(file.profile)]};
+    validate(config);return {kind:'scenario',config};
   }
   function applyImport(current,payload,options={}){
     if(payload.kind==='settings'){
@@ -153,7 +123,6 @@
       return {config:clone(payload.settings.config),editing:payload.settings.config.active_profile,settings:clone(payload.settings)};
     }
     fields(payload,['kind','config']);validate(payload.config);
-    if(payload.kind==='configuration')return {config:clone(payload.config),editing:payload.config.active_profile};
     if(payload.kind!=='scenario'||payload.config.profiles.length!==1)throw Error('单情景文件无效。');
     const next=clone(current),profile=clone(payload.config.profiles[0]);
     const existing=next.profiles.findIndex(p=>p.name===profile.name);let editing;
@@ -449,7 +418,6 @@
     $('import-name').disabled=replace;
     $('import-warning').textContent=pendingImport?.kind==='settings'?
       '完整配置会替换编辑区的工牌、Wi-Fi 与全部按键情景，包括未保存的修改。文件包含 Wi-Fi 密码。检查后点击“保存全部设置”才写入设备。':
-      pendingImport?.kind==='configuration'?'旧版文件会替换全部按键情景，工牌与 Wi-Fi 保持当前编辑内容。保存后生效。':
       replace?'将替换编辑区的同名情景。保存后生效。':'将追加为一个情景，设备当前选择保持原样。保存后生效。';
   }
   function reviewImport(payload){

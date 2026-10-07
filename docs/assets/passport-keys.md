@@ -10,7 +10,7 @@ computer software is required.
 Start with [AGENTS.md](../../AGENTS.md), the [AI development guide](../development/ai-guide.md)
 and the required [Passport skills](../../skills/README.md). Application code lives
 in `main/main.c` and `main/keyboard/`; webpages live in `main/web/`. Reuse
-`components/bsp` for board logic, preserve stored-data compatibility, and follow
+`components/bsp` for board logic and follow
 the [font guidance](../../assets/README.md#passport-keys-fonts) for device text.
 Tests live in `tests/`; run the static gate while editing and the complete gate
 before delivery. Flashing, device testing and Git writes require the user's authorization.
@@ -72,8 +72,8 @@ scanning/testing, and network edits apply after saving and exiting configuration
 
 **Export complete configuration** backs up the badge, Wi-Fi and all scenarios,
 including the Wi-Fi password in plain text; keep the file private. Import loads
-the editor; save to apply. Single-scenario export shares keys only. Older
-scenario-only imports preserve the badge and Wi-Fi edits.
+the editor; save to apply. Single-scenario export shares keys only and preserves
+badge and Wi-Fi edits on import.
 
 **Restore defaults** resets the badge, Wi-Fi and scenarios after saving. Screen,
 pairing-system and Bluetooth pairing settings remain outside this configuration.

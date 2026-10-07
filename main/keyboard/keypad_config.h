@@ -5,7 +5,7 @@
 #include "keypad_wifi_setup.h"
 #include "keypad_settings.h"
 #define KP_JSON_BYTES 32768U
-// Add bounded room for badge/network metadata without shrinking legacy uploads.
+// Add bounded room for badge/network metadata beyond the shortcut JSON budget.
 #define KP_SETTINGS_JSON_BYTES (KP_JSON_BYTES + KP_HOME_JSON_BYTES)
 // read returns bytes read, 0 at EOF, or -1 on transport failure.
 typedef int (*kp_json_read_t)(void *user, char *buffer, size_t capacity);

@@ -15,13 +15,13 @@ async function main(){
   let scanNetworks=[{ssid:'nearby-test-network',rssi:-35,secured:true},{ssid:'open-test-network',rssi:-55,secured:false},{ssid:'<b>literal-name</b>',rssi:-65,secured:true}];
   let wifi={ssid:"",has_password:false,state:5,clock_valid:false},wifiPassword="",wifiPosts=0,wifiBody,failWifi=false,settingsPosts=0;
   let home=K.homeDefaults(),homePosts=0,failHome=false;
-  const savePaths=[],legacyWrites=[];
+  const savePaths=[],separateWrites=[];
   K.addProfile(device,'浏览',0);const original=clone(device);
   await page.route('http://passport.test/**',async route=>{
     const request=route.request(),url=new URL(request.url());
     if(request.method()==='POST'&&url.pathname==='/api/settings')savePaths.push(url.pathname);
     if(request.method()==='POST'&&['/api/config','/api/home','/api/wifi','/api/time'].includes(url.pathname)){
-      legacyWrites.push(url.pathname);
+      separateWrites.push(url.pathname);
       return route.fulfill({status:405,body:'The web editor must save the complete settings record.'});
     }
     if(url.pathname==='/api/settings'){
@@ -132,7 +132,7 @@ async function main(){
   assert.equal(home.name,'USER');assert.equal(posts,0);assert.equal(await page.locator('#home-name').inputValue(),'星翼');
   await page.locator('#save').click();await page.waitForFunction(()=>document.getElementById('home-saved').textContent==='工牌已保存');
   assert.equal(home.name,'星翼');assert.equal(home.timezone_minutes,-345);assert.equal(home.hour12,1);assert.equal(homePosts,2);assert.equal(posts,0);
-  assert.equal(await page.locator('#sync-time').count(),0);assert.deepEqual(legacyWrites,[]);
+  assert.equal(await page.locator('#sync-time').count(),0);assert.deepEqual(separateWrites,[]);
   await page.reload();await page.waitForFunction(()=>!document.getElementById('editor').disabled);
   assert.equal(await page.locator('#home-name').inputValue(),'星翼');assert.equal(await page.locator('#home-badge').inputValue(),'DEV / 01');
   await page.locator('#home-name').fill('😀');await page.locator('#save').click();await page.waitForFunction(()=>document.getElementById('status').textContent.includes('不支持'));assert.equal(homePosts,2);
@@ -170,7 +170,7 @@ async function main(){
   await page.locator('#save').click();await page.waitForFunction(()=>document.getElementById('dirty').textContent==='全部设置已保存');
   assert.equal(posts,2);assert.equal(device.profiles.length,3);assert.equal(device.profiles[1].bindings[10].title,'测试三击');
   // Full import has an explicit replacement review, and remains staged until Save.
-  const beforeFull=clone(device);await upload(K.exportFile(K.defaults(),'configuration'));
+  const beforeFull=clone(device);await upload(K.exportFile({...K.settingsDefaults(),home:clone(home),wifi:{version:1,ssid:wifi.ssid,password:wifiPassword}},'configuration'));
   assert((await page.locator('#import-warning').textContent()).includes('替换'));await page.locator('#import-apply').click();
   assert.equal(await page.locator('#profile option').count(),1);assert.equal(posts,2);assert.deepEqual(device,beforeFull);
   // Manual selection retains every left/right modifier and all ordinary usages.
@@ -335,7 +335,7 @@ async function main(){
   assert.equal(wifi.ssid,'updated-network');assert(await page.locator('#scan-wifi').isDisabled());assert(await page.locator('#test-wifi').isDisabled());
   connection='hotspot';await page.reload();await page.waitForFunction(()=>!document.getElementById('wifi-fields').disabled);
   assert(!(await page.locator('#scan-wifi').isDisabled()));assert(!(await page.locator('#test-wifi').isDisabled()));
-  assert.deepEqual(legacyWrites,[]);assert.deepEqual(errors,[]);await browser.close();
+  assert.deepEqual(separateWrites,[]);assert.deepEqual(errors,[]);await browser.close();
   console.log('Browser unified save, failed-save retry, staged defaults/clearing, Wi-Fi scan/test, saved-password display, identity, gestures, manual/recorded keys, steps, import/export and fixed mobile layout: PASS');
 }
 main().catch(e=>{console.error(e);process.exit(1);});

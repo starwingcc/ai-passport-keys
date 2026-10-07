@@ -1,5 +1,4 @@
 #include "keypad_store.h"
-#include "keypad_migrate.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nvs.h"
@@ -11,19 +10,9 @@ static kp_settings_t s_settings;
 static kp_screen_config_t s_screen;
 static kp_system_t s_system;
 static kp_clock_t s_clock;
-static void cleanup_legacy(nvs_handle_t nvs) {
-    // Only call after a complete record is durable. Reclaim obsolete blobs so
-    // a full shortcut arena still has room for future complete-record updates.
-    const char *keys[] = {"config_v1", "config_v2", "config_v3", "config_v4", "config_v5", "home_v1", "wifi_v1"};
-    bool changed = false;
-    for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i)
-        if (nvs_erase_key(nvs, keys[i]) == ESP_OK) changed = true;
-    if (changed) (void)nvs_commit(nvs);
-}
 static esp_err_t persist(nvs_handle_t nvs, const kp_settings_t *settings) {
     esp_err_t rc = nvs_set_blob(nvs, "settings_v1", settings, kp_settings_size(settings));
     if (rc == ESP_OK) rc = nvs_commit(nvs);
-    if (rc == ESP_OK) cleanup_legacy(nvs);
     return rc;
 }
 esp_err_t kp_store_init(void) {
@@ -52,71 +41,8 @@ esp_err_t kp_store_init(void) {
         bool valid = rc == ESP_OK && kp_settings_valid(settings, true) && settings_size == kp_settings_size(settings);
         if (valid) s_settings = *settings;
         free(settings);
-        if (valid) { cleanup_legacy(nvs); nvs_close(nvs); return ESP_OK; }
+        if (valid) { nvs_close(nvs); return ESP_OK; }
     }
-    // Import independent records; reclaim them only after successful migration.
-    kp_home_config_t home = {0}; size_t home_size = sizeof(home);
-    if (nvs_get_blob(nvs, "home_v1", &home, &home_size) == ESP_OK && home_size == sizeof(home) && kp_home_valid(&home, true)) s_settings.home = home;
-    kp_wifi_config_t wifi = {0}; size_t wifi_size = sizeof(wifi);
-    if (nvs_get_blob(nvs, "wifi_v1", &wifi, &wifi_size) == ESP_OK && wifi_size == sizeof(wifi) && kp_wifi_valid(&wifi)) s_settings.wifi = wifi;
-    size_t size = 0;
-    rc = nvs_get_blob(nvs, "config_v5", NULL, &size);
-    kp_config_t *saved = NULL;
-    if (rc == ESP_OK && size >= offsetof(kp_config_t, data) + 1 && size <= KP_CONFIG_BYTES) {
-        saved = calloc(1, sizeof(*saved));
-        if (!saved) { nvs_close(nvs); return ESP_ERR_NO_MEM; }
-        rc = nvs_get_blob(nvs, "config_v5", saved, &size);
-        if (rc == ESP_OK && kp_config_valid(saved) && size == kp_config_size(saved)) {
-            s_settings.config = *saved; free(saved);
-            (void)persist(nvs, &s_settings); nvs_close(nvs); return ESP_OK;
-        }
-    }
-    free(saved);
-    size = 0;
-    rc = nvs_get_blob(nvs, "config_v4", NULL, &size);
-    if (rc == ESP_OK && size >= offsetof(kp_config_t, data) + 1 && size <= KP_CONFIG_BYTES) {
-        saved = calloc(1, sizeof(*saved));
-        if (!saved) { nvs_close(nvs); return ESP_ERR_NO_MEM; }
-        rc = nvs_get_blob(nvs, "config_v4", saved, &size);
-        bool migrated = rc == ESP_OK && kp_migrate_v4(saved, size);
-        if (migrated) s_settings.config = *saved;
-        free(saved);
-        if (migrated) {
-            (void)persist(nvs, &s_settings); nvs_close(nvs); return ESP_OK;
-        }
-    }
-    size = 0;
-    rc = nvs_get_blob(nvs, "config_v3", NULL, &size);
-    if (rc == ESP_OK && size >= offsetof(kp_v3_config_t, data) + 1 && size <= KP_CONFIG_BYTES) {
-        kp_v3_config_t *old = calloc(1, sizeof(*old));
-        if (!old) { nvs_close(nvs); return ESP_ERR_NO_MEM; }
-        rc = nvs_get_blob(nvs, "config_v3", old, &size);
-        bool migrated = rc == ESP_OK && kp_migrate_v3(old, size, &s_settings.config);
-        free(old);
-        if (migrated) {
-            // Keep legacy keys; retry a failed migration commit on next boot.
-            (void)persist(nvs, &s_settings); nvs_close(nvs); return ESP_OK;
-        }
-    }
-    size = 0;
-    rc = nvs_get_blob(nvs, "config_v2", NULL, &size);
-    if (rc == ESP_OK && size >= offsetof(kp_v2_config_t, data) + 1 && size <= KP_CONFIG_BYTES) {
-        kp_v2_config_t *old = calloc(1, sizeof(*old));
-        if (!old) { nvs_close(nvs); return ESP_ERR_NO_MEM; }
-        rc = nvs_get_blob(nvs, "config_v2", old, &size);
-        bool migrated = rc == ESP_OK && kp_migrate_v2(old, size, &s_settings.config);
-        free(old);
-        if (migrated) {
-            // If committing the complete record fails, preserve config_v2, use the
-            // migrated values in RAM, and retry on the next boot without erasing bonds.
-            (void)persist(nvs, &s_settings); nvs_close(nvs); return ESP_OK;
-        }
-        kp_defaults(&s_settings.config);
-    }
-    kp_legacy_config_t legacy; size = sizeof(legacy);
-    rc = nvs_get_blob(nvs, "config_v1", &legacy, &size);
-    if (rc == ESP_OK && size == sizeof(legacy)) (void)kp_migrate(&legacy, &s_settings.config);
-    // Keep legacy records; retry a failed migration on the next boot.
     (void)persist(nvs, &s_settings);
     nvs_close(nvs);
     return ESP_OK;
@@ -146,7 +72,7 @@ esp_err_t kp_store_settings_save(const kp_settings_t *settings) {
     if (rc == ESP_OK) s_settings = *settings;
     xSemaphoreGive(s_lock); return rc;
 }
-// Device-side scenario changes and legacy API writes also update the complete record.
+// Partial setting updates persist the complete record in one commit.
 static esp_err_t save_part(const kp_config_t *config, const kp_home_config_t *home, const kp_wifi_config_t *wifi) {
     kp_settings_t *next = malloc(sizeof(*next));
     if (!next) return ESP_ERR_NO_MEM;

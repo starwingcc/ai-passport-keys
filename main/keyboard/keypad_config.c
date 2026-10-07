@@ -6,7 +6,6 @@ typedef struct {
     kp_json_read_t read; void *user;
     char buffer[256]; size_t pos, size, total, limit;
     bool failed;
-    bool logical_steps;
 } parser_t;
 static int peek(parser_t *p) {
     if (p->failed) return -1;
@@ -133,7 +132,6 @@ static bool step(parser_t *p, kp_step_t *out) {
     } while ((next = more(p, '}')) == 1);
     if (next != 0 || (seen != 31 && seen != 63) ||
         (out->action.type == KP_KEYBOARD ? consumer != 0 : logical != 0)) return false;
-    if (seen == 63) p->logical_steps = true;
     if (out->action.type == KP_KEYBOARD) out->action.logical_modifiers = logical;
     else out->action.consumer = consumer;
     return kp_action_valid(&out->action, false);
@@ -196,9 +194,7 @@ static bool config_object(parser_t *p, kp_config_t *out) {
             if (f == 0) out->version = value; else out->active_profile = value;
         }
     } while ((next = more(p, '}')) == 1);
-    if (next != 0 || seen != 7) return false;
-    if (out->version == 4 && !p->logical_steps) out->version = KP_VERSION;
-    else if (out->version != KP_VERSION) return false;
+    if (next != 0 || seen != 7 || out->version != KP_VERSION) return false;
     return kp_config_valid(out);
 }
 bool kp_config_decode(kp_json_read_t read, void *user, kp_config_t *out) {
