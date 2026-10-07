@@ -73,6 +73,7 @@ esp_err_t esp_wifi_stop(void);
 esp_err_t esp_wifi_set_storage(int);
 esp_err_t esp_wifi_set_mode(int);
 esp_err_t esp_wifi_set_config(int, const wifi_config_t *);
+esp_err_t esp_wifi_get_config(int, wifi_config_t *);
 esp_err_t esp_wifi_connect(void);
 esp_err_t esp_wifi_disconnect(void);
 esp_err_t esp_wifi_scan_start(const void *, bool);

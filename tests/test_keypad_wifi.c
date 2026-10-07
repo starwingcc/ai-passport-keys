@@ -56,7 +56,7 @@ int main(void) {
     used=0;assert(kp_wifi_job_encode(&job,write_json,NULL)&&strstr(response,"network-31")&&strstr(response,"\"state\":5")&&!strstr(response,"password"));
     assert(kp_wifi_failure(202)==KP_WIFI_AUTH_FAILED&&kp_wifi_failure(201)==KP_WIFI_NOT_FOUND&&kp_wifi_failure(211)==KP_WIFI_UNSUPPORTED&&kp_wifi_failure(203)==KP_WIFI_ERROR);
     assert(!kp_wifi_job_expired(KP_WIFI_CONNECTING,29999)&&kp_wifi_job_expired(KP_WIFI_CONNECTING,30000));
-    assert(!kp_wifi_job_expired(KP_WIFI_SYNCING,19999)&&kp_wifi_job_expired(KP_WIFI_SYNCING,20000));
     assert(!kp_wifi_job_expired(KP_WIFI_SCANNING,14999)&&kp_wifi_job_expired(KP_WIFI_SCANNING,15000));
+    assert(!kp_wifi_job_expired(KP_WIFI_RESTORING,29999)&&kp_wifi_job_expired(KP_WIFI_RESTORING,30000));
     puts("Wi-Fi fragmented codec, strict fields, byte limits, password secrecy and clear: PASS");
 }

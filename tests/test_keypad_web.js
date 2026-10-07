@@ -132,8 +132,10 @@ for(const args of [['中'.repeat(11),'test-pass'],['A'.repeat(33),'test-pass'],[
 console.log('Browser Wi-Fi UTF-8 byte bounds, password rules, retention and clearing: PASS');
 
 for(const state of [7,8,9,12])assert(!K.wifiJobMessage({state}).includes('密码错误'));
-assert(K.wifiJobMessage({state:6}).includes('连接成功'));assert(K.wifiJobMessage({state:10}).includes('认证通过'));
-console.log('Wi-Fi result messages distinguish authentication, discovery, timeout and time-service failure: PASS');
+assert(K.wifiJobMessage({state:6}).includes('连接成功'));
+assert(K.wifiJobMessage({state:6}).includes('IP 地址'));
+assert(!K.wifiJobMessage({state:6}).includes('校时'));
+console.log('Wi-Fi result messages distinguish authentication, discovery and timeout; obtaining an IP passes the test: PASS');
 
 async function testSaveSettings(){
   const drafts=()=>({...K.settingsDefaults(),wifi:{version:1,ssid:'test-network',password:'test-pass'}});

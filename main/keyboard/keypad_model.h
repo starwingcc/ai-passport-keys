@@ -49,8 +49,8 @@ _Static_assert(sizeof(kp_binding_t) == 4, "binding layout");
 _Static_assert(offsetof(kp_config_t, data) == 392, "configuration header");
 _Static_assert(sizeof(kp_step_t) == 12, "persisted step layout");
 
-typedef enum { KP_CONSOLE, KP_MENU, KP_SETTINGS, KP_HOTSPOT, KP_FORGET, KP_PROFILES, KP_AP_CONFIRM,
-               KP_SCREEN, KP_SCREEN_EDIT, KP_SYSTEM, KP_TRANSFER, KP_LAN, KP_WIFI_CONFIRM } kp_page_t;
+typedef enum { KP_CONSOLE, KP_MENU, KP_SETTINGS, KP_HOTSPOT, KP_FORGET, KP_PROFILES,
+               KP_SCREEN, KP_SCREEN_EDIT, KP_SYSTEM, KP_TRANSFER, KP_LAN } kp_page_t;
 typedef enum { KP_TAP, KP_HOLD, KP_RELEASE, KP_AP_START, KP_AP_STOP,
                KP_CLEAR_BOND, KP_CANCEL, KP_SELECT_PROFILE, KP_SAVE_SCREEN, KP_SAVE_SYSTEM, KP_TRANSFER_START, KP_TRANSFER_STOP, KP_WIFI_START } kp_effect_t;
 typedef void (*kp_emit_t)(void *user, kp_effect_t effect, const kp_action_t *action);

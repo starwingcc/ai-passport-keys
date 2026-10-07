@@ -23,7 +23,7 @@ static TaskHandle_t s_task;
 typedef struct {
     kp_network_view_t view;
     bool desired, ap_desired, had_ready, server_failed;
-    bool config_started, config_web_started;
+    bool config_started, config_web_started, config_testing;
     bool config_ble_paused;
     uint32_t config_at;
     uint32_t last_poll, last_stop_retry;
@@ -152,31 +152,43 @@ static void step(service_t *s, uint32_t now) {
         memory_log("configuration start");
     }
     if (s->ap_desired && v->lan.wifi && s->config_started && v->lan.state != KP_AP_FAILED) {
-        kp_network_tick(now);
-        char ip[16];
-        bool connected = kp_network_ip(ip);
-        if (!connected || (v->lan.ip[0] && strcmp(v->lan.ip, ip))) {
-            if (v->lan.state == KP_AP_ACTIVE) s->config_at = now;
-            v->lan.ip[0] = 0;
-            v->lan.state = KP_AP_STARTING;
-            publish(v);
-            if (kp_web_stop() != ESP_OK) { v->lan.state = KP_AP_FAILED; publish(v); return; }
-            s->config_web_started = false;
-        }
-        if (connected && !s->config_web_started) {
-            if (kp_web_start_wifi(ip, web_request) != ESP_OK) v->lan.state = KP_AP_FAILED;
-            else {
-                s->config_web_started = true;
-                v->lan.state = KP_AP_ACTIVE;
+        if (s->config_web_started) kp_wifi_setup_poll(now);
+        bool testing = s->config_web_started && kp_wifi_setup_testing();
+        if (testing) { s->config_testing = true; s->config_at = now; }
+        // Keep HTTP and its session alive while the test temporarily owns STA.
+        if (!testing) {
+            kp_network_tick(now);
+            char ip[16];
+            bool connected = kp_network_ip(ip);
+            if (connected && s->config_testing) {
+                kp_web_update_ip(ip);
                 snprintf(v->lan.ip, sizeof(v->lan.ip), "%s", ip);
+                s->config_testing = false;
+                publish(v);
             }
-        } else if (!connected && (kp_network_status() == KP_NET_FAILED || (uint32_t)(now - s->config_at) >= 60000U)) {
-            v->lan.state = KP_AP_FAILED;
-        }
-        // Failed connection/HTTP startup must release STA, but never before HTTP.
-        if (v->lan.state == KP_AP_FAILED && kp_web_stop() == ESP_OK) {
-            kp_network_keep_online(false);
-            if (kp_network_suspend() == ESP_OK) s->config_started = false;
+            if (!connected || (v->lan.ip[0] && strcmp(v->lan.ip, ip))) {
+                if (v->lan.state == KP_AP_ACTIVE) s->config_at = now;
+                v->lan.ip[0] = 0;
+                v->lan.state = KP_AP_STARTING;
+                publish(v);
+                if (kp_web_stop() != ESP_OK) { v->lan.state = KP_AP_FAILED; publish(v); return; }
+                s->config_web_started = false;
+            }
+            if (connected && !s->config_web_started) {
+                if (kp_web_start_wifi(ip, web_request) != ESP_OK) v->lan.state = KP_AP_FAILED;
+                else {
+                    s->config_web_started = true;
+                    v->lan.state = KP_AP_ACTIVE;
+                    snprintf(v->lan.ip, sizeof(v->lan.ip), "%s", ip);
+                }
+            } else if (!connected && (kp_network_status() == KP_NET_FAILED || (uint32_t)(now - s->config_at) >= 60000U)) {
+                v->lan.state = KP_AP_FAILED;
+            }
+            // Failed connection/HTTP startup must release STA, but never before HTTP.
+            if (v->lan.state == KP_AP_FAILED && kp_web_stop() == ESP_OK) {
+                kp_network_keep_online(false);
+                if (kp_network_suspend() == ESP_OK) s->config_started = false;
+            }
         }
     }
     if (!s->ap_desired && v->lan.state != KP_AP_OFF) {
@@ -191,7 +203,7 @@ static void step(service_t *s, uint32_t now) {
         if (rc == ESP_OK) rc = resume_config_ble(s);
         if (rc == ESP_OK) {
             kp_network_resume();
-            s->config_started = s->config_web_started = false;
+            s->config_started = s->config_web_started = s->config_testing = false;
             v->lan.state = KP_AP_OFF;
             v->ssid[0] = v->password[0] = 0;
             v->forget_requested = atomic_exchange(&s_forget, false);

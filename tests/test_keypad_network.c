@@ -130,5 +130,16 @@ int main(void) {
     tick(ATTEMPT_MS+101);ip_cb(NULL,IP_EVENT,IP_EVENT_STA_GOT_IP,NULL);tick(ATTEMPT_MS+102);assert(running&&sntp&&kp_network_ip(ip));
     tick(2*ATTEMPT_MS+200);assert(running&&!sntp&&kp_network_ip(ip)); // SNTP timeout cannot stop transfer.
     kp_network_keep_online(false);assert(kp_network_suspend()==ESP_OK&&!running&&!interfaces);
+    // A setup loan releases SNTP, keeps the netif and never races a candidate
+    // test with automatic reconnect/timeout. Resume uses the latest IP event.
+    fresh(); kp_network_keep_online(true); connected(0);
+    unsigned before = connects; kp_network_setup_pause(true, 3);
+    assert(!sntp && running && interfaces && handlers == 2);
+    wifi_cb(NULL, WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, NULL);
+    tick(3 * ATTEMPT_MS); assert(connects == before && running && !sntp);
+    ip_cb(NULL, IP_EVENT, IP_EVENT_STA_GOT_IP, NULL);
+    kp_network_setup_pause(false, 3 * ATTEMPT_MS); tick(3 * ATTEMPT_MS + 1);
+    assert(connects == before && running && sntp && kp_network_ip(ip));
+    kp_network_keep_online(false); assert(kp_network_suspend() == ESP_OK);
     puts("Network time: cold boot, valid SNTP, retry/refresh, wrap, AP handoff and fault cleanup: PASS");
 }

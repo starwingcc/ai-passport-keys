@@ -145,10 +145,10 @@ int main(int argc,char **argv){
     kp_home_config_t home;kp_home_defaults(&home);strcpy(home.name,"STARWING");strcpy(home.badge,"ID / 001");
     uint64_t epoch=1791167040;
     kp_ble_status_t ble={.connected=true,.ready=true,.secure=true,.keyboard_subscribed=true,.handles_ready=true};kp_ui_init();
-    const char *names[]={"console","menu","settings","hotspot","forget","profiles","ap_confirm"};
-    const unsigned row_counts[]={0,0,4,0,2,1,2};
+    const char *names[]={"console","menu","settings","hotspot","forget","profiles"};
+    const unsigned row_counts[]={0,0,4,0,2,1};
     m.lan=(kp_lan_view_t){.state=KP_AP_ACTIVE,.configured=true};
-    for(unsigned p=0;p<7;p++){m.page=p;kp_ui_update(&m,ble,85,"","Passport-Keys-ABCD","12345678",&home,epoch);save(d,argv[1],names[p]);menu_layout(row_counts[p]);}
+    for(unsigned p=0;p<6;p++){m.page=p;kp_ui_update(&m,ble,85,"","Passport-Keys-ABCD","12345678",&home,epoch);save(d,argv[1],names[p]);menu_layout(row_counts[p]);}
     // All five settings entries and their status columns follow the new order.
     const char *settings[]={"屏幕","Passport配置","文件流转","配对系统","清除蓝牙配对"};
     for(unsigned selected=0;selected<KP_SETTINGS_COUNT;selected++){
@@ -165,21 +165,28 @@ int main(int argc,char **argv){
         char name[40];snprintf(name,sizeof(name),"settings_order_%u",selected);save(d,argv[1],name);
     }
     m.selected=0;
-    const kp_page_t lan_pages[]={KP_LAN,KP_AP_CONFIRM,KP_WIFI_CONFIRM,KP_HOTSPOT,KP_HOTSPOT,KP_WIFI_CONFIRM,KP_HOTSPOT};
-    const char *lan_names[]={"lan_methods","local_hotspot_confirm","wifi_confirm","local_hotspot_active","wifi_active","wifi_unconfigured","wifi_failed"};
-    for(unsigned i=0;i<7;i++){
-        m.page=lan_pages[i];m.lan=(kp_lan_view_t){.configured=i!=5,.wifi=i==2||i>=4,.state=i==6?KP_AP_FAILED:KP_AP_ACTIVE};
+    const kp_page_t lan_pages[]={KP_LAN,KP_HOTSPOT,KP_HOTSPOT,KP_HOTSPOT,KP_HOTSPOT,KP_HOTSPOT};
+    const char *lan_names[]={"lan_methods","local_hotspot_active","wifi_active","wifi_unconfigured","wifi_failed","local_hotspot_starting"};
+    for(unsigned i=0;i<6;i++){
+        m.page=lan_pages[i];m.lan=(kp_lan_view_t){.configured=i!=3,.wifi=i>=2&&i<=4,
+            .state=i==3?KP_AP_NO_WIFI:i==4?KP_AP_FAILED:i==5?KP_AP_STARTING:KP_AP_ACTIVE};
         strcpy(m.lan.ssid,"Home-WiFi");strcpy(m.lan.ip,"192.168.1.123");
         kp_ui_update(&m,ble,100,"","Passport-Keys-ABCD","12345678",&home,epoch);lv_refr_now(d);screen_layout(&m);battery_layout();save(d,argv[1],lan_names[i]);
+        bool hint=false;
         for(unsigned n=0;n<lv_obj_get_child_count(lv_screen_active());n++){
             lv_obj_t *o=lv_obj_get_child(lv_screen_active(),n);
             if(lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)||!lv_obj_check_type(o,&lv_label_class))continue;
             const char *text=lv_label_get_text(o);
             if(m.lan.wifi)assert(!strstr(text,"暂时断开蓝牙")&&!strstr(text,"蓝牙已暂停"));
-            lv_point_t size;lv_text_get_size(&size,text,lv_obj_get_style_text_font(o,0),0,lv_obj_get_style_text_line_space(o,0),lv_obj_get_width(o),LV_TEXT_FLAG_NONE);
+            lv_point_t size;lv_text_get_size(&size,text,lv_obj_get_style_text_font(o,0),lv_obj_get_style_text_letter_space(o,0),lv_obj_get_style_text_line_space(o,0),lv_obj_get_width(o),LV_TEXT_FLAG_NONE);
             assert(size.y<=lv_obj_get_height(o));
-            if(i==6)assert(!strstr(text,"192.168.1.123"));
+            if(!strcmp(text,"开启本机热点会暂时断开蓝牙")){
+                assert(lv_obj_get_y(o)==264&&lv_obj_get_style_text_font(o,0)==&passport_font_16);
+                assert(size.y==passport_font_16.line_height&&size.x<=lv_obj_get_width(o));hint=true;
+            }
+            if(i==3||i==4)assert(!strstr(text,"192.168.1.123"));
         }
+        assert(hint==(m.page==KP_HOTSPOT&&!m.lan.wifi));
     }
     m.lan=(kp_lan_view_t){0};
     // Render every real transfer state using the production UI, linked fonts

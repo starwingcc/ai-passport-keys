@@ -34,16 +34,17 @@ int main(void) {
     press(&m,2,4400); kp_tick(&m,4900); release(&m,2,5000); assert(m.page==KP_MENU);
     click(&m,0,5100); click(&m,2,5400); assert(m.page==KP_SETTINGS); // UP wraps to third entry.
     quick(&m,1,5450);quick(&m,2,5500);assert(m.page==KP_LAN);
-    quick(&m,2,5550);assert(m.page==KP_AP_CONFIRM&&!m.selected&&!count[KP_AP_START]);
-    quick(&m,2,5600);assert(m.page==KP_LAN&&!count[KP_AP_START]);
-    quick(&m,2,5650);press(&m,2,5700);kp_tick(&m,6200);release(&m,2,6210);assert(m.page==KP_LAN);
-    quick(&m,2,6250);quick(&m,1,6300);quick(&m,2,6350);assert(m.page==KP_HOTSPOT&&count[KP_AP_START]==1);
-    quick(&m,2,6400);assert(m.page==KP_HOTSPOT);
-    press(&m,2,6450);kp_tick(&m,6950);release(&m,2,6960);assert(m.page==KP_LAN&&count[KP_AP_STOP]==1);
-    quick(&m,1,7000);quick(&m,2,7050);assert(m.page==KP_WIFI_CONFIRM&&!m.selected);
-    quick(&m,1,7100);quick(&m,2,7150);assert(m.page==KP_WIFI_CONFIRM&&!count[KP_WIFI_START]);
-    m.lan.configured=true;quick(&m,2,7200);assert(m.page==KP_HOTSPOT&&count[KP_WIFI_START]==1);
-    kp_hotspot_exit(&m);assert(m.page==KP_LAN&&m.selected==1&&count[KP_AP_STOP]==2);
+    quick(&m,2,5550);assert(m.page==KP_HOTSPOT&&!m.lan.wifi&&m.lan.state==KP_AP_STARTING&&count[KP_AP_START]==1);
+    quick(&m,2,5600);assert(m.page==KP_HOTSPOT&&count[KP_AP_START]==1);
+    press(&m,2,5700);kp_tick(&m,6200);release(&m,2,6210);assert(m.page==KP_LAN&&!m.selected&&count[KP_AP_STOP]==1);
+    quick(&m,2,6250);assert(m.page==KP_HOTSPOT&&count[KP_AP_START]==2);
+    quick(&m,2,6400);assert(m.page==KP_HOTSPOT&&count[KP_AP_START]==2);
+    press(&m,2,6450);kp_tick(&m,6950);release(&m,2,6960);assert(m.page==KP_LAN&&count[KP_AP_STOP]==2);
+    quick(&m,1,7000);quick(&m,2,7050);assert(m.page==KP_HOTSPOT&&m.lan.wifi&&count[KP_WIFI_START]==1);
+    m.lan.state=KP_AP_NO_WIFI;quick(&m,2,7100);assert(m.page==KP_HOTSPOT&&count[KP_WIFI_START]==1);
+    kp_hotspot_exit(&m);assert(m.page==KP_LAN&&m.selected==1&&count[KP_AP_STOP]==3);
+    m.lan.configured=true;quick(&m,2,7200);assert(m.page==KP_HOTSPOT&&count[KP_WIFI_START]==2);
+    kp_hotspot_exit(&m);assert(m.page==KP_LAN&&m.selected==1&&count[KP_AP_STOP]==4);
     press(&m,2,7250);kp_tick(&m,7750);release(&m,2,7760);assert(m.page==KP_SETTINGS&&m.selected==1);
     quick(&m,0,7800);quick(&m,0,7850);quick(&m,2,7900);assert(m.page==KP_FORGET&&!m.selected);
     quick(&m,2,7950);assert(m.page==KP_SETTINGS&&!count[KP_CLEAR_BOND]);

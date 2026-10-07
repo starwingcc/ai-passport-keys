@@ -19,3 +19,6 @@ kp_network_status_t kp_network_status(void);
 // Worker-only radio lease. Time synchronization shares it without stopping STA.
 void kp_network_keep_online(bool keep);
 bool kp_network_ip(char out[16]);
+// Worker-only: lend the running station to configuration scans/tests without
+// destroying its netif. Event callbacks keep tracking DHCP during the loan.
+void kp_network_setup_pause(bool pause, uint32_t now_ms);

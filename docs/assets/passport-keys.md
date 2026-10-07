@@ -47,8 +47,8 @@ Clear Bluetooth pairing**.
 
 ## Web configuration
 
-1. Open **Settings → Passport configuration**, select **Device hotspot** or **WiFi**,
-   then **Enable**. The hotspot pauses Bluetooth; WiFi keeps it connected.
+1. Open **Settings → Passport configuration**, select **Device hotspot** or **WiFi**
+   to start configuration directly. The hotspot pauses Bluetooth; WiFi keeps it connected.
    Both modes end file transfer.
 2. For **Device hotspot**, join the displayed network and open `http://192.168.4.1`.
    For **WiFi**, a saved working network is required; use a browser in the same LAN
@@ -66,9 +66,13 @@ including macros. Fixed modifiers and recorded keys retain their meaning.
 
 **Home badge** sets identity, avatar, UTC offset and 12/24-hour time. Names and
 labels allow up to 16 supported characters; the clock shows `--:--` until time
-is available. Wi-Fi requires a 2.4 GHz network. Hotspot mode supports scanning
-and connection testing; a test does not save credentials. WiFi mode disables
-scanning/testing, and network edits apply after saving and exiting configuration.
+is available. Wi-Fi requires a 2.4 GHz network. Both configuration modes support
+scanning and connection testing; obtaining an IP passes the test without time
+synchronization, and a test does not save credentials. In WiFi mode,
+a test temporarily interrupts the page and restores the original network after
+success, failure or timeout. Keep the page open while it retries; if the displayed
+IP changes, reopen the new address. If recovery fails, use hotspot configuration.
+Network edits apply after saving and exiting configuration.
 
 **Export complete configuration** backs up the badge, Wi-Fi and all scenarios,
 including the Wi-Fi password in plain text; keep the file private. Import loads

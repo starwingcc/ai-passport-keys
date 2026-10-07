@@ -201,7 +201,7 @@ void app_main(void) {
         s_model.transfer = network.transfer;
         bool chosen_wifi = s_model.lan.wifi;
         s_model.lan = network.lan;
-        if (network.lan.state == KP_AP_OFF && (s_model.page == KP_WIFI_CONFIRM || s_model.page == KP_HOTSPOT)) s_model.lan.wifi = chosen_wifi;
+        if (network.lan.state == KP_AP_OFF && s_model.page == KP_HOTSPOT) s_model.lan.wifi = chosen_wifi;
         if (network.lan.state != previous_ap) {
             if (network.lan.state == KP_AP_OFF && previous_ap != KP_AP_OFF) {
                 s_ap_active = false; kp_store_get(&s_model.config); ++s_model.config_revision;

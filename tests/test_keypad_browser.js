@@ -11,7 +11,7 @@ async function main(){
   const page=await browser.newPage({viewport:{width:1120,height:900}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   let device=K.defaults(),posts=0,failSave=false,connection='hotspot';
-  let job={id:0,kind:0,state:0,busy:false,connected:false,ssid:'',networks:[]},scanPosts=0,testPosts=0,testBody,testState=6,pollFailures=0,lostTestResponse=false;
+  let job={id:0,kind:0,state:0,busy:false,connected:false,ssid:'',networks:[]},scanPosts=0,testPosts=0,testBody,testState=6,pollFailures=0,lostTestResponse=false,testLinkFailures=0,testRestoreFailure=false,restorePolls=0,testRestorePolls=0;
   let scanNetworks=[{ssid:'nearby-test-network',rssi:-35,secured:true},{ssid:'open-test-network',rssi:-55,secured:false},{ssid:'<b>literal-name</b>',rssi:-65,secured:true}];
   let wifi={ssid:"",has_password:false,state:5,clock_valid:false},wifiPassword="",wifiPosts=0,wifiBody,failWifi=false,settingsPosts=0;
   let home=K.homeDefaults(),homePosts=0,failHome=false;
@@ -40,6 +40,7 @@ async function main(){
     if(url.pathname==='/api/wifi/job'){
       assert.equal(request.headers()['x-session'],'test-session');
       if(pollFailures){--pollFailures;return route.fulfill({status:503,body:'temporary link interruption'});}
+      if(restorePolls){--restorePolls;return route.fulfill({json:{...job,state:13,busy:true}});}
       return route.fulfill({json:job});
     }
     if(url.pathname==='/api/wifi/scan'){
@@ -48,7 +49,9 @@ async function main(){
     }
     if(url.pathname==='/api/wifi/test'){
       assert.equal(request.headers()['x-session'],'test-session');++testPosts;testBody=request.postDataJSON();
-      job={id:job.id+1,kind:2,state:testState,busy:false,connected:testState===6||testState===10,ssid:testBody.ssid,networks:[]};
+      job={id:job.id+1,kind:2,state:testState,busy:false,connected:testState===6,ssid:testBody.ssid,networks:[],restore_failed:testRestoreFailure};
+      if(testLinkFailures)pollFailures=testLinkFailures;
+      restorePolls=testRestorePolls;
       if(lostTestResponse){lostTestResponse=false;return route.fulfill({status:503,body:'lost response'});}
       return route.fulfill({json:{id:job.id}});
     }
@@ -99,7 +102,7 @@ async function main(){
   assert((await page.locator('#wifi-networks').textContent()).includes('<b>literal-name</b>'));
   await page.locator('#scan-results button').filter({hasText:'nearby-test-network'}).click();assert.equal(await page.locator('#wifi-ssid').inputValue(),'nearby-test-network');
   await page.locator('#wifi-password').fill('test-pass');const writesBefore=wifiPosts;
-  for(const [state,text] of [[7,'认证失败'],[8,'未找到网络'],[9,'连接超时'],[10,'认证通过，但网络校时失败'],[6,'连接成功']]){
+  for(const [state,text] of [[7,'认证失败'],[8,'未找到网络'],[9,'连接超时'],[6,'连接成功']]){
     testState=state;await page.locator('#test-wifi').click();await page.waitForFunction(text=>document.getElementById('wifi-test-status').textContent.includes(text),text);
     await page.waitForFunction(()=>!document.getElementById('editor').disabled);
     assert.equal(wifiPosts,writesBefore);assert.equal(wifi.ssid,'');assert.equal(await page.locator('#wifi-password').inputValue(),'test-pass');
@@ -107,7 +110,7 @@ async function main(){
   await page.locator('#wifi-password').fill('changed-pass');assert((await page.locator('#wifi-test-status').textContent()).includes('已修改'));
   // Recover an accepted test whose POST response did not reach the browser.
   lostTestResponse=true;await page.locator('#test-wifi').click();await page.waitForFunction(()=>document.getElementById('wifi-test-status').textContent.includes('连接成功'));
-  assert.equal(testPosts,6);assert.equal(wifiPosts,writesBefore);
+  assert.equal(testPosts,5);assert.equal(wifiPosts,writesBefore);
   // A failed poll is retried without losing the entered password.
   testState=6;const oldReadRoute='http://passport.test/api/wifi/job';
   await page.route(oldReadRoute,async route=>{await page.unroute(oldReadRoute);return route.fulfill({json:job});});
@@ -325,14 +328,38 @@ async function main(){
   await page.setViewportSize({width:390,height:844});await page.evaluate(()=>scrollTo({top:0,behavior:'instant'}));await page.waitForTimeout(200);
   assert.equal(await page.locator('.brand').count(),1);
   if(process.env.KP_BROWSER_OUTPUT)await page.screenshot({path:path.join(process.env.KP_BROWSER_OUTPUT,'web-mobile.png')});
-  // WiFi sessions must bootstrap fully and disable radio-changing operations
-  // while retaining credential edits and the complete Save operation.
+  // LAN scanning/testing survives lost POST/GET responses and restoration,
+  // preserves unsaved edits, and never submits the candidate twice.
   connection='wifi';await page.reload();await page.waitForFunction(()=>!document.getElementById('wifi-fields').disabled);
-  assert(await page.locator('#scan-wifi').isDisabled());assert(await page.locator('#test-wifi').isDisabled());
+  assert(await page.locator('#scan-wifi').isEnabled());assert(await page.locator('#test-wifi').isEnabled());
+  scanNetworks=[{ssid:'nearby-test-network',rssi:-35,secured:true}];
+  const scansBefore=scanPosts,testsBefore=testPosts,savesBefore=settingsPosts;
+  await page.locator('#scan-wifi').click();await page.waitForFunction(()=>!document.getElementById('wifi-fields').disabled);
+  assert.equal(scanPosts,scansBefore+1);
+  await page.locator('#scan-results button').filter({hasText:'nearby-test-network'}).click();
+  await page.locator('#wifi-password').fill('candidate-pass');
+  const homeBefore=await page.locator('#home-name').inputValue();
+  testState=6;lostTestResponse=true;testLinkFailures=3;testRestorePolls=2;
+  await page.locator('#test-wifi').click();
+  await page.waitForFunction(()=>document.getElementById('wifi-test-status').textContent.includes('正在等待恢复原网络'));
+  await page.waitForFunction(()=>document.getElementById('wifi-test-status').textContent.includes('正在恢复配置前'));
+  await page.waitForFunction(()=>!document.getElementById('wifi-fields').disabled);
+  assert.equal(testPosts,testsBefore+1);assert.equal(settingsPosts,savesBefore);
+  assert.equal(await page.locator('#wifi-ssid').inputValue(),'nearby-test-network');
+  assert.equal(await page.locator('#wifi-password').inputValue(),'candidate-pass');
+  assert.equal(await page.locator('#home-name').inputValue(),homeBefore);
+  assert((await page.locator('#wifi-test-status').textContent()).includes('连接成功'));
+  assert(!(await page.locator('#wifi-test-status').textContent()).includes('校时'));
+  testLinkFailures=0;testRestorePolls=0;testState=7;await page.locator('#test-wifi').click();
+  await page.waitForFunction(()=>!document.getElementById('wifi-fields').disabled);
+  assert((await page.locator('#wifi-test-status').textContent()).includes('认证失败'));
+  testState=6;testRestoreFailure=true;await page.locator('#test-wifi').click();
+  await page.waitForFunction(()=>!document.getElementById('wifi-fields').disabled);
+  assert((await page.locator('#wifi-test-status').textContent()).includes('原网络恢复失败'));testRestoreFailure=false;
   assert((await page.locator('#wifi-status').textContent()).includes('当前通过 WiFi 配置'));
   await page.locator('#wifi-ssid').fill('updated-network');await page.locator('#wifi-password').fill('updated-pass');
   await page.locator('#save').click();await page.waitForFunction(()=>document.getElementById('dirty').textContent==='全部设置已保存');
-  assert.equal(wifi.ssid,'updated-network');assert(await page.locator('#scan-wifi').isDisabled());assert(await page.locator('#test-wifi').isDisabled());
+  assert.equal(wifi.ssid,'updated-network');assert(await page.locator('#scan-wifi').isEnabled());assert(await page.locator('#test-wifi').isEnabled());
   connection='hotspot';await page.reload();await page.waitForFunction(()=>!document.getElementById('wifi-fields').disabled);
   assert(!(await page.locator('#scan-wifi').isDisabled()));assert(!(await page.locator('#test-wifi').isDisabled()));
   assert.deepEqual(separateWrites,[]);assert.deepEqual(errors,[]);await browser.close();

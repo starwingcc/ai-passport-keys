@@ -174,7 +174,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     snprintf(previous_message, sizeof(previous_message), "%s", message);
     snprintf(previous_ssid, sizeof(previous_ssid), "%s", ssid);
     snprintf(previous_password, sizeof(previous_password), "%s", password);
-    const char *titles[] = {"开始控制", "Passport", "设置", "通过本机热点", "清除配对", "情景列表", "通过本机热点", "屏幕", "屏幕", "配对系统", "文件流转", "Passport配置", "通过 WiFi"};
+    const char *titles[] = {"开始控制", "Passport", "设置", "通过本机热点", "清除配对", "情景列表", "屏幕", "屏幕", "配对系统", "文件流转", "Passport配置"};
     bool command = m->page == KP_CONSOLE && m->feedback.visible;
     hidden(s_title, false);
     lv_obj_set_pos(s_title, 18, 20); lv_obj_set_width(s_title, 151);
@@ -236,6 +236,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     lv_obj_set_style_text_font(s_message, &passport_font_16, 0);
     lv_obj_set_style_text_color(s_message, lv_color_hex(INK), 0);
     lv_obj_set_style_text_align(s_message, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_letter_space(s_message, 0, 0);
     lv_obj_set_pos(s_message, 18, 264); lv_obj_set_size(s_message, 204, 22);
     lv_label_set_text(s_footer, "长按 OK 返回上一层");
     lv_obj_set_pos(s_footer, 18, 289);
@@ -478,21 +479,18 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
                          kp_text(&m->config, m->config.profiles[i].name), i == m->config.active_profile ? " *" : "");
             }
             lv_label_set_text(s_footer, "上下选择，OK 切换");
-        } else if (m->page == KP_MENU || m->page == KP_SETTINGS || m->page == KP_FORGET || m->page == KP_AP_CONFIRM || m->page == KP_LAN || m->page == KP_WIFI_CONFIRM) {
+        } else if (m->page == KP_MENU || m->page == KP_SETTINGS || m->page == KP_FORGET || m->page == KP_LAN) {
             hidden(s_body, true);
             const char *menu[] = {"开始控制", "情景列表", "设置"};
             const char *settings[] = {"屏幕", "Passport配置", "文件流转", "配对系统", "清除蓝牙配对"};
             const char *lan[] = {"通过本机热点", "通过 WiFi"};
             const char *forget[] = {"取消", "确认清除"};
-            const char *ap[] = {"取消", "开启"};
-            const char **entries = m->page == KP_MENU ? menu : m->page == KP_SETTINGS ? settings : m->page == KP_FORGET ? forget : m->page == KP_LAN ? lan : ap;
+            const char **entries = m->page == KP_MENU ? menu : m->page == KP_SETTINGS ? settings : m->page == KP_LAN ? lan : forget;
             unsigned count = m->page == KP_SETTINGS ? KP_SETTINGS_COUNT : m->page == KP_MENU ? 3 : 2;
             unsigned first = m->page == KP_SETTINGS ? kp_settings_first(m->selected) : 0;
             for (unsigned i = first; i < count && i < first + 4; ++i) {
                 lv_obj_t *row = menu_row(i - first, i == m->selected);
                 lv_label_set_text_fmt(row, "%s %s", i == m->selected ? ">" : " ", entries[i]);
-                if (m->page == KP_WIFI_CONFIRM && i == 1 && !m->lan.configured)
-                    lv_obj_set_style_text_color(row, lv_color_hex(0x617467), 0);
                 if (m->page == KP_SETTINGS && (i == 2 || i == 3)) {
                     lv_obj_set_width(row, 113);
                     lv_obj_t *value = s_screen_values[i - 2]; hidden(value, false);
@@ -502,12 +500,9 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
                         m->system == KP_SYSTEM_MACOS ? "macOS" : "Windows");
                 }
             }
-            if (m->page == KP_FORGET || m->page == KP_AP_CONFIRM || m->page == KP_WIFI_CONFIRM) {
+            if (m->page == KP_FORGET) {
                 hidden(s_body, false); lv_obj_set_pos(s_body, 20, 195);
-                snprintf(text, sizeof(text), "%s", m->page == KP_FORGET ? "清除后请在电脑忽略设备\n再重新连接" :
-                    m->page == KP_WIFI_CONFIRM && !m->lan.configured ? "尚未配置 WiFi\n先通过本机热点保存网络" :
-                    m->transfer.enabled ? (m->page == KP_WIFI_CONFIRM ? "开启会结束文件流转\n保持蓝牙连接" : "开启会结束文件流转\n暂时断开蓝牙") :
-                    m->page == KP_WIFI_CONFIRM ? "连接已保存的 WiFi\n保持蓝牙连接" : "开启本机热点\n暂时断开蓝牙");
+                snprintf(text, sizeof(text), "清除后请在电脑忽略设备\n再重新连接");
                 lv_label_set_text(s_footer, "上下选择，OK 确认");
             } else lv_label_set_text(s_footer, "上下选择，OK 进入");
         } else if (m->page == KP_HOTSPOT) {
@@ -522,7 +517,11 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         lv_label_set_text(s_body, text);
     }
     if (!home_page && m->page != KP_SCREEN && m->page != KP_SCREEN_EDIT && m->page != KP_SYSTEM && m->page != KP_TRANSFER) lv_label_set_text(s_message, message);
-    if (m->page == KP_LAN || m->page == KP_AP_CONFIRM || m->page == KP_WIFI_CONFIRM) lv_label_set_text(s_message, "");
+    if (m->page == KP_LAN) lv_label_set_text(s_message, "");
+    if (m->page == KP_HOTSPOT && !m->lan.wifi) {
+        lv_obj_set_style_text_letter_space(s_message, -1, 0);
+        lv_label_set_text(s_message, "开启本机热点会暂时断开蓝牙");
+    }
     if (!home_page) lv_obj_set_style_text_align(s_battery, LV_TEXT_ALIGN_RIGHT, 0);
     bsp_lvgl_unlock();
 }

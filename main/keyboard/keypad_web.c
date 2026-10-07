@@ -24,8 +24,8 @@
 static httpd_handle_t s_http;
 static esp_netif_t *s_netif, *s_station_netif;
 static bool s_wifi_initialized, s_wifi_started;
-static bool s_lan_wifi;
-static char s_host[16] = "192.168.4.1";
+static bool s_lan_wifi, s_setup_started;
+static atomic_uint s_host_ip = 0x0104a8c0U;
 static char s_ssid[32], s_session[33];
 static const char s_password[] = "12345678";
 static kp_web_request_t s_request;
@@ -199,10 +199,13 @@ static bool write_settings(const kp_settings_t *settings, void *user) {
     return kp_settings_encode(settings, write_body, user);
 }
 static esp_err_t api_body(httpd_req_t *req) {
-    char host[32], host_port[20];
-    snprintf(host_port, sizeof(host_port), "%s:80", s_host);
+    char host[32], host_port[20], expected[16];
+    uint32_t addr = atomic_load(&s_host_ip);
+    snprintf(expected, sizeof(expected), "%u.%u.%u.%u", (unsigned)(addr & 255), (unsigned)((addr >> 8) & 255),
+             (unsigned)((addr >> 16) & 255), (unsigned)(addr >> 24));
+    snprintf(host_port, sizeof(host_port), "%s:80", expected);
     if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK ||
-        (strcmp(host, s_host) && strcmp(host, host_port)))
+        (strcmp(host, expected) && strcmp(host, host_port)))
         return fail(req, "403 Forbidden", "请使用设备显示的地址打开配置页");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_set_type(req, "application/json");
@@ -241,7 +244,6 @@ static esp_err_t api_body(httpd_req_t *req) {
     size_t limit = !strcmp(req->uri, "/api/settings") ? KP_SETTINGS_JSON_BYTES : KP_JSON_BYTES;
     if (req->content_len > limit) return fail(req, "413 Payload Too Large", "配置过大");
     if (!strcmp(req->uri, "/api/wifi/scan") || !strcmp(req->uri, "/api/wifi/test")) {
-        if (s_lan_wifi) return fail(req, "409 Conflict", "请通过本机热点扫描或测试 Wi-Fi");
         uint32_t id; esp_err_t rc;
         if (!strcmp(req->uri, "/api/wifi/scan")) {
             if (req->content_len) return fail(req, "400 Bad Request", "扫描不接受请求体");
@@ -346,9 +348,10 @@ esp_err_t kp_web_stop(void) {
     }
     atomic_store(&s_poll_queued, false);
     s_session[0] = 0;
-    if (s_wifi_initialized) {
+    if (s_setup_started) {
         esp_err_t stopped = kp_wifi_setup_stop();
         if (stopped != ESP_OK) return stopped;
+        s_setup_started = false;
     }
     if (s_wifi_started) {
         esp_err_t rc = esp_wifi_stop();
@@ -364,12 +367,17 @@ esp_err_t kp_web_stop(void) {
     if (s_station_netif) { esp_netif_destroy_default_wifi(s_station_netif); s_station_netif = NULL; }
     return ESP_OK;
 }
+void kp_web_update_ip(const char *ip) {
+    unsigned a, b, c, d;
+    if (sscanf(ip, "%u.%u.%u.%u", &a, &b, &c, &d) == 4 && a < 256 && b < 256 && c < 256 && d < 256)
+        atomic_store(&s_host_ip, a | (b << 8) | (c << 16) | (d << 24));
+}
 static esp_err_t start(kp_web_request_t callback, const char *ip) {
     if (s_http) return ESP_OK;
     esp_err_t rc = kp_web_stop();
     if (rc != ESP_OK) return rc;
     s_lan_wifi = ip != NULL;
-    snprintf(s_host, sizeof(s_host), "%s", ip ? ip : "192.168.4.1");
+    kp_web_update_ip(ip ? ip : "192.168.4.1");
     uint8_t mac[6]; esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     snprintf(s_ssid, sizeof(s_ssid), "Passport-Keys-%02X%02X", mac[4], mac[5]);
     for (unsigned i = 0; i < 16; ++i) snprintf(s_session + 2 * i, 3, "%02x", (unsigned)(esp_random() & 255));
@@ -393,10 +401,14 @@ static esp_err_t start(kp_web_request_t callback, const char *ip) {
         if (rc == ESP_OK) rc = esp_wifi_set_config(WIFI_IF_AP, &cfg);
         wifi_config_t station = {0};
         if (rc == ESP_OK) rc = esp_wifi_set_config(WIFI_IF_STA, &station);
-        if (rc == ESP_OK) rc = kp_wifi_setup_start();
+        if (rc == ESP_OK) { s_setup_started = true; rc = kp_wifi_setup_start(false); }
         if (rc == ESP_OK) rc = esp_wifi_start();
         if (rc != ESP_OK) goto fail;
         s_wifi_started = true;
+    } else {
+        s_setup_started = true;
+        rc = kp_wifi_setup_start(true);
+        if (rc != ESP_OK) goto fail;
     }
     memset(s_clients, 0, sizeof(s_clients));
     atomic_store(&s_stopping, false);
@@ -447,6 +459,6 @@ fail:
 }
 esp_err_t kp_web_start(kp_web_request_t callback) { return start(callback, NULL); }
 esp_err_t kp_web_start_wifi(const char *ip, kp_web_request_t callback) {
-    if (!ip || !*ip || strlen(ip) >= sizeof(s_host)) return ESP_ERR_INVALID_ARG;
+    if (!ip || !*ip || strlen(ip) >= 16) return ESP_ERR_INVALID_ARG;
     return start(callback, ip);
 }

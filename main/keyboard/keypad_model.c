@@ -280,8 +280,6 @@ static void back(kp_model_t *m) {
     case KP_CONSOLE: case KP_SETTINGS: page(m, KP_MENU); break;
     case KP_HOTSPOT: kp_hotspot_exit(m); break;
     case KP_FORGET: page(m, KP_SETTINGS); break;
-    case KP_AP_CONFIRM: page(m, KP_LAN); break;
-    case KP_WIFI_CONFIRM: page(m, KP_LAN); m->selected = 1; break;
     case KP_LAN: page(m, KP_SETTINGS); m->selected = 1; break;
     case KP_PROFILES: page(m, KP_MENU); break;
     case KP_SCREEN: page(m, KP_SETTINGS); break;
@@ -353,15 +351,10 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
         page(m, KP_SCREEN_EDIT);
     } else if (m->page == KP_LAN) {
         bool wifi = m->selected == 1;
-        page(m, wifi ? KP_WIFI_CONFIRM : KP_AP_CONFIRM);
+        page(m, KP_HOTSPOT);
         m->lan.wifi = wifi;
-    } else if (m->page == KP_AP_CONFIRM || m->page == KP_WIFI_CONFIRM) {
-        bool confirm = m->selected == 1;
-        bool wifi = m->page == KP_WIFI_CONFIRM;
-        if (confirm && wifi && !m->lan.configured) return;
-        page(m, confirm ? KP_HOTSPOT : KP_LAN);
-        m->selected = confirm ? 0 : wifi ? 1 : 0;
-        if (confirm) emit(m, wifi ? KP_WIFI_START : KP_AP_START, NULL);
+        m->lan.state = KP_AP_STARTING;
+        emit(m, wifi ? KP_WIFI_START : KP_AP_START, NULL);
     } else if (m->page == KP_FORGET) {
         bool confirm = m->selected == 1; // Cancel is initially selected.
         page(m, KP_SETTINGS);

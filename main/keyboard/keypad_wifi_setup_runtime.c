@@ -1,22 +1,22 @@
 #include "keypad_wifi_setup_runtime.h"
-#include "keypad_store.h"
+#include "keypad_network.h"
 #include "esp_event.h"
 #include "esp_netif.h"
-#include "esp_netif_sntp.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include <stdatomic.h>
 #include <string.h>
-#include <time.h>
 
-enum { SCAN_DONE = 1, GOT_IP = 2, DISCONNECTED = 4, TIME_SYNCED = 8 };
+enum { SCAN_DONE = 1, GOT_IP = 2, DISCONNECTED = 4 };
 static SemaphoreHandle_t s_lock;
 static kp_wifi_job_t s_job;
 static kp_wifi_config_t s_candidate;
-static bool s_ready, s_queued, s_scan, s_station, s_sntp, s_finishing;
+static bool s_ready, s_queued, s_scan, s_station, s_finishing;
 static bool s_disconnect_requested;
+static bool s_lan, s_borrowed, s_restore, s_restoring, s_leaving;
+static wifi_config_t s_original;
 static kp_wifi_job_state_t s_final;
 static uint32_t s_at, s_cleanup_at;
 static esp_event_handler_instance_t s_wifi_handler, s_ip_handler;
@@ -34,21 +34,24 @@ static void event(void *arg, esp_event_base_t base, int32_t id, void *data) {
         atomic_fetch_or(&s_events, DISCONNECTED);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) atomic_fetch_or(&s_events, GOT_IP);
 }
-static void synced(struct timeval *tv) {
-    if (atomic_load(&s_events_enabled) && tv->tv_sec >= (time_t)KP_TIME_MIN && tv->tv_sec <= (time_t)KP_TIME_MAX)
-        atomic_fetch_or(&s_events, TIME_SYNCED);
-}
 void kp_wifi_setup_get(kp_wifi_job_t *out) {
     if (!s_lock) { *out = (kp_wifi_job_t){0}; return; }
     xSemaphoreTake(s_lock, portMAX_DELAY); *out = s_job; xSemaphoreGive(s_lock);
 }
-esp_err_t kp_wifi_setup_start(void) {
-    if (s_wifi_handler || s_ip_handler || s_station || s_scan || s_sntp) return ESP_ERR_INVALID_STATE;
+bool kp_wifi_setup_testing(void) {
+    if (!s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool testing = s_job.busy && s_job.kind == KP_WIFI_TEST;
+    xSemaphoreGive(s_lock); return testing;
+}
+esp_err_t kp_wifi_setup_start(bool lan) {
+    if (s_wifi_handler || s_ip_handler || s_station || s_scan) return ESP_ERR_INVALID_STATE;
     if (!s_lock) s_lock = xSemaphoreCreateMutex();
     if (!s_lock) return ESP_ERR_NO_MEM;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     uint32_t previous_id = s_job.id; s_job = (kp_wifi_job_t){.id = previous_id};
     s_ready = false; s_queued = false; s_candidate = (kp_wifi_config_t){0};
+    s_lan = lan;
     xSemaphoreGive(s_lock);
     atomic_store(&s_events, 0);
     esp_err_t rc = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, event, NULL, &s_wifi_handler);
@@ -86,7 +89,6 @@ esp_err_t kp_wifi_setup_stop(void) {
         s_candidate = (kp_wifi_config_t){0}; xSemaphoreGive(s_lock);
     }
     atomic_store(&s_events_enabled, false);
-    if (s_sntp) { esp_netif_sntp_deinit(); s_sntp = false; }
     if (s_scan) {
         esp_err_t rc = esp_wifi_scan_stop();
         if (rc != ESP_OK) return rc;
@@ -96,9 +98,14 @@ esp_err_t kp_wifi_setup_stop(void) {
     if (s_station) {
         esp_err_t rc = esp_wifi_disconnect();
         if (rc != ESP_OK && rc != ESP_ERR_WIFI_NOT_CONNECT) return rc;
-        rc = clear_station(); if (rc != ESP_OK) return rc;
+        rc = s_restore ? esp_wifi_set_config(WIFI_IF_STA, &s_original) : clear_station();
+        if (rc != ESP_OK) return rc;
         s_station = false;
     }
+    // The caller tears down STA after exit; do not reconnect a cancelled test.
+    s_restore = s_restoring = s_leaving = false;
+    memset(&s_original, 0, sizeof(s_original));
+    if (s_borrowed) { kp_network_setup_pause(false, (uint32_t)(esp_timer_get_time() / 1000)); s_borrowed = false; }
     if (s_wifi_handler) {
         esp_err_t rc = esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_handler);
         if (rc != ESP_OK) return rc;
@@ -120,10 +127,33 @@ static void state(kp_wifi_job_state_t next, uint32_t now) {
     xSemaphoreTake(s_lock, portMAX_DELAY); s_job.state = next; xSemaphoreGive(s_lock); s_at = now;
 }
 static void finish(kp_wifi_job_state_t result, uint32_t now) {
-    if (s_sntp) { esp_netif_sntp_deinit(); s_sntp = false; }
     s_final = result; s_finishing = true; s_cleanup_at = now; s_disconnect_requested = false;
 }
+static bool matches(const uint8_t ssid[32], const char *name) {
+    size_t length = 0; while (length < 32 && name[length]) ++length;
+    return !memcmp(ssid, name, length) && (length == 32 || ssid[length] == 0);
+}
+static void complete(void) {
+    atomic_store(&s_events, 0); s_finishing = false; s_restoring = false;
+    s_restore = false; memset(&s_original, 0, sizeof(s_original));
+    if (s_borrowed) { kp_network_setup_pause(false, (uint32_t)(esp_timer_get_time() / 1000)); s_borrowed = false; }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_candidate = (kp_wifi_config_t){0}; s_job.state = s_final; s_job.busy = false;
+    xSemaphoreGive(s_lock);
+}
 static void cleanup(uint32_t now) {
+    if (s_restoring) {
+        unsigned events = atomic_exchange(&s_events, 0);
+        wifi_ap_record_t ap;
+        // GOT_IP alone can be stale; verify the restored association too.
+        if ((events & GOT_IP) && esp_wifi_sta_get_ap_info(&ap) == ESP_OK &&
+            matches(ap.ssid, (const char *)s_original.sta.ssid)) { complete(); return; }
+        if ((events & DISCONNECTED) || kp_wifi_job_expired(KP_WIFI_RESTORING, (uint32_t)(now - s_cleanup_at))) {
+            xSemaphoreTake(s_lock, portMAX_DELAY); s_job.restore_failed = true; xSemaphoreGive(s_lock);
+            complete();
+        }
+        return;
+    }
     if (s_scan) {
         if (esp_wifi_scan_stop() != ESP_OK || esp_wifi_clear_ap_list() != ESP_OK) return;
         s_scan = false;
@@ -137,11 +167,19 @@ static void cleanup(uint32_t now) {
         // Drain disconnect/IP events before accepting another password test.
         wifi_ap_record_t ap;
         if ((uint32_t)(now - s_cleanup_at) < 100 || esp_wifi_sta_get_ap_info(&ap) == ESP_OK) return;
-        if (clear_station() != ESP_OK) return;
+        if ((s_restore ? esp_wifi_set_config(WIFI_IF_STA, &s_original) : clear_station()) != ESP_OK) return;
         s_station = false;
     }
-    atomic_store(&s_events, 0); s_finishing = false;
-    xSemaphoreTake(s_lock, portMAX_DELAY); s_job.state = s_final; s_job.busy = false; xSemaphoreGive(s_lock);
+    if (s_restore) {
+        atomic_store(&s_events, 0);
+        s_restoring = true; s_cleanup_at = now; state(KP_WIFI_RESTORING, now);
+        if (esp_wifi_connect() != ESP_OK) {
+            xSemaphoreTake(s_lock, portMAX_DELAY); s_job.restore_failed = true; xSemaphoreGive(s_lock);
+            complete();
+        }
+        return;
+    }
+    complete();
 }
 void kp_wifi_setup_poll(uint32_t now) {
     if (!s_lock) return;
@@ -149,25 +187,49 @@ void kp_wifi_setup_poll(uint32_t now) {
     kp_wifi_job_t view; kp_wifi_config_t candidate;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool queued = s_ready && s_queued;
-    if (queued) { s_queued = false; candidate = s_candidate; s_candidate = (kp_wifi_config_t){0}; }
+    if (queued) s_queued = false;
+    candidate = s_candidate;
     view = s_job; xSemaphoreGive(s_lock);
     if (!view.busy) return;
     if (queued) {
         atomic_store(&s_events, 0); atomic_store(&s_reason, 0);
+        if (s_lan) { kp_network_setup_pause(true, now); s_borrowed = true; }
         if (view.kind == KP_WIFI_SCAN) {
             state(KP_WIFI_SCANNING, now);
             if (esp_wifi_scan_start(NULL, false) != ESP_OK) finish(KP_WIFI_ERROR, now);
             else s_scan = true;
         } else {
-            state(KP_WIFI_CONNECTING, now); wifi_config_t cfg = {0};
-            memcpy(cfg.sta.ssid, candidate.ssid, strlen(candidate.ssid));
-            memcpy(cfg.sta.password, candidate.password, strlen(candidate.password));
-            cfg.sta.threshold.authmode = candidate.password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-            esp_err_t rc = esp_wifi_set_config(WIFI_IF_STA, &cfg);
-            memset(&candidate, 0, sizeof(candidate)); memset(&cfg, 0, sizeof(cfg));
-            if (rc == ESP_OK) { s_station = true; rc = esp_wifi_connect(); }
-            if (rc != ESP_OK) finish(KP_WIFI_ERROR, now);
+            state(KP_WIFI_CONNECTING, now);
+            if (s_lan) {
+                if (esp_wifi_get_config(WIFI_IF_STA, &s_original) != ESP_OK) { finish(KP_WIFI_ERROR, now); return; }
+                s_restore = s_station = s_leaving = true; s_cleanup_at = now;
+                esp_err_t rc = esp_wifi_disconnect();
+                if (rc != ESP_OK && rc != ESP_ERR_WIFI_NOT_CONNECT) { s_leaving = false; finish(KP_WIFI_ERROR, now); }
+                return;
+            }
         }
+        if (view.kind == KP_WIFI_SCAN) return;
+    }
+    if (s_leaving) {
+        wifi_ap_record_t ap;
+        if ((uint32_t)(now - s_cleanup_at) < 100 || esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+            if (kp_wifi_job_expired(KP_WIFI_CONNECTING, (uint32_t)(now - s_cleanup_at))) { s_leaving = false; finish(KP_WIFI_TIMEOUT, now); }
+            return;
+        }
+        s_leaving = false; atomic_store(&s_events, 0);
+        state(KP_WIFI_CONNECTING, now);
+        queued = true;
+    }
+    if (queued && view.kind == KP_WIFI_TEST) {
+        wifi_config_t cfg = {0};
+        memcpy(cfg.sta.ssid, candidate.ssid, strlen(candidate.ssid));
+        memcpy(cfg.sta.password, candidate.password, strlen(candidate.password));
+        cfg.sta.threshold.authmode = candidate.password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+        esp_err_t rc = esp_wifi_set_config(WIFI_IF_STA, &cfg);
+        xSemaphoreTake(s_lock, portMAX_DELAY); s_candidate = (kp_wifi_config_t){0}; xSemaphoreGive(s_lock);
+        memset(&candidate, 0, sizeof(candidate)); memset(&cfg, 0, sizeof(cfg));
+        if (rc == ESP_OK) { s_station = true; rc = esp_wifi_connect(); }
+        if (rc != ESP_OK) finish(KP_WIFI_ERROR, now);
         return;
     }
     unsigned events = atomic_exchange(&s_events, 0);
@@ -191,26 +253,16 @@ void kp_wifi_setup_poll(uint32_t now) {
     if (view.kind == KP_WIFI_TEST && (events & DISCONNECTED)) {
         uint16_t reason = atomic_load(&s_reason);
         xSemaphoreTake(s_lock, portMAX_DELAY); s_job.reason = reason; xSemaphoreGive(s_lock);
-        finish(view.connected ? KP_WIFI_TIME_FAILED : kp_wifi_failure(reason), now); return;
+        finish(kp_wifi_failure(reason), now); return;
     }
     if (view.state == KP_WIFI_CONNECTING && (events & GOT_IP)) {
         wifi_ap_record_t ap;
-        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK && !memcmp(ap.ssid, view.ssid, strlen(view.ssid)) &&
-            ap.ssid[strlen(view.ssid)] == 0) {
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK && matches(ap.ssid, view.ssid)) {
             xSemaphoreTake(s_lock, portMAX_DELAY); s_job.connected = true; xSemaphoreGive(s_lock);
-            state(KP_WIFI_SYNCING, now);
-            esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(3,
-                ESP_SNTP_SERVER_LIST("ntp.aliyun.com", "time.cloudflare.com", "pool.ntp.org"));
-            cfg.wait_for_sync = false; cfg.sync_cb = synced;
-            if (esp_netif_sntp_init(&cfg) != ESP_OK) finish(KP_WIFI_TIME_FAILED, now);
-            else s_sntp = true;
+            finish(KP_WIFI_VERIFIED, now);
         }
         return;
     }
-    if (view.state == KP_WIFI_SYNCING && (events & TIME_SYNCED) &&
-        kp_store_time_sync((uint64_t)time(NULL), (uint64_t)esp_timer_get_time() / 1000)) {
-        finish(KP_WIFI_VERIFIED, now); return;
-    }
     if (kp_wifi_job_expired(view.state, (uint32_t)(now - s_at)))
-        finish(view.connected ? KP_WIFI_TIME_FAILED : KP_WIFI_TIMEOUT, now);
+        finish(KP_WIFI_TIMEOUT, now);
 }

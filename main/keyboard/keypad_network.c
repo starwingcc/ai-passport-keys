@@ -21,7 +21,7 @@ static esp_event_handler_instance_t s_wifi_handler, s_ip_handler;
 static bool s_initialized, s_started, s_sntp, s_suspended, s_scheduled;
 static uint32_t s_attempt_at, s_next_at, s_connect_at;
 static unsigned s_connects;
-static bool s_keep_online, s_had_ip;
+static bool s_keep_online, s_had_ip, s_setup_paused;
 static atomic_bool s_got_ip, s_reconnect, s_synced;
 static atomic_int s_status;
 
@@ -68,6 +68,7 @@ static esp_err_t stop(void) {
     }
     if (s_netif) { esp_netif_destroy_default_wifi(s_netif); s_netif = NULL; }
     atomic_store(&s_got_ip, false); atomic_store(&s_reconnect, false); atomic_store(&s_synced, false);
+    s_setup_paused = false;
     return ESP_OK;
 }
 void kp_network_keep_online(bool keep) {
@@ -88,6 +89,16 @@ esp_err_t kp_network_suspend(void) {
     return rc;
 }
 void kp_network_resume(void) { s_suspended = false; s_scheduled = false; }
+void kp_network_setup_pause(bool pause, uint32_t now) {
+    s_setup_paused = pause;
+    if (s_sntp) { esp_netif_sntp_deinit(); s_sntp = false; }
+    atomic_store(&s_synced, false);
+    if (!pause) {
+        s_attempt_at = now; s_connect_at = now - CONNECT_RETRY_MS;
+        s_connects = 0; s_had_ip = false; s_scheduled = false;
+        atomic_store(&s_status, KP_NET_CONNECTING);
+    }
+}
 static esp_err_t start(const kp_wifi_config_t *wifi, uint32_t now) {
     s_netif = esp_netif_create_default_wifi_sta();
     if (!s_netif) return ESP_ERR_NO_MEM;
@@ -124,7 +135,7 @@ static void finish(uint32_t now, bool success) {
     if (rc != ESP_OK) ESP_LOGW("keypad_time", "Network cleanup pending: %s", esp_err_to_name(rc));
 }
 void kp_network_tick(uint32_t now) {
-    if (s_suspended) return;
+    if (s_suspended || s_setup_paused) return;
     kp_network_status_t status = kp_network_status();
     if (status != KP_NET_CONNECTING && status != KP_NET_SYNCING && !(s_keep_online && s_started)) {
         if (stop() != ESP_OK) return;

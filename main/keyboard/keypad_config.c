@@ -342,8 +342,8 @@ static void quoted(writer_t *w, const char *text) {
 bool kp_wifi_job_encode(const kp_wifi_job_t *job, kp_json_write_t write, void *user) {
     if (!write || job->count > KP_WIFI_SCAN_RESULTS) return false;
     writer_t w = {.write = write, .user = user}; char number_text[160];
-    snprintf(number_text, sizeof(number_text), "{\"id\":%lu,\"kind\":%u,\"state\":%u,\"busy\":%s,\"connected\":%s,\"reason\":%u,\"ssid\":",
-             (unsigned long)job->id, job->kind, job->state, job->busy ? "true" : "false", job->connected ? "true" : "false", job->reason);
+    snprintf(number_text, sizeof(number_text), "{\"id\":%lu,\"kind\":%u,\"state\":%u,\"busy\":%s,\"connected\":%s,\"restore_failed\":%s,\"reason\":%u,\"ssid\":",
+             (unsigned long)job->id, job->kind, job->state, job->busy ? "true" : "false", job->connected ? "true" : "false", job->restore_failed ? "true" : "false", job->reason);
     output(&w, number_text); quoted(&w, job->ssid); output(&w, ",\"networks\":[");
     for (unsigned i = 0; i < job->count; ++i) {
         if (i) output(&w, ",");

@@ -50,7 +50,7 @@ static kp_wifi_job_t setup_job;
 static kp_wifi_config_t tested_wifi;
 static bool fail_setup_start,fail_setup_stop,fail_sta_netif,fail_wifi_start,fail_wifi_stop;
 static unsigned setup_active,netifs;
-esp_err_t kp_wifi_setup_start(void){if(fail_setup_start)return ESP_FAIL;++setup_active;return ESP_OK;}
+esp_err_t kp_wifi_setup_start(bool lan){(void)lan;if(fail_setup_start)return ESP_FAIL;++setup_active;return ESP_OK;}
 esp_err_t kp_wifi_setup_stop(void){if(fail_setup_stop)return ESP_FAIL;setup_active=0;return ESP_OK;}
 void kp_wifi_setup_get(kp_wifi_job_t *out){*out=setup_job;}
 esp_err_t kp_wifi_setup_scan(uint32_t *id){if(setup_job.busy)return ESP_ERR_INVALID_STATE;*id=++setup_job.id;setup_job.kind=KP_WIFI_SCAN;setup_job.busy=true;return ESP_OK;}
@@ -369,13 +369,19 @@ int main(void) {
     fail_wifi_stop=true;assert(kp_web_stop()==ESP_FAIL&&wifi_started&&wifi_initialized&&netifs==2);fail_wifi_stop=false;
     assert(kp_web_stop()==ESP_OK&&!wifi_started&&!wifi_initialized&&!netifs&&!setup_active);
     // STA configuration owns HTTP only; it neither creates nor stops Wi-Fi.
-    assert(kp_web_start_wifi("192.168.1.50",NULL)==ESP_OK&&!wifi_initialized&&!wifi_started&&!netifs&&!setup_active);
+    assert(kp_web_start_wifi("192.168.1.50",NULL)==ESP_OK&&!wifi_initialized&&!wifi_started&&!netifs&&setup_active);
     req=(httpd_req_t){.uri="/api/config",.method=HTTP_GET,.host="192.168.1.50"};
     reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&strstr(response,"\"connection\":\"wifi\""));
     req.host="192.168.1.50:80";reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK"));
     req.host="192.168.4.1";reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"403 Forbidden"));
     req.host="192.168.1.50";req.method=HTTP_POST;req.uri="/api/wifi/scan";req.session=s_session;
-    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"409 Conflict"));
+    setup_job.busy=false;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&setup_job.kind==KP_WIFI_SCAN);
+    setup_job.busy=false;req.uri="/api/wifi/test";req.body="{\"ssid\":\"lan-candidate\",\"password\":\"test-pass\",\"keep_password\":false}";req.content_len=strlen(req.body);req.received=0;
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&!strcmp(tested_wifi.ssid,"lan-candidate"));
+    char retained_session[33];strcpy(retained_session,s_session);kp_web_update_ip("192.168.1.60");
+    req=(httpd_req_t){.uri="/api/wifi/job",.method=HTTP_GET,.host="192.168.1.60",.session=retained_session};
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK")&&!strcmp(retained_session,s_session));
+    req.host="192.168.1.50";reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"403 Forbidden"));
 
     // Configuration bounds TCP state to three slots, independently of transfer.
     // Failed override installation must not consume one of those slots.

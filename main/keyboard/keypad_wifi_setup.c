@@ -35,6 +35,7 @@ kp_wifi_job_state_t kp_wifi_failure(uint16_t reason) {
     }
 }
 bool kp_wifi_job_expired(kp_wifi_job_state_t state, uint32_t elapsed) {
-    uint32_t limit = state == KP_WIFI_CONNECTING ? 30000U : state == KP_WIFI_SYNCING ? 20000U : 15000U;
+    uint32_t limit = state == KP_WIFI_CONNECTING || state == KP_WIFI_RESTORING ? 30000U :
+                     15000U;
     return elapsed >= limit;
 }

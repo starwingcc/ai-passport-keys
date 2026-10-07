@@ -148,7 +148,7 @@
     return {ssid,password,keep_password};
   }
   function wifiJobMessage(job){
-    const messages=['尚未测试','正在准备','正在扫描附近 Wi-Fi','正在连接，请保持连接 Passport 热点','Wi-Fi 已连接，正在校时','扫描完成','连接成功，认证通过且已校时。请点击“保存全部设置”。','认证失败，请检查密码或路由器设置。','未找到网络，请检查名称、距离和 2.4 GHz 设置。','连接超时，请检查路由器和信号。','Wi-Fi 认证通过，但网络校时失败。请检查外网连接，密码可正常使用。','连接或扫描失败，请重试。','网络安全方式不兼容，请检查路由器设置。'];
+    const messages=['尚未测试','正在准备','正在扫描附近 Wi-Fi','正在连接测试网络，请稍候','Wi-Fi 已连接','扫描完成','连接成功，已取得 IP 地址。请点击“保存全部设置”。','认证失败，请检查密码或路由器设置。','未找到网络，请检查名称、距离和 2.4 GHz 设置。','连接超时，请检查路由器和信号。','Wi-Fi 连接测试完成。','连接或扫描失败，请重试。','网络安全方式不兼容，请检查路由器设置。','正在恢复配置前的 Wi-Fi，请稍候。'];
     return messages[job.state]||'设备返回了未知结果，请重试。';
   }
   const settingsDefaults=()=>({version:1,home:homeDefaults(),wifi:{version:1,ssid:'',password:''},config:defaults()});
@@ -306,8 +306,8 @@
     $('wifi-ssid').value=wifi.ssid;$('wifi-password').value=password;
     $('wifi-password').placeholder=wifi.has_password?'密码已保存，留空保持不变':'无密码网络可留空';
     $('wifi-saved').textContent=wifi.ssid?'已保存自动校时网络':'尚未配置自动校时';
-    $('wifi-status').textContent=(wifi.clock_valid?'设备已有有效时间。':'设备尚未校时。')+(lanWifi?'当前通过 WiFi 配置；扫描与连接测试请使用本机热点。网络修改在退出配置后生效。':'本机热点开启时，自动校时暂停；退出配置后尝试连接。');
-    $('scan-wifi').disabled=$('test-wifi').disabled=lanWifi;
+    $('wifi-status').textContent=(wifi.clock_valid?'设备已有有效时间。':'设备尚未校时。')+(lanWifi?'当前通过 WiFi 配置；支持扫描。连接测试会暂时断开页面，完成后恢复原网络；请勿刷新。若地址变化，请按设备显示的新 IP 重新打开。网络修改在退出配置后生效。':'本机热点开启时，自动校时暂停；退出配置后尝试连接。');
+    $('scan-wifi').disabled=$('test-wifi').disabled=false;
   }
   async function wifiLoad(password=''){
     const r=await fetch('/api/wifi',{headers:{'X-Session':session},signal:AbortSignal.timeout(8000)});
@@ -350,15 +350,15 @@
     $('wifi-scan-status').textContent=wifiNetworks.length?'找到 '+wifiNetworks.length+' 个网络；选择后填写密码。':'未发现可显示的网络，可重试扫描或手动填写名称。';
   }
   function wifiTestRender(job){
-    $('wifi-test-status').textContent=job.ssid+'：'+wifiJobMessage(job);
-    $('wifi-test-status').classList.toggle('error',!job.busy&&!job.connected);
+    $('wifi-test-status').textContent=job.ssid+'：'+wifiJobMessage(job)+(job.restore_failed?' 原网络恢复失败，请查看设备显示的地址，或返回本机热点配置。':'');
+    $('wifi-test-status').classList.toggle('error',!job.busy&&(!job.connected||job.restore_failed));
   }
   async function wifiJobWait(id,revision){
-    const deadline=performance.now()+75000;
+    const deadline=performance.now()+135000;
     while(performance.now()<deadline){
       let job;
       try{job=await wifiJobRead();}catch(e){
-        $('wifi-test-status').textContent='暂时无法读取结果，请保持连接 Passport 热点，正在重试…';
+        $('wifi-test-status').textContent=lanWifi?'测试期间页面暂时断开，正在等待恢复原网络… 若地址变化，请按设备显示的新 IP 重新打开。':'暂时无法读取结果，请保持连接 Passport 热点，正在重试…';
         await new Promise(resolve=>setTimeout(resolve,750));continue;
       }
       if(job.id!==id)throw Error('扫描或测试已被另一项操作替换，请重试。');
@@ -370,16 +370,24 @@
       }
       await new Promise(resolve=>setTimeout(resolve,500));
     }
-    throw Error('等待结果超时，请重新连接 Passport 热点后重试。');
+    throw Error(lanWifi?'等待结果超时，请检查设备显示的 IP；地址变化时使用新地址打开，或返回本机热点配置。':'等待结果超时，请重新连接 Passport 热点后重试。');
   }
   async function wifiJobStart(path,body){
     const previous=await wifiJobRead();let id;
     try{id=(await request(path,body)).id;}catch(e){
-      // Connecting STA can briefly move the AP channel. Recover an accepted
-      // job if its POST response was lost, without starting a second test.
-      const current=await wifiJobRead();
-      if(current.id===previous.id||current.kind!==(body?2:1)||(body&&current.ssid!==body.ssid))throw e;
-      id=current.id;
+      // A LAN test can interrupt the POST response and the next GET. Recover
+      // the accepted job after reconnection; never submit the password twice.
+      const deadline=performance.now()+135000;
+      while(id===undefined&&performance.now()<deadline){
+        let current;
+        try{current=await wifiJobRead();}catch(readError){
+          $('wifi-test-status').textContent=lanWifi?'正在等待恢复原网络并读取测试结果… 若地址变化，请按设备显示的新 IP 重新打开。':'暂时无法读取结果，请保持连接 Passport 热点，正在重试…';
+          await new Promise(resolve=>setTimeout(resolve,750));continue;
+        }
+        if(current.id===previous.id||current.kind!==(body?2:1)||(body&&current.ssid!==body.ssid))throw e;
+        id=current.id;
+      }
+      if(id===undefined)throw Error(lanWifi?'无法恢复测试结果，请检查设备显示的 IP 或通过本机热点配置。':e.message);
     }
     return wifiJobWait(id,wifiRevision);
   }

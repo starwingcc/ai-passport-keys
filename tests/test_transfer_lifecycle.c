@@ -14,6 +14,7 @@ unsigned uxTaskGetStackHighWaterMark(TaskHandle_t task){(void)task;return 0;}
 static bool has_wifi,connected,leased,suspended,web_owned,web_ready,ap_owned,ble_paused;
 static unsigned web_starts,web_stops,ble_pauses;static esp_err_t web_start_fault,web_stop_fault,suspend_fault,ap_stop_fault,config_start_fault,ble_pause_fault,ble_resume_fault,ap_start_fault;
 static unsigned config_polls;
+static kp_wifi_job_t config_job;
 static char current_ip[16]="192.168.1.50";
 static kp_web_request_t request_callback;
 int64_t esp_timer_get_time(void){return 0;}
@@ -39,6 +40,8 @@ void kp_web_poll(uint32_t now){(void)now;assert(ap_owned);++config_polls;}
 const char *kp_web_ssid(void){return "Passport-Keys-test";}
 const char *kp_web_password(void){return "test-pass";}
 esp_err_t kp_web_start_wifi(const char *ip,kp_web_request_t cb){assert(connected&&leased&&!suspended&&!ap_owned&&!web_owned&&!ble_paused&&!strcmp(ip,current_ip));if(config_start_fault)return config_start_fault;ap_owned=true;request_callback=cb;return ESP_OK;}
+bool kp_wifi_setup_testing(void){return config_job.busy&&config_job.kind==KP_WIFI_TEST;}
+void kp_web_update_ip(const char *ip){assert(ap_owned&&!strcmp(ip,current_ip));}
 void kp_wifi_setup_poll(uint32_t now){(void)now;assert(ap_owned);}
 int main(void){
     service_t s={0};assert(kp_network_service_start()==ESP_OK);step(&s,0);assert(!s.view.transfer.enabled&&!leased&&!ble_pauses);
@@ -62,6 +65,14 @@ int main(void){
     kp_network_service_config(true,true);step(&s,15000);assert(s.view.lan.state==KP_AP_STARTING&&leased&&!ap_owned);
     connected=true;step(&s,16000);assert(s.view.lan.state==KP_AP_ACTIVE&&ap_owned&&!strcmp(s.view.lan.ip,current_ip)&&!ble_pauses);
     unsigned polls=config_polls;step(&s,16500);assert(config_polls==polls);
+    // A LAN test must not tear down HTTP/session or let the automatic station
+    // reconnect while temporarily offline. A restored DHCP change only rebinds.
+    config_job=(kp_wifi_job_t){.kind=KP_WIFI_TEST,.busy=true};connected=false;
+    step(&s,16600);assert(ap_owned&&s.config_testing&&s.view.lan.state==KP_AP_ACTIVE);
+    connected=true;strcpy(current_ip,"192.168.1.65");step(&s,16700);
+    assert(ap_owned&&s.config_testing&&!strcmp(s.view.lan.ip,"192.168.1.60"));
+    config_job.busy=false;step(&s,16800);
+    assert(ap_owned&&!s.config_testing&&!strcmp(s.view.lan.ip,current_ip));
     strcpy(current_ip,"192.168.1.70");step(&s,17000);assert(s.view.lan.state==KP_AP_ACTIVE&&!strcmp(s.view.lan.ip,current_ip));
     connected=false;step(&s,18000);assert(s.view.lan.state==KP_AP_STARTING&&!s.view.lan.ip[0]&&!ap_owned);
     connected=true;step(&s,19000);assert(ap_owned&&s.view.lan.state==KP_AP_ACTIVE);
