@@ -6,6 +6,7 @@ managed_components/
 .idea/
 .DS_Store
 temp/
+__pycache__/
 
 # Generated repository-local links; canonical skill sources live in skills/.
 /.agents/skills/passport-develop

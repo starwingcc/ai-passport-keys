@@ -299,7 +299,7 @@ int main(void) {
     strcpy(input,response); req.body=input; req.content_len=strlen(input);
     fail_save=true; reset_response();
     assert(api(&req)==ESP_OK && !strcmp(status,"500 Internal Server Error") && save_calls==1);
-    assert(!strcmp(kp_text(&committed,committed.profiles[0].name),"默认"));
+    assert(!strcmp(kp_text(&committed,committed.profiles[0].name),"coding模式"));
     fail_save=false; req.received=0; reset_response();
     assert(api(&req)==ESP_OK && !strcmp(response,"{\"ok\":true}") && save_calls==2);
     assert(!strcmp(kp_text(&committed,committed.profiles[0].name),"Coding"));

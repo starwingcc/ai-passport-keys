@@ -173,7 +173,7 @@ int main(void){
         assert(kp_store_init()==ESP_OK);kp_store_system_get(&system);assert(system==KP_SYSTEM_MACOS);
     }
     // The v5 NVS layout upgrades system targets and Command migration in place, preserving other settings.
-    kp_defaults(&c);kp_step_t s=(kp_step_t){.action={.type=KP_KEYBOARD,.modifiers=2,.keys={4}}};
+    kp_config_empty(&c);assert(kp_profile_add(&c,"Legacy"));kp_step_t s=(kp_step_t){.action={.type=KP_KEYBOARD,.modifiers=2,.keys={4}}};
     assert(kp_binding_set(&c,0,0,"",&s,1)&&kp_store_save(&c)==ESP_OK);
     stored_settings.config.version=5;
     unsigned offset=kp_binding(&stored_settings.config,0)->steps*2U;

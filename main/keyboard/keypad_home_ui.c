@@ -5,7 +5,7 @@
 /* Geometry and sprites from the accepted 240x320 card preview. */
 enum { CONTENT_OFFSET_Y=-8, FOOTER_Y=232, BG=0x18241f, INK=0xe9ecdf, GOLD=0xd8a466,
        MUTED=0xa3b5a5, PANEL=0x25362d, EDGE=0x617467 };
-static bool visible;
+static bool visible, pairing_notice;
 static unsigned selected;
 static int sample_battery;
 static uint32_t status_color;
@@ -126,21 +126,23 @@ static void art(lv_event_t *event) {
     box(layer,20,49,70,2,GOLD);
     box(layer,156,27,17,10,EDGE);box(layer,173,30,2,4,EDGE);
     box(layer,158,29,13,6,BG);box(layer,158,29,(sample_battery < 0 ? 0 : sample_battery)*13/100,6,INK);
-    box(layer,20,68+CONTENT_OFFSET_Y,64,64,PANEL);
-    box(layer,24,68+CONTENT_OFFSET_Y,56,1,EDGE);box(layer,24,131+CONTENT_OFFSET_Y,56,1,EDGE);
-    box(layer,20,72+CONTENT_OFFSET_Y,1,56,EDGE);box(layer,83,72+CONTENT_OFFSET_Y,1,56,EDGE);
-    box(layer,20,68+CONTENT_OFFSET_Y,6,2,GOLD);box(layer,20,68+CONTENT_OFFSET_Y,2,6,GOLD);
-    box(layer,78,130+CONTENT_OFFSET_Y,6,2,GOLD);box(layer,82,126+CONTENT_OFFSET_Y,2,6,GOLD);
-    for(int y=0;y<24;y++)for(int x=0;x<24;) {
-        uint8_t c=sprite[y][x];int start=x;
-        while(x<24&&sprite[y][x]==c)x++;
-        if(c)box(layer,28+start*2,76+y*2+CONTENT_OFFSET_Y,(x-start)*2,2,palette[c]);
+    if (!pairing_notice) {
+        box(layer,20,68+CONTENT_OFFSET_Y,64,64,PANEL);
+        box(layer,24,68+CONTENT_OFFSET_Y,56,1,EDGE);box(layer,24,131+CONTENT_OFFSET_Y,56,1,EDGE);
+        box(layer,20,72+CONTENT_OFFSET_Y,1,56,EDGE);box(layer,83,72+CONTENT_OFFSET_Y,1,56,EDGE);
+        box(layer,20,68+CONTENT_OFFSET_Y,6,2,GOLD);box(layer,20,68+CONTENT_OFFSET_Y,2,6,GOLD);
+        box(layer,78,130+CONTENT_OFFSET_Y,6,2,GOLD);box(layer,82,126+CONTENT_OFFSET_Y,2,6,GOLD);
+        for(int y=0;y<24;y++)for(int x=0;x<24;) {
+            uint8_t c=sprite[y][x];int start=x;
+            while(x<24&&sprite[y][x]==c)x++;
+            if(c)box(layer,28+start*2,76+y*2+CONTENT_OFFSET_Y,(x-start)*2,2,palette[c]);
+        }
+        box(layer,20,148+CONTENT_OFFSET_Y,92,1,EDGE);box(layer,128,148+CONTENT_OFFSET_Y,92,1,EDGE);
+        box(layer,117,147+CONTENT_OFFSET_Y,2,2,MUTED);box(layer,123,147+CONTENT_OFFSET_Y,2,2,MUTED);
+        pixel_text(layer,20,166+CONTENT_OFFSET_Y,clock_text,5);
+        pixel_text(layer,160,185+CONTENT_OFFSET_Y,period_text,2);
+        pixel_text(layer,20,214+CONTENT_OFFSET_Y,date_text,2);
     }
-    box(layer,20,148+CONTENT_OFFSET_Y,92,1,EDGE);box(layer,128,148+CONTENT_OFFSET_Y,92,1,EDGE);
-    box(layer,117,147+CONTENT_OFFSET_Y,2,2,MUTED);box(layer,123,147+CONTENT_OFFSET_Y,2,2,MUTED);
-    pixel_text(layer,20,166+CONTENT_OFFSET_Y,clock_text,5);
-    pixel_text(layer,160,185+CONTENT_OFFSET_Y,period_text,2);
-    pixel_text(layer,20,214+CONTENT_OFFSET_Y,date_text,2);
     box(layer,20,FOOTER_Y+9,4,4,status_color);box(layer,112,FOOTER_Y+2,1,62,EDGE);
     int y=FOOTER_Y+selected*24;
     box(layer,122,y,98,23,GOLD);
@@ -159,6 +161,7 @@ void kp_home_ui_set(bool show, const kp_home_config_t *home, kp_ble_status_t ble
     selected = menu < 3 ? menu : 0;
     sample_battery = battery < 0 ? -1 : battery > 100 ? 100 : battery;
     status_color = ble.ready && !ble.paused && !ble.failed ? GOLD : MUTED;
+    pairing_notice = ble.pairing_hint != KP_PAIRING_NONE && !ble.secure && !ble.paused;
     make_sprite(home->avatar);
     kp_home_clock_text(home, epoch, clock_text, date_text, period_text);
 }

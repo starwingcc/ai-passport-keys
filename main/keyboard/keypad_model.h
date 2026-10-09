@@ -120,6 +120,7 @@ void kp_init(kp_model_t *model, const kp_config_t *config, kp_emit_t emit, void 
 void kp_input(kp_model_t *model, unsigned key, bool down, uint32_t now);
 void kp_tick(kp_model_t *model, uint32_t now);
 void kp_cancel(kp_model_t *model);
+// Cancel HID actions while retaining local navigation and an ongoing OK hold.
 void kp_link_changed(kp_model_t *model, uint32_t now);
 void kp_set_busy(kp_model_t *model, bool busy);
 void kp_hotspot_exit(kp_model_t *model);

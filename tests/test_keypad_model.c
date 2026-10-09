@@ -12,8 +12,55 @@ static void quick(kp_model_t *m, unsigned k, uint32_t t) { press(m,k,t); release
 static void set(kp_config_t *c, unsigned slot, kp_action_t a) {
     kp_step_t step={.action=a}; assert(kp_binding_set(c,0,slot,"",&step,1));
 }
+// Gesture timing tests use explicit bindings, independent of the shipped scenario.
+static void gesture_config(kp_config_t *c) {
+    kp_config_empty(c); assert(kp_profile_add(c,"Gestures"));
+    set(c,0,(kp_action_t){.type=KP_KEYBOARD,.keys={0x29}});
+    set(c,3,(kp_action_t){.type=KP_KEYBOARD,.modifiers=4});
+    set(c,4,(kp_action_t){.type=KP_KEYBOARD,.keys={0x2a}});
+    set(c,5,(kp_action_t){.type=KP_KEYBOARD,.modifiers=8,.keys={4}});
+    set(c,7,(kp_action_t){.type=KP_KEYBOARD,.keys={0x51}});
+    set(c,8,(kp_action_t){.type=KP_KEYBOARD,.keys={0x28}});
+}
+static void link_navigation(void) {
+    kp_config_t c;gesture_config(&c);kp_model_t m;
+    // Connection churn cannot restart the global OK hold deadline.
+    for(unsigned other=0;other<2;other++) {
+        kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
+        if(other)press(&m,0,0);
+        press(&m,2,10);
+        for(unsigned now=60;now<510;now+=50){kp_link_changed(&m,now);kp_tick(&m,now);}
+        kp_tick(&m,509);assert(m.page==KP_CONSOLE);
+        kp_tick(&m,510);assert(m.page==KP_MENU&&!count[KP_TAP]&&!count[KP_HOLD]);
+        release(&m,2,520);if(other)release(&m,0,530);assert(!m.blocked);
+    }
+    // Local menu presses survive a connection change between their edges.
+    for(unsigned key=0;key<3;key++) {
+        kp_init(&m,&c,effect,NULL);m.page=KP_MENU;memset(count,0,sizeof(count));
+        press(&m,key,0);kp_link_changed(&m,10);release(&m,key,20);
+        assert(key==2?m.page==KP_CONSOLE:m.page==KP_MENU&&m.selected==(key==0?2U:1U));
+        assert(!count[KP_TAP]&&!count[KP_HOLD]);
+    }
+    // The same preserved OK press must never replay its keyboard tap.
+    kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
+    press(&m,2,0);kp_link_changed(&m,10);release(&m,2,20);kp_tick(&m,300);
+    assert(m.page==KP_CONSOLE&&!count[KP_TAP]);
+    press(&m,0,400);kp_link_changed(&m,410);release(&m,0,420);kp_tick(&m,700);
+    assert(!count[KP_TAP]&&!count[KP_HOLD]);click(&m,0,800);assert(count[KP_TAP]==1);
+    // A wake-only press remains wake-only through reconnection.
+    kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));kp_tick(&m,30000);
+    press(&m,2,30100);kp_link_changed(&m,30200);kp_tick(&m,31000);release(&m,2,31010);
+    assert(m.page==KP_CONSOLE&&!count[KP_TAP]);
+    press(&m,2,31100);kp_link_changed(&m,31200);kp_tick(&m,31600);assert(m.page==KP_MENU);
+    // Preserve elapsed hold time across the millisecond counter wrap.
+    kp_init(&m,&c,effect,NULL);press(&m,2,UINT32_MAX-200);
+    kp_link_changed(&m,UINT32_MAX-100);kp_link_changed(&m,100);kp_tick(&m,299);
+    assert(m.page==KP_MENU);
+    memset(count,0,sizeof(count));puts("BLE churn preserves local navigation and OK hold, cancels HID input, and respects wake filtering: PASS");
+}
 int main(void) {
-    kp_config_t c; kp_defaults(&c); assert(kp_config_valid(&c) && sizeof(c)==6144);
+    link_navigation();
+    kp_config_t c; gesture_config(&c); assert(kp_config_valid(&c) && sizeof(c)==6144);
     set(&c,1,(kp_action_t){.type=KP_KEYBOARD,.keys={5}});
     kp_model_t m; kp_init(&m,&c,effect,NULL);
     press(&m,0,0); release(&m,0,50); kp_tick(&m,229); assert(count[KP_TAP]==0);
@@ -52,7 +99,7 @@ int main(void) {
     assert(count[KP_CLEAR_BOND]==1&&m.page==KP_SETTINGS);
     // Each physical gesture maps independently; OK hold remains outside the configurable slots.
     for(unsigned slot=0;slot<KP_BINDINGS;slot++) {
-        kp_defaults(&c); set(&c,slot,(kp_action_t){.type=KP_KEYBOARD,.keys={4+slot}});
+        gesture_config(&c); set(&c,slot,(kp_action_t){.type=KP_KEYBOARD,.keys={4+slot}});
         kp_init(&m,&c,effect,NULL); memset(count,0,sizeof(count)); unsigned key=slot/4,g=slot%4;
         press(&m,key,0);
         if(g==3){kp_tick(&m,199);assert(!count[KP_HOLD]);kp_tick(&m,200);release(&m,key,600);assert(count[KP_HOLD]==1&&count[KP_RELEASE]==1);}
@@ -76,7 +123,7 @@ int main(void) {
     assert(!count[KP_TAP] && !count[KP_HOLD] && !count[KP_RELEASE]);
     kp_set_busy(&m,true);press(&m,2,1100);kp_tick(&m,1600);assert(m.page==KP_MENU&&!m.executing&&count[KP_CANCEL]);release(&m,2,1700);
     // No double binding: every release sends the single immediately, even with a title on an empty action.
-    kp_defaults(&c);assert(kp_binding_set(&c,0,1,"空双击",NULL,0));kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
+    gesture_config(&c);assert(kp_binding_set(&c,0,1,"空双击",NULL,0));kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
     for(unsigned i=0;i<6;i++){quick(&m,0,i*50);assert(count[KP_TAP]==i+1&&!m.key[0].pending);}
     kp_tick(&m,1000);assert(count[KP_TAP]==6);
     // Bound singles/doubles: five quick taps yield two doubles and one delayed single.
@@ -99,7 +146,7 @@ int main(void) {
     press(&m,0,1100);kp_cancel(&m);assert(m.blocked&&count[KP_CANCEL]);release(&m,0,1200);assert(!m.blocked&&count[KP_RELEASE]==1);
     // Bound triples suppress both single and double until their respective windows expire.
     for(unsigned key=0;key<3;key++) {
-        kp_defaults(&c);set(&c,key*4+1,(kp_action_t){.type=KP_KEYBOARD,.keys={5}});
+        gesture_config(&c);set(&c,key*4+1,(kp_action_t){.type=KP_KEYBOARD,.keys={5}});
         set(&c,key*4+2,(kp_action_t){.type=KP_KEYBOARD,.keys={6}});
         kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
         quick(&m,key,0);kp_tick(&m,199);assert(!count[KP_TAP]);kp_tick(&m,200);assert(count[KP_TAP]==1&&m.triggered_slot==key*4);
@@ -121,7 +168,7 @@ int main(void) {
         assert(count[KP_TAP]==6);if(key<2)assert(count[KP_HOLD]==1);else assert(m.page==KP_MENU);
     }
     // Triple-only shortcuts still defer singles; an unbound double emits nothing.
-    kp_defaults(&c);set(&c,2,(kp_action_t){.type=KP_KEYBOARD,.keys={6}});
+    gesture_config(&c);set(&c,2,(kp_action_t){.type=KP_KEYBOARD,.keys={6}});
     kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));quick(&m,0,0);quick(&m,0,50);
     kp_tick(&m,250);assert(!count[KP_TAP]);
     for(unsigned i=0;i<7;i++)quick(&m,0,300+i*50);
@@ -188,7 +235,7 @@ int main(void) {
     quick(&m,1,1250);assert(kp_screen_level(&m)==15&&m.screen_config.dim_brightness==20);
     kp_tick(&m,300000);assert(m.screen.state==KP_SCREEN_ACTIVE); // Editing stays visible.
     // Sleeping on a hold-only shortcut or long OK consumes the entire first gesture.
-    kp_defaults(&c);assert(kp_binding_set(&c,0,0,"",NULL,0));
+    gesture_config(&c);assert(kp_binding_set(&c,0,0,"",NULL,0));
     for(unsigned key=0;key<3;key++){
         kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));kp_tick(&m,30000);
         assert(m.screen.state==KP_SCREEN_OFF);press(&m,key,30100);kp_tick(&m,32000);release(&m,key,32100);
@@ -242,7 +289,7 @@ int main(void) {
         {.action={.type=KP_KEYBOARD,.modifiers=10,.keys={29},.system=KP_TARGET_MACOS},.delay_ms=80},
         {.action={.type=KP_KEYBOARD,.modifiers=1,.keys={28},.system=KP_TARGET_WINDOWS}}
     };
-    kp_defaults(&c);assert(kp_binding_set(&c,0,10,"",display_steps,2));
+    gesture_config(&c);assert(kp_binding_set(&c,0,10,"",display_steps,2));
     const kp_binding_t *display_binding=kp_binding(&c,10);char label[200];
     for(unsigned system=0;system<KP_SYSTEM_COUNT;system++){
         const char *expected=system==KP_SYSTEM_MACOS?"Shift+Command+Z":"Control+Y";

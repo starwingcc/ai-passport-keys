@@ -1,8 +1,23 @@
 const assert=require('node:assert/strict');
 require('../main/web/charset.js');require('../main/web/app.js');
 const K=globalThis.Keypad;
-const {capture,defaults,keys,validate}=K;
-const c=defaults();assert.equal(c.profiles[0].bindings.length,11);assert.equal(c.version,6);assert(validate(c));
+const {capture,keys,validate}=K;
+// Editor/import tests use a stable fixture independent of first-use defaults.
+function editorFixture(){
+  const bindings=Array.from({length:11},()=>({title:'',steps:[]}));
+  for(const [slot,modifiers,key] of [[0,0,41],[3,4,0],[4,0,42],[5,8,4],[7,0,81],[8,0,40]])
+    bindings[slot].steps=[{type:1,modifiers,keys:key?[key]:[],consumer:0,system:0,delay_ms:0}];
+  bindings[8].title='回车';return{version:6,active_profile:0,profiles:[{name:'Editor',bindings}]};
+}
+const initial=K.defaults();assert(validate(initial));
+assert.equal(initial.profiles[0].name,'coding模式');
+for(const system of [1,2]){
+  const expected=['无',system===2?'Command+Z':'Control+Z',system===2?'Shift+Command+Z':'Control+Y','Option/Alt','Backspace','无','无',system===2?'Command+A → Backspace':'Control+A → Backspace','Enter','无','无'];
+  initial.profiles[0].bindings.forEach((b,i)=>assert.equal(K.devicePreview(b,system).sequence,expected[i]));
+}
+assert.equal(initial.profiles[0].bindings[3].title,'可配置为语音输入');
+assert.equal(initial.profiles[0].bindings[7].title,'全选并删除');
+const c=editorFixture();assert.equal(c.profiles[0].bindings.length,11);assert.equal(c.version,6);assert(validate(c));
 assert.equal(K.capacity(c),480);assert(!('description' in c.profiles[0].bindings[0]));
 assert.deepEqual(c.profiles[0].bindings[0].steps[0].keys,[41]);
 assert.equal(c.profiles[0].bindings[3].steps[0].modifiers,4);
@@ -28,23 +43,23 @@ for(let i=1;i<8;i++)K.addProfile(c,'情景'+i);assert.throws(()=>K.addProfile(c,
 assert.throws(()=>K.validateText('😀',16));assert.throws(()=>K.validateText('\ud800',16));assert.throws(()=>K.validateText('12345678901234567',16));
 assert.throws(()=>K.validateText('a\nb',16));K.validateText('编程浏览，ABC',16);assert.throws(()=>K.validateText('a\nb',64));
 assert.throws(()=>K.validateText('编程龘',16),/U\+9F98/);assert.throws(()=>K.validateText('靐',16));
-const restored=defaults();restored.profiles[0].name='龘字';restored.profiles[0].bindings[0].title='靐字';
+const restored=editorFixture();restored.profiles[0].name='龘字';restored.profiles[0].bindings[0].title='靐字';
 assert(validate(restored,true));assert.throws(()=>validate(restored),/U\+9F98/);
 restored.profiles[0].name='Coding';assert.throws(()=>validate(restored),/U\+9750/);
 restored.profiles[0].bindings[0].title='复制';assert(validate(restored));
 for(const text of ['\ud800','a\nb','\u0085','12345678901234567']){restored.profiles[0].name=text;assert.throws(()=>validate(restored,true));}
-const huge=defaults(),macro=huge.profiles[0].bindings[1];for(let i=0;i<64;i++)K.addStep(macro);assert.throws(()=>K.addStep(macro));assert(validate(huge));
-const oldSchema=defaults();oldSchema.version=2;assert.throws(()=>validate(oldSchema));
-const removed=defaults();removed.profiles[0].bindings[0].description='old';assert.throws(()=>validate(removed));
-const invalid=defaults();invalid.profiles[0].bindings[0].steps[0].keys=[4,4];assert.throws(()=>validate(invalid));
+const huge=editorFixture(),macro=huge.profiles[0].bindings[1];for(let i=0;i<64;i++)K.addStep(macro);assert.throws(()=>K.addStep(macro));assert(validate(huge));
+const oldSchema=editorFixture();oldSchema.version=2;assert.throws(()=>validate(oldSchema));
+const removed=editorFixture();removed.profiles[0].bindings[0].description='old';assert.throws(()=>validate(removed));
+const invalid=editorFixture();invalid.profiles[0].bindings[0].steps[0].keys=[4,4];assert.throws(()=>validate(invalid));
 invalid.profiles[0].bindings[0].steps[0].keys=[4];invalid.profiles[0].bindings[0].steps[0].delay_ms=1;assert.throws(()=>validate(invalid));
 invalid.profiles[0].bindings[0].steps[0].delay_ms=0;invalid.profiles[0].bindings[0].title='😀';assert.throws(()=>validate(invalid));
 while(K.capacity(huge)<=6144)K.addProfile(huge,'复制'+huge.profiles.length,0);assert.throws(()=>validate(huge));
-if(process.env.KP_DEFAULTS_JSON){const fixture=JSON.parse(require('node:fs').readFileSync(process.env.KP_DEFAULTS_JSON,'utf8'));assert.deepEqual(defaults(),fixture.config);assert.equal(K.capacity(defaults()),fixture.bytes);}
+if(process.env.KP_DEFAULTS_JSON){const fixture=JSON.parse(require('node:fs').readFileSync(process.env.KP_DEFAULTS_JSON,'utf8'));assert.deepEqual(K.defaults(),fixture.config);assert.equal(K.capacity(K.defaults()),fixture.bytes);}
 console.log('Browser recording, steps, profiles, metadata and capacity: PASS');
 // Import/export is a pure transaction over the editor; failed imports cannot mutate it.
 const copy=x=>JSON.parse(JSON.stringify(x));
-const shared=defaults();K.addProfile(shared,'浏览',0);shared.active_profile=1;
+const shared=editorFixture();K.addProfile(shared,'浏览',0);shared.active_profile=1;
 K.addStep(shared.profiles[0].bindings[2],{type:1,modifiers:8,keys:[6],consumer:0});
 K.addStep(shared.profiles[1].bindings[6],{type:2,modifiers:0,keys:[],consumer:233});
 for(let i=0;i<64;i++)K.addStep(shared.profiles[1].bindings[10]);
@@ -53,8 +68,8 @@ const sharedSettings={...K.settingsDefaults(),config:shared};
 const allFile=K.exportFile(sharedSettings,'configuration'),singleFile=K.exportFile(shared,'scenario',1);
 const all=K.parseImport(allFile),single=K.parseImport(singleFile);
 assert.deepEqual(all.config,shared);assert.equal(single.kind,'scenario');assert.deepEqual(single.config.profiles,[shared.profiles[1]]);
-assert.deepEqual(K.applyImport(defaults(),all),{config:shared,editing:1,settings:sharedSettings});
-const target=defaults(),snapshot=JSON.stringify(target),added=K.applyImport(target,single);
+assert.deepEqual(K.applyImport(editorFixture(),all),{config:shared,editing:1,settings:sharedSettings});
+const target=editorFixture(),snapshot=JSON.stringify(target),added=K.applyImport(target,single);
 assert.equal(added.editing,1);assert.equal(added.config.active_profile,0);assert.equal(added.config.profiles.length,2);
 assert.equal(JSON.stringify(target),snapshot);assert.throws(()=>K.applyImport(added.config,single));
 const renamed=K.applyImport(added.config,single,{name:'新浏览'});assert.equal(renamed.config.profiles.length,3);assert.equal(renamed.config.profiles[2].name,'新浏览');
@@ -95,11 +110,11 @@ for(let b=0;b<7;b++)for(let n=0;n<64;n++)K.addStep(boundary.profiles[0].bindings
 for(let n=0;n<30;n++)K.addStep(boundary.profiles[0].bindings[7]);boundary.profiles[0].bindings[0].title='12345678901';
 assert.equal(K.capacity(boundary),6144);assert(validate(boundary));assert.deepEqual(K.parseImport(K.exportFile({...K.settingsDefaults(),config:boundary},'configuration')).config,boundary);
 const over=copy(boundary);over.profiles[0].bindings[10].title='A';assert.throws(()=>validate(over));
-const overImport={kind:'scenario',config:{version:6,active_profile:0,profiles:[{name:'追加',bindings:defaults().profiles[0].bindings}]}};
+const overImport={kind:'scenario',config:{version:6,active_profile:0,profiles:[{name:'追加',bindings:editorFixture().profiles[0].bindings}]}};
 const before=JSON.stringify(boundary);assert.throws(()=>K.applyImport(boundary,overImport));assert.equal(JSON.stringify(boundary),before);
 assert.equal(K.sequenceLabel({title:'',steps:[]}),'无');
 // Legacy flags migrate to fixed Command and missing system defaults to All.
-const adaptive=defaults();adaptive.version=5;const adaptiveStep=adaptive.profiles[0].bindings[5].steps[0];
+const adaptive=editorFixture();adaptive.version=5;const adaptiveStep=adaptive.profiles[0].bindings[5].steps[0];
 adaptiveStep.modifiers=2;adaptiveStep.logical_modifiers=3;delete adaptiveStep.system;
 const legacy=copy(adaptive);assert(validate(adaptive));assert.equal(adaptive.version,6);
 assert.equal(adaptiveStep.modifiers,0x8a);assert.equal(adaptiveStep.system,0);assert(!('logical_modifiers' in adaptiveStep));
@@ -112,11 +127,11 @@ const logicalOnly=copy(legacy);Object.assign(logicalOnly.profiles[0].bindings[5]
 assert.equal(logicalOnly.profiles[0].bindings[5].steps[0].modifiers,128);
 const logicalMedia=copy(legacy);Object.assign(logicalMedia.profiles[0].bindings[5].steps[0],{type:2,keys:[],modifiers:0,consumer:233});assert.throws(()=>validate(logicalMedia));
 for(const side of [1,2,3])for(let mods=0;mods<256;mods++){
-  const old=defaults(),a=old.profiles[0].bindings[5].steps[0];old.version=5;a.modifiers=mods;a.logical_modifiers=side;
+  const old=editorFixture(),a=old.profiles[0].bindings[5].steps[0];old.version=5;a.modifiers=mods;a.logical_modifiers=side;
   assert(validate(old));assert.equal(a.modifiers,mods|(side&1?8:0)|(side&2?128:0));assert(!('logical_modifiers' in a));
 }
 assert.equal(K.actionLabel({type:1,modifiers:68,keys:[]}),'Option/Alt+ROption/Alt');
-for(const system of [-1,3,256,1.5,'1',null]){const bad=defaults();bad.profiles[0].bindings[0].steps[0].system=system;assert.throws(()=>validate(bad));}
+for(const system of [-1,3,256,1.5,'1',null]){const bad=editorFixture();bad.profiles[0].bindings[0].steps[0].system=system;assert.throws(()=>validate(bad));}
 const branch=(system,key=4)=>({type:1,modifiers:0,keys:[key],consumer:0,system,delay_ms:80});
 const redo={title:'重做',steps:[{...branch(2,29),modifiers:10},{...branch(1,28),modifiers:1,delay_ms:0}]};
 assert.deepEqual(K.devicePreview(redo,1),{title:'重做',sequence:'Control+Y',total:1,progress:''});
@@ -143,7 +158,7 @@ for(const system of [0,1,2]){
   const original=branch(system),media=K.changeType(original,2),keyboard=K.changeType(media,1),recorded=K.recordedStep(keyboard,[{code:'KeyC',key:'c',metaKey:true}]);
   for(const a of [media,keyboard,recorded]){assert.equal(a.system,system);assert.equal(a.delay_ms,80);}
 }
-const systems=defaults();systems.profiles[0].bindings[0].steps=[branch(1),branch(2),{type:2,modifiers:0,keys:[],consumer:233,system:2,delay_ms:0}];
+const systems=editorFixture();systems.profiles[0].bindings[0].steps=[branch(1),branch(2),{type:2,modifiers:0,keys:[],consumer:233,system:2,delay_ms:0}];
 assert(validate(systems));K.addProfile(systems,'Copy',0);assert.deepEqual(systems.profiles[0].bindings,systems.profiles[1].bindings);
 assert.deepEqual(K.parseImport(K.exportFile({...K.settingsDefaults(),config:systems},'configuration')).config,systems);
 assert.deepEqual(K.parseImport(K.exportFile(systems,'scenario')).config.profiles[0],systems.profiles[0]);
@@ -152,7 +167,7 @@ assert.equal(K.stepGroups(pairedLimit).length,32);assert.throws(()=>K.addStep(pa
 console.log('Legacy Command migration, system persistence, filtering, shared step numbering, group moves/deletion and edit retention: PASS');
 if(process.env.KP_CONFIG_TEST){
   const {spawnSync}=require('node:child_process');
-  for(const config of [defaults(),all.config,added.config,renamed.config,replaced.config,boundary,adaptive,logicalOnly,systems]){
+  for(const config of [editorFixture(),all.config,added.config,renamed.config,replaced.config,boundary,adaptive,logicalOnly,systems]){
     const run=spawnSync(process.env.KP_CONFIG_TEST,['--stdin'],{input:JSON.stringify(config),encoding:'utf8'});
     assert.equal(run.status,0,run.stderr);const decoded=JSON.parse(run.stdout);
     assert.deepEqual(decoded.config,config);assert.equal(decoded.bytes,K.capacity(config));
@@ -186,7 +201,7 @@ async function testSaveSettings(){
   for(const [key,invalid] of [
     ['home',{...K.homeDefaults(),name:'😀'}],
     ['wifi',{version:1,ssid:'test-network',password:'short'}],
-    ['config',{...defaults(),active_profile:8}]
+    ['config',{...editorFixture(),active_profile:8}]
   ]){
     const settings=drafts();settings[key]=invalid;let writes=0;
     await assert.rejects(K.saveSettings(settings,async()=>{++writes;}));assert.equal(writes,0);
@@ -202,7 +217,7 @@ async function testSaveSettings(){
   const all=drafts();all.home.name='星翼';all.config.profiles[0].name='完整备份';
   const exported=K.exportFile(all,'configuration'),parsed=K.parseImport(exported);
   assert.equal(JSON.parse(exported).version,7);assert(exported.includes('test-pass'));assert(!exported.includes('session'));
-  assert.deepEqual(parsed.settings,all);assert.deepEqual(K.applyImport(defaults(),parsed).settings,all);
+  assert.deepEqual(parsed.settings,all);assert.deepEqual(K.applyImport(editorFixture(),parsed).settings,all);
   assert.deepEqual(K.parseImport(K.exportFile(K.settingsDefaults(),'configuration')).settings,K.settingsDefaults());
   for(const alter of [s=>s.home.name='',s=>s.wifi.password='short',s=>delete s.home,s=>s.config.active_profile=99,s=>s.version=9,s=>s.extra=true]){
     const file=JSON.parse(exported);alter(file.settings);assert.throws(()=>K.parseImport(JSON.stringify(file)));

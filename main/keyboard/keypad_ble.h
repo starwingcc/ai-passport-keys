@@ -1,9 +1,11 @@
 #pragma once
 #include "esp_err.h"
 #include "keypad_model.h"
+#include "keypad_pairing.h"
 typedef struct {
     bool synced, connected, ready, paused, failed;
     bool secure, keyboard_subscribed, handles_ready;
+    kp_pairing_hint_t pairing_hint;
     uint32_t generation;
 } kp_ble_status_t;
 esp_err_t kp_ble_init(void);

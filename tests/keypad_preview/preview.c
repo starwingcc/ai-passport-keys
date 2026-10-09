@@ -102,6 +102,35 @@ static void console_layout(const char *state){
     }
     assert(found&&footer&&cards==3);
 }
+static void pairing_notice_layout(kp_pairing_hint_t hint, bool home){
+    bool instructions=false,status=false,back=false;unsigned menus=0;
+    lv_obj_t *screen=lv_screen_active();
+    for(unsigned i=0;i<lv_obj_get_child_count(screen);i++){
+        lv_obj_t *o=lv_obj_get_child(screen,i);
+        if(lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN))continue;
+        // Control mappings stay hidden while the actionable notice is shown.
+        assert(home||lv_obj_get_width(o)!=212||lv_obj_get_height(o)!=80);
+        if(!lv_obj_check_type(o,&lv_label_class))continue;
+        const char *text=lv_label_get_text(o);
+        if(!strcmp(text,kp_pairing_instructions(hint))){
+            assert(lv_obj_get_style_text_font(o,0)==&passport_font_16);
+            lv_point_t size;
+            lv_text_get_size(&size,text,&passport_font_16,0,2,LV_COORD_MAX,LV_TEXT_FLAG_NONE);
+            assert(size.x<=lv_obj_get_width(o)&&size.y<=lv_obj_get_height(o));
+            for(uint32_t offset=0;text[offset];){
+                uint32_t cp=lv_text_encoded_next(text,&offset);if(cp=='\n')continue;
+                lv_font_glyph_dsc_t glyph={0};
+                assert(lv_font_get_glyph_dsc(&passport_font_16,&glyph,cp,0)&&!glyph.is_placeholder);
+            }
+            instructions=true;
+        }
+        if(!strcmp(text,home?"重新配对":kp_pairing_title(hint)))status=true;
+        if(!strcmp(text,"长按 OK 返回"))back=true;
+        if(home&&lv_obj_get_x(o)==128&&lv_obj_get_width(o)==76)++menus;
+        assert(strcmp(text,"等待电脑连接")&&strcmp(text,"等待配对完成"));
+    }
+    assert(instructions&&status&&(home?menus==3:back));
+}
 static void save(lv_display_t *display,const char *directory,const char *name){
     if(getenv("KEYPAD_LAYOUT_DEBUG")){
         lv_mem_monitor_t memory;lv_mem_monitor(&memory);
@@ -149,6 +178,21 @@ int main(int argc,char **argv){
     const unsigned row_counts[]={0,0,4,0,2,1};
     m.lan=(kp_lan_view_t){.state=KP_AP_ACTIVE,.configured=true};
     for(unsigned p=0;p<6;p++){m.page=p;kp_ui_update(&m,ble,85,"","Passport-Keys-ABCD","12345678",&home,epoch);save(d,argv[1],names[p]);menu_layout(row_counts[p]);}
+    m.page=KP_CONSOLE;m.feedback=(kp_feedback_t){.visible=true,.holding=true,.slot=3,.total=1};
+    kp_ui_update(&m,ble,85,"","","",&home,epoch);save(d,argv[1],"coding_voice_input");
+    bool voice_title=false;
+    for(unsigned i=0;i<lv_obj_get_child_count(lv_screen_active());i++){
+        lv_obj_t *band=lv_obj_get_child(lv_screen_active(),i);
+        if(lv_obj_has_flag(band,LV_OBJ_FLAG_HIDDEN))continue;
+        for(unsigned n=0;n<lv_obj_get_child_count(band);n++){
+            lv_obj_t *o=lv_obj_get_child(band,n);
+            if(lv_obj_check_type(o,&lv_label_class)&&!lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)&&
+                !strcmp(lv_label_get_text(o),"可配置为语音输入")){
+                assert(lv_obj_get_style_text_font(o,0)==&passport_font_28);
+                assert(lv_obj_get_height(o)<=2*passport_font_28.line_height);voice_title=true;
+            }
+        }
+    }assert(voice_title);m.feedback.visible=false;
     // All five settings entries and their status columns follow the new order.
     const char *settings[]={"屏幕","Passport配置","文件流转","配对系统","清除蓝牙配对"};
     for(unsigned selected=0;selected<KP_SETTINGS_COUNT;selected++){
@@ -310,6 +354,20 @@ int main(int argc,char **argv){
     for(unsigned n=0;n<100;n++){
         m.page=n%2?KP_CONSOLE:KP_MENU;
         kp_ui_update(&m,ble,82,"","","",&home,epoch);lv_refr_now(d);
+    }
+    // Both notices stay readable and stable across connect/disconnect churn;
+    // home navigation and the global control-page return remain available.
+    for(unsigned hint=KP_PAIRING_KEY_MISSING;hint<=KP_PAIRING_RETRY_FAILED;hint++){
+        for(unsigned page=0;page<2;page++){
+            m.page=page?KP_CONSOLE:KP_MENU;
+            for(unsigned connected=0;connected<2;connected++){
+                kp_ble_status_t b={.pairing_hint=hint,.connected=connected,.handles_ready=true};
+                kp_ui_update(&m,b,82,"","","",&home,epoch);lv_refr_now(d);
+                pairing_notice_layout(hint,!page);
+            }
+            char name[48];snprintf(name,sizeof(name),"pairing-recovery-%u-%s",hint,page?"console":"home");
+            save(d,argv[1],name);
+        }
     }
     m.page=KP_CONSOLE;kp_ui_update(&m,ble,85,"","","",&home,epoch);lv_refr_now(d);console_layout("默认 · 已连接");
     const char *states[]={"等待电脑连接","等待配对完成","键盘服务未就绪","等待电脑启用键盘","蓝牙异常","蓝牙已暂停"};

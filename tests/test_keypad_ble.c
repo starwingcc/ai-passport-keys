@@ -2,7 +2,15 @@
 #include <stdio.h>
 #include "../main/keyboard/keypad_ble.c"
 #include "../main/keyboard/keypad_runner.c"
-void ble_store_config_init(void) {}
+static int fake_store_result;
+static unsigned fake_store_reads;
+static int fake_store_read(int type, const union ble_store_key *key, union ble_store_value *value) {
+    (void)type; (void)key;
+    ++fake_store_reads;
+    memset(value, 0, sizeof(*value));
+    return fake_store_result;
+}
+void ble_store_config_init(void) {ble_hs_cfg.store_read_cb = fake_store_read;}
 static void event(int type){struct ble_gap_event e={.type=type};e.connect.conn_handle=fake_conn_handle;e.enc_change.conn_handle=fake_conn_handle;e.disconnect.conn.conn_handle=fake_conn_handle;e.passkey.conn_handle=fake_conn_handle;gap_event(&e,NULL);}
 static void subscribe(unsigned h,bool on){struct ble_gap_event e={.type=BLE_GAP_EVENT_SUBSCRIBE,.subscribe={.conn_handle=fake_conn_handle,.attr_handle=h,.cur_notify=on}};gap_event(&e,NULL);}
 static void report_handle(uint8_t id, uint8_t type, uint16_t handle) {
@@ -131,6 +139,70 @@ static void early_connection_events(void) {
     fake_bonds=0;fake_desc.peer_id_addr.val[0]=0;
     puts("Keypad BLE encryption and subscriptions before CONNECT: PASS");
 }
+static void pairing_recovery(void) {
+    event(BLE_GAP_EVENT_DISCONNECT);
+    fake_bonds = 0;
+    fake_desc.sec_state.encrypted = false;
+    kp_pairing_reset(&s_pairing); pairing_status();
+    assert(ble_hs_cfg.store_read_cb == read_bond);
+    union ble_store_key key = {.sec={.peer_addr={.val={1,2,3,4,5,6}}}};
+    union ble_store_value value;
+    fake_store_result = BLE_HS_ENOENT;
+    unsigned reads = fake_store_reads;
+    // Ordinary enumeration and peer-key probes are not evidence that a peer
+    // requested an old LTK. Storage errors are not missing-key diagnoses.
+    assert(read_bond(BLE_STORE_OBJ_TYPE_PEER_SEC, &key, &value) == BLE_HS_ENOENT);
+    key.sec.idx = 1; read_bond(BLE_STORE_OBJ_TYPE_OUR_SEC, &key, &value);
+    key.sec.idx = 0; key.sec.peer_addr = *BLE_ADDR_ANY;
+    read_bond(BLE_STORE_OBJ_TYPE_OUR_SEC, &key, &value);
+    key.sec.peer_addr.val[0] = 1;
+    fake_store_result = 6; assert(read_bond(BLE_STORE_OBJ_TYPE_OUR_SEC, &key, &value) == 6);
+    fake_store_result = 0; assert(read_bond(BLE_STORE_OBJ_TYPE_OUR_SEC, &key, &value) == 0);
+    assert(fake_store_reads == reads+5 && kp_ble_status().pairing_hint == KP_PAIRING_NONE);
+    // Missing requested keys are visible even before NimBLE delivers CONNECT.
+    fake_store_result = BLE_HS_ENOENT;
+    assert(read_bond(BLE_STORE_OBJ_TYPE_OUR_SEC, &key, &value) == BLE_HS_ENOENT);
+    assert(kp_ble_status().pairing_hint == KP_PAIRING_KEY_MISSING);
+    struct ble_gap_event failed = {.type=BLE_GAP_EVENT_CONNECT,
+        .connect={.conn_handle=fake_conn_handle,.status=19}};
+    gap_event(&failed, NULL); event(BLE_GAP_EVENT_DISCONNECT);
+    assert(kp_ble_status().pairing_hint == KP_PAIRING_KEY_MISSING);
+    event(BLE_GAP_EVENT_CONNECT);
+    assert(kp_ble_status().pairing_hint == KP_PAIRING_KEY_MISSING);
+    // New secure pairing clears the notice without waiting for HID discovery.
+    fake_desc.sec_state.encrypted = true;
+    fake_desc.sec_state.bonded = true; fake_desc.sec_state.key_size = 16;
+    event(BLE_GAP_EVENT_ENC_CHANGE);
+    assert(kp_ble_status().secure && kp_ble_status().pairing_hint == KP_PAIRING_NONE);
+    event(BLE_GAP_EVENT_DISCONNECT);
+    fake_desc.sec_state.encrypted = false;
+    struct ble_gap_event dropped = {.type=BLE_GAP_EVENT_DISCONNECT,
+        .disconnect={.reason=BLE_HS_HCI_ERR(BLE_ERR_REM_USER_CONN_TERM),
+            .conn={.conn_handle=fake_conn_handle,.peer_id_addr={.val={1,2,3,4,5,6}}}}};
+    // Timeouts, encrypted links and existing bonds never qualify as the
+    // repeated unsecured/no-local-bond fallback, nor does a single failure.
+    for (unsigned i = 0; i < 5; ++i) {
+        dropped.disconnect.reason = BLE_HS_HCI_ERR(8); gap_event(&dropped, NULL);
+    }
+    assert(kp_ble_status().pairing_hint == KP_PAIRING_NONE);
+    dropped.disconnect.reason = BLE_HS_HCI_ERR(BLE_ERR_REM_USER_CONN_TERM);
+    fake_bonds = 1;
+    for (unsigned i = 0; i < 5; ++i) gap_event(&dropped, NULL);
+    assert(kp_ble_status().pairing_hint == KP_PAIRING_NONE);
+    fake_bonds = 0; dropped.disconnect.conn.sec_state.encrypted = true;
+    for (unsigned i = 0; i < 5; ++i) gap_event(&dropped, NULL);
+    assert(kp_ble_status().pairing_hint == KP_PAIRING_NONE);
+    dropped.disconnect.conn.sec_state.encrypted = false;
+    for (unsigned i = 0; i < 4; ++i) {
+        fake_time_us += 100000; gap_event(&dropped, NULL);
+        assert(kp_ble_status().pairing_hint == (i < 3 ? KP_PAIRING_NONE : KP_PAIRING_RETRY_FAILED));
+    }
+    event(BLE_GAP_EVENT_CONNECT); event(BLE_GAP_EVENT_DISCONNECT);
+    assert(kp_ble_status().pairing_hint == KP_PAIRING_RETRY_FAILED);
+    assert(kp_ble_forget() == ESP_OK && kp_ble_status().pairing_hint == KP_PAIRING_NONE);
+    fake_store_result = 0;
+    puts("Keypad BLE missing requested keys and bounded reconnect diagnosis: PASS");
+}
 int main(void) {
     assert(kp_ble_init()==ESP_OK);synced();assert(fake_adv);
     assert(ble_hs_cfg.sm_io_cap==BLE_SM_IO_CAP_NO_IO && !ble_hs_cfg.sm_mitm);
@@ -204,5 +276,6 @@ int main(void) {
     event(BLE_GAP_EVENT_ENC_CHANGE);assert(!kp_ble_status().ready);
     fake_desc.sec_state.bonded=true;fake_desc.sec_state.key_size=7;
     event(BLE_GAP_EVENT_ENC_CHANGE);assert(!kp_ble_status().ready);
+    pairing_recovery();
     puts("Keypad BLE subscriptions, pairing, pause, allocation and timeout recovery: PASS");
 }

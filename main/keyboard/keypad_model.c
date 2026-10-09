@@ -139,20 +139,36 @@ bool kp_config_upgrade(kp_config_t *c) {
 }
 void kp_defaults(kp_config_t *c) {
     static const kp_action_t actions[KP_BINDINGS] = {
-        [0] = {.type = KP_KEYBOARD, .keys = {0x29}},
         [3] = {.type = KP_KEYBOARD, .modifiers = 0x04},
         [4] = {.type = KP_KEYBOARD, .keys = {0x2a}},
-        [5] = {.type = KP_KEYBOARD, .modifiers = 0x08, .keys = {0x04}},
-        [7] = {.type = KP_KEYBOARD, .keys = {0x51}},
         [8] = {.type = KP_KEYBOARD, .keys = {0x28}},
     };
+    static const char *const titles[KP_BINDINGS] = {
+        [3] = "可配置为语音输入", [4] = "删除", [8] = "回车",
+    };
+    static const kp_step_t undo[] = {
+        {.action = {.type = KP_KEYBOARD, .modifiers = 0x08, .keys = {0x1d}, .system = KP_TARGET_MACOS}},
+        {.action = {.type = KP_KEYBOARD, .modifiers = 0x01, .keys = {0x1d}, .system = KP_TARGET_WINDOWS}},
+    };
+    static const kp_step_t redo[] = {
+        {.action = {.type = KP_KEYBOARD, .modifiers = 0x0a, .keys = {0x1d}, .system = KP_TARGET_MACOS}},
+        {.action = {.type = KP_KEYBOARD, .modifiers = 0x01, .keys = {0x1c}, .system = KP_TARGET_WINDOWS}},
+    };
+    static const kp_step_t select_delete[] = {
+        {.action = {.type = KP_KEYBOARD, .modifiers = 0x08, .keys = {0x04}, .system = KP_TARGET_MACOS}, .delay_ms = KP_DELAY_MS},
+        {.action = {.type = KP_KEYBOARD, .modifiers = 0x01, .keys = {0x04}, .system = KP_TARGET_WINDOWS}, .delay_ms = KP_DELAY_MS},
+        {.action = {.type = KP_KEYBOARD, .keys = {0x2a}}},
+    };
     kp_config_empty(c);
-    (void)kp_profile_add(c, "默认");
+    (void)kp_profile_add(c, "coding模式");
     for (unsigned i = 0; i < KP_BINDINGS; ++i) {
         if (actions[i].type == KP_NONE) continue;
         kp_step_t step = {.action = actions[i]};
-        (void)kp_binding_set(c, 0, i, i == 8 ? "回车" : "", &step, 1);
+        (void)kp_binding_set(c, 0, i, titles[i], &step, 1);
     }
+    (void)kp_binding_set(c, 0, 1, "撤销", undo, sizeof(undo) / sizeof(undo[0]));
+    (void)kp_binding_set(c, 0, 2, "重做", redo, sizeof(redo) / sizeof(redo[0]));
+    (void)kp_binding_set(c, 0, 7, "全选并删除", select_delete, sizeof(select_delete) / sizeof(select_delete[0]));
 }
 void kp_report(const kp_action_t *a, uint8_t keyboard[8], uint8_t consumer[2]) {
     memset(keyboard, 0, 8);
@@ -248,10 +264,32 @@ void kp_cancel(kp_model_t *m) {
 }
 void kp_link_changed(kp_model_t *m, uint32_t now) {
     kp_feedback_t previous = m->feedback;
+    kp_key_t navigation[3];
+    memcpy(navigation, m->key, sizeof(navigation));
+    bool local = m->page != KP_CONSOLE, blocked = m->blocked;
     bool running = m->executing;
     bool show = m->page == KP_CONSOLE && previous.visible &&
                 (running || (previous.state == KP_FEEDBACK_FAILED && (int32_t)(now - previous.until) < 0));
     kp_cancel(m);
+    // Cancel computer input without restarting local navigation. In control
+    // mode, only the global OK hold survives; its keyboard tap is discarded.
+    m->blocked = blocked;
+    if (local) {
+        memcpy(m->key, navigation, sizeof(navigation));
+    } else {
+        for (unsigned i = 0; i < 2; ++i) {
+            if (m->down_mask & (1U << i)) {
+                m->key[i].down = true;
+                m->key[i].ignored = true;
+            }
+        }
+        if (!blocked && navigation[2].down && (m->down_mask & 4U)) {
+            m->key[2] = navigation[2];
+            m->key[2].ignored = true;
+            m->key[2].pending = false;
+            m->key[2].clicks = 0;
+        }
+    }
     if (show) {
         previous.state = KP_FEEDBACK_FAILED; previous.holding = false;
         if (running) previous.until = now + KP_FEEDBACK_MS;

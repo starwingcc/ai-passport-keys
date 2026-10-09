@@ -28,7 +28,17 @@
   }
   const sequenceLabel=b=>b.steps.length?b.steps.map(actionLabel).join(' → '):'无';
   const titleLabel=b=>b.title||(b.steps.length>1?'组合指令':sequenceLabel(b));
-  function defaults(){const bindings=Array.from({length:11},empty);[[0,0,41],[3,4,0],[4,0,42],[5,8,4],[7,0,81],[8,0,40]].forEach(([slot,mod,key])=>{bindings[slot].steps=[{type:1,modifiers:mod,keys:key?[key]:[],consumer:0,system:0,delay_ms:0}];});bindings[8].title='回车';return{version:6,active_profile:0,profiles:[{name:'默认',bindings}]};}
+  function defaults(){
+    const bindings=Array.from({length:11},empty);
+    const key=(modifiers,usage,system=0,delay_ms=0)=>({type:1,modifiers,keys:usage?[usage]:[],consumer:0,system,delay_ms});
+    bindings[1]={title:'撤销',steps:[key(8,29,2),key(1,29,1)]};
+    bindings[2]={title:'重做',steps:[key(10,29,2),key(1,28,1)]};
+    bindings[3]={title:'可配置为语音输入',steps:[key(4,0)]};
+    bindings[4]={title:'删除',steps:[key(0,42)]};
+    bindings[7]={title:'全选并删除',steps:[key(8,4,2,80),key(1,4,1,80),key(0,42)]};
+    bindings[8]={title:'回车',steps:[key(0,40)]};
+    return{version:6,active_profile:0,profiles:[{name:'coding模式',bindings}]};
+  }
   function capture(events){
     let modifiers=0;const pressed=new Set();
     for(const e of events){

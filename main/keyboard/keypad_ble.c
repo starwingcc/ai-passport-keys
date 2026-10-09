@@ -1,6 +1,7 @@
 #include "keypad_ble.h"
 #include "esp_hidd.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -30,6 +31,8 @@ static const uint8_t report_map[] = {
 };
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static kp_ble_status_t s_status;
+static kp_pairing_t s_pairing;
+static ble_store_read_fn *s_store_read;
 static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_input[2], s_boot, s_protocol_handle;
 static bool s_notify[2], s_boot_notify, s_encrypted, s_boot_mode;
@@ -56,7 +59,30 @@ kp_ble_status_t kp_ble_status(void) {
     portEXIT_CRITICAL(&s_mux);
     return value;
 }
+static void pairing_status(void) {
+    portENTER_CRITICAL(&s_mux);
+    if (s_status.pairing_hint != s_pairing.hint) ++s_status.generation;
+    s_status.pairing_hint = s_pairing.hint;
+    portEXIT_CRITICAL(&s_mux);
+}
+static int read_bond(int type, const union ble_store_key *key, union ble_store_value *value) {
+    int rc = s_store_read(type, key, value);
+    // In this HID application (no signed GATT writes), a peer-specific OUR_SEC
+    // lookup comes from IDF 5.5.3's ble_sm_retrieve_ltk: the peer is restoring
+    // encryption with a saved key. Ignore normal bond enumeration (ANY/idx).
+    // Called with the NimBLE mutex held: never call GAP or store APIs here.
+    if (type == BLE_STORE_OBJ_TYPE_OUR_SEC && rc == BLE_HS_ENOENT &&
+        key->sec.idx == 0 && ble_addr_cmp(&key->sec.peer_addr, BLE_ADDR_ANY)) {
+        if (s_pairing.hint != KP_PAIRING_KEY_MISSING)
+            ESP_LOGW("keypad_ble", "Peer requested a missing bond key; forget Passport Keys on the computer and pair again");
+        kp_pairing_missing_key(&s_pairing);
+        pairing_status();
+    }
+    return rc;
+}
 static void readiness(void) {
+    if (s_encrypted) kp_pairing_reset(&s_pairing);
+    pairing_status();
     portENTER_CRITICAL(&s_mux);
     bool old_ready = s_status.ready;
     s_status.secure = s_encrypted;
@@ -207,12 +233,21 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
         }
         readiness();
         break;
-    case BLE_GAP_EVENT_DISCONNECT:
+    case BLE_GAP_EVENT_DISCONNECT: {
         if (s_conn != BLE_HS_CONN_HANDLE_NONE && event->disconnect.conn.conn_handle != s_conn) break;
         ESP_LOGI("keypad_ble", "Disconnect reason=%d", event->disconnect.reason);
+        ble_addr_t peers[1];
+        int count = 0;
+        bool empty = !ble_store_util_bonded_peers(peers, &count, 1) && count == 0;
+        uint8_t peer[7] = {event->disconnect.conn.peer_id_addr.type};
+        memcpy(peer + 1, event->disconnect.conn.peer_id_addr.val, 6);
+        kp_pairing_disconnected(&s_pairing, (uint32_t)(esp_timer_get_time() / 1000), peer,
+            empty && !kp_ble_status().paused && !event->disconnect.conn.sec_state.encrypted &&
+            event->disconnect.reason == BLE_HS_HCI_ERR(BLE_ERR_REM_USER_CONN_TERM));
         clear_connection();
         advertise();
         break;
+    }
     case BLE_GAP_EVENT_ENC_CHANGE: {
         uint16_t handle = event->enc_change.conn_handle;
         int found = ble_gap_conn_find(handle, &desc);
@@ -310,6 +345,10 @@ static void job(struct ble_npl_event *event) {
     case JOB_FORGET:
         if (s_conn != BLE_HS_CONN_HANDLE_NONE) s_result = ESP_ERR_INVALID_STATE;
         else if (ble_store_clear()) s_result = ESP_FAIL;
+        else {
+            kp_pairing_reset(&s_pairing);
+            pairing_status();
+        }
         break;
     case JOB_RECOVER:
         if (s_conn != BLE_HS_CONN_HANDLE_NONE) ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
@@ -386,6 +425,9 @@ esp_err_t kp_ble_init(void) {
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_store_config_init();
+    s_store_read = ble_hs_cfg.store_read_cb;
+    if (!s_store_read) return ESP_ERR_INVALID_STATE;
+    ble_hs_cfg.store_read_cb = read_bond;
     ble_svc_gap_device_name_set("Passport Keys");
     ble_npl_event_init(&s_job, job, NULL);
     nimble_port_freertos_init(host_task);

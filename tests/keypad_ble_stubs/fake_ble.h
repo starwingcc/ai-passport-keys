@@ -43,6 +43,10 @@ typedef struct {ble_uuid_t u;} ble_uuid16_t;
 #define BLE_HS_EALREADY 9
 #define BLE_HS_EBUSY 15
 #define BLE_HS_ENOTCONN 7
+#define BLE_HS_ENOENT 5
+#define BLE_HS_HCI_ERR(x) (0x200 + (x))
+#define BLE_STORE_OBJ_TYPE_OUR_SEC 1
+#define BLE_STORE_OBJ_TYPE_PEER_SEC 2
 #define BLE_GATT_CHR_F_NOTIFY 1
 #define BLE_GATT_REGISTER_OP_CHR 1
 #define BLE_GATT_REGISTER_OP_DSC 2
@@ -52,17 +56,23 @@ typedef struct {ble_uuid_t u;} ble_uuid16_t;
 #define BLE_SM_PAIR_KEY_DIST_ID 2
 #define BLE_GAP_REPEAT_PAIRING_IGNORE 0
 enum {BLE_GAP_EVENT_CONNECT,BLE_GAP_EVENT_DISCONNECT,BLE_GAP_EVENT_ENC_CHANGE,BLE_GAP_EVENT_SUBSCRIBE,BLE_GAP_EVENT_PASSKEY_ACTION,BLE_GAP_EVENT_REPEAT_PAIRING,BLE_GAP_EVENT_ADV_COMPLETE};
-typedef struct {uint8_t val[6];} ble_addr_t;
+typedef struct {uint8_t type,val[6];} ble_addr_t;
+#define BLE_ADDR_ANY (&(ble_addr_t){0,{0}})
+union ble_store_key {struct {ble_addr_t peer_addr;uint8_t idx;} sec;};
+union ble_store_value {uint8_t bytes[64];};
+typedef int ble_store_read_fn(int, const union ble_store_key *, union ble_store_value *);
 struct ble_gap_conn_desc {ble_addr_t peer_id_addr;struct {bool encrypted,authenticated,bonded;uint8_t key_size;} sec_state;};
 struct ble_hs_adv_fields {uint8_t flags;uint16_t appearance;bool appearance_is_present;ble_uuid16_t *uuids16;int num_uuids16;bool uuids16_is_complete;uint8_t *name;int name_len;bool name_is_complete;};
 struct ble_gap_adv_params {int conn_mode,disc_mode,itvl_min,itvl_max;};
 struct fake_chr {const ble_uuid_t *uuid;int flags;};
 struct fake_dsc {const ble_uuid_t *uuid;void *arg;};
 struct ble_gatt_register_ctxt {int op;struct {struct fake_chr *chr_def;uint16_t val_handle;} chr;struct {struct fake_dsc *dsc_def;uint16_t handle;} dsc;};
-struct ble_gap_event {int type;struct {int status;uint16_t conn_handle;} connect,enc_change;struct {int reason;struct {uint16_t conn_handle;} conn;} disconnect;struct {uint16_t conn_handle,attr_handle;bool cur_notify;} subscribe;struct {uint16_t conn_handle;} passkey;};
+struct ble_gap_event {int type;struct {int status;uint16_t conn_handle;} connect,enc_change;struct {int reason;struct {uint16_t conn_handle;ble_addr_t peer_id_addr;struct {bool encrypted;} sec_state;} conn;} disconnect;struct {uint16_t conn_handle,attr_handle;bool cur_notify;} subscribe;struct {uint16_t conn_handle;} passkey;};
 struct ble_npl_event {void (*fn)(struct ble_npl_event*);};
 struct os_mbuf {uint8_t data[8];size_t len;};
-struct {void (*reset_cb)(int);void (*sync_cb)(void);void (*gatts_register_cb)(struct ble_gatt_register_ctxt*,void*);int sm_io_cap,sm_bonding,sm_mitm,sm_sc,sm_our_key_dist,sm_their_key_dist;} ble_hs_cfg;
+struct {void (*reset_cb)(int);void (*sync_cb)(void);void (*gatts_register_cb)(struct ble_gatt_register_ctxt*,void*);ble_store_read_fn *store_read_cb;int sm_io_cap,sm_bonding,sm_mitm,sm_sc,sm_our_key_dist,sm_their_key_dist;} ble_hs_cfg;
+static int64_t fake_time_us;
+static inline int64_t esp_timer_get_time(void){return fake_time_us;}
 static int fake_sem, fake_adv, fake_notify_count, fake_terminate_count;
 static bool fake_defer, fake_fail_alloc, fake_fail_clear;
 static uint8_t fake_protocol=1;

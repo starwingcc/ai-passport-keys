@@ -22,6 +22,7 @@ static void acknowledged(runtime_t *rt,uint32_t now,unsigned modifiers,unsigned 
 }
 static void integration(void){
     kp_config_t c;kp_defaults(&c);assert(kp_binding_set(&c,0,0,"",NULL,0));
+    assert(kp_binding_set(&c,0,1,"",NULL,0));assert(kp_binding_set(&c,0,2,"",NULL,0));
     runtime_t rt={0};kp_init(&rt.model,&c,model_effect,&rt);
     edge(&rt,0,true,0);assert(rt.starts==1&&rt.model.executing);acknowledged(&rt,0,4,0);
     edge(&rt,1,true,10);edge(&rt,1,false,30);assert(rt.starts==1);
@@ -34,13 +35,57 @@ static void integration(void){
     // Releasing a completed multi-step hold must not release another physical key's current hold.
     kp_step_t steps[2]={{{.type=KP_KEYBOARD,.keys={4}},0},{{.type=KP_KEYBOARD,.keys={5}},0}};
     assert(kp_binding_set(&c,0,3,"",steps,2));assert(kp_binding_set(&c,0,4,"",NULL,0));assert(kp_binding_set(&c,0,5,"",NULL,0));
+    kp_step_t down={.action={.type=KP_KEYBOARD,.keys={0x51}}};assert(kp_binding_set(&c,0,7,"",&down,1));
     memset(&rt,0,sizeof(rt));kp_init(&rt.model,&c,model_effect,&rt);
     edge(&rt,0,true,0);acknowledged(&rt,0,0,4);acknowledged(&rt,40,0,0);acknowledged(&rt,40,0,5);acknowledged(&rt,80,0,0);
     assert(rt.starts==1&&!rt.runner.running);kp_tick(&rt.model,500);assert(rt.starts==1);
     edge(&rt,1,true,600);acknowledged(&rt,600,0,0x51);edge(&rt,0,false,650);assert(rt.releases==0&&rt.runner.phase==KP_RUN_HOLD);
     edge(&rt,1,false,700);acknowledged(&rt,700,0,0);assert(rt.releases==1&&!rt.runner.running);
 }
+static void coding_defaults(void) {
+    kp_config_t c;kp_defaults(&c);assert(kp_config_valid(&c));
+    assert(c.profile_count==1&&c.active_profile==0&&!strcmp(kp_text(&c,c.profiles[0].name),"coding模式"));
+    const char *titles[KP_BINDINGS]={"无","撤销","重做","可配置为语音输入","删除","无","无","全选并删除","回车","无","无"};
+    for(unsigned system=0;system<KP_SYSTEM_COUNT;system++)for(unsigned slot=0;slot<KP_BINDINGS;slot++) {
+        runtime_t rt={0};kp_init(&rt.model,&c,model_effect,&rt);rt.model.system=system;
+        unsigned key=slot/4,gesture=slot%4,mod=system==KP_SYSTEM_MACOS?8:1;
+        const unsigned expected[][2]={
+            {0,0},{mod,29},{system==KP_SYSTEM_MACOS?10:1,system==KP_SYSTEM_MACOS?29:28},
+            {4,0},{0,42},{0,0},{0,0},{mod,4},{0,40},{0,0},{0,0}
+        };
+        unsigned total=slot==7?2:expected[slot][0]||expected[slot][1]?1:0;
+        assert(kp_binding_count(&c,kp_binding(&c,slot),system)==total);
+        char title[100];kp_binding_title(&c,kp_binding(&c,slot),system,title,sizeof(title));assert(!strcmp(title,titles[slot]));
+        // Unbound double/triple slots keep the immediate single-click path.
+        if(!total&&slot!=0)continue;
+        if(gesture==3) {edge(&rt,key,true,0);rt.now=KP_ACTION_HOLD_MS;kp_tick(&rt.model,rt.now);}
+        else {
+            for(unsigned n=0;n<=gesture;n++){edge(&rt,key,true,n*50);edge(&rt,key,false,n*50+20);}
+            rt.now=400;kp_tick(&rt.model,rt.now);
+        }
+        assert(rt.starts==(total?1U:0U));
+        unsigned reports=0;
+        for(unsigned now=400;now<=1000;now++) {
+            if(gesture==3&&now==500)edge(&rt,key,false,now);
+            kp_action_t action;
+            if(!kp_runner_request(&rt.runner,now,&action))continue;
+            uint8_t keyboard[8],consumer[2],wanted[8]={0};kp_report(&action,keyboard,consumer);
+            if(!(reports%2)) {
+                wanted[0]=reports?0:expected[slot][0];wanted[2]=reports?42:expected[slot][1];
+                if(slot==7&&reports==2)assert(now>=400+KP_PULSE_MS+KP_DELAY_MS);
+            }
+            assert(!memcmp(keyboard,wanted,sizeof(wanted))&&!consumer[0]&&!consumer[1]);
+            ++reports;kp_runner_result(&rt.runner,true,now);
+            if(slot==3&&reports==1)assert(rt.runner.running&&rt.runner.hold);
+            if(!rt.runner.running)kp_set_busy(&rt.model,false);
+        }
+        assert(reports==total*2&&!rt.runner.running&&!rt.runner.failed&&rt.runner.completed==total);
+        assert(rt.releases==(gesture==3&&total?1U:0U));
+    }
+    puts("Coding defaults: gestures, titles and HID reports on macOS/Windows: PASS");
+}
 int main(void) {
+    coding_defaults();
     kp_config_t c;kp_defaults(&c);kp_runner_t r={0};
     kp_step_t steps[2]={{{.type=KP_KEYBOARD,.modifiers=8,.keys={4}},100},{{.type=KP_KEYBOARD,.keys={0x4c}},0}};
     assert(kp_binding_set(&c,0,4,"全选后删除",steps,2));

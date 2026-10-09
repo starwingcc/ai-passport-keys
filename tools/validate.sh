@@ -51,8 +51,11 @@ run_static_checks() {
         tests/test_keypad_store.c main/keyboard/keypad_model.c main/keyboard/keypad_screen.c main/keyboard/keypad_text.c main/keyboard/keypad_home.c main/keyboard/keypad_wifi.c main/keyboard/keypad_wifi_setup.c -o "${test_dir}/test_keypad_store"
     "${test_dir}/test_keypad_store"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/keypad_ble_stubs -Imain/keyboard \
-        tests/test_keypad_ble.c main/keyboard/keypad_model.c main/keyboard/keypad_screen.c main/keyboard/keypad_text.c -o "${test_dir}/test_keypad_ble"
+        tests/test_keypad_ble.c main/keyboard/keypad_model.c main/keyboard/keypad_screen.c main/keyboard/keypad_text.c main/keyboard/keypad_pairing.c -o "${test_dir}/test_keypad_ble"
     "${test_dir}/test_keypad_ble"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain/keyboard \
+        tests/test_keypad_pairing.c main/keyboard/keypad_pairing.c -o "${test_dir}/test_keypad_pairing"
+    "${test_dir}/test_keypad_pairing"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/keypad_web_stubs -Itests/keypad_store_stubs -Imain/keyboard \
         tests/test_keypad_http.c main/keyboard/keypad_config.c main/keyboard/keypad_model.c main/keyboard/keypad_screen.c main/keyboard/keypad_text.c main/keyboard/keypad_home.c main/keyboard/keypad_wifi.c main/keyboard/keypad_wifi_setup.c \
         -o "${test_dir}/test_keypad_http"

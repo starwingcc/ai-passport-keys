@@ -159,7 +159,7 @@ async function main(){
   await page.locator('#import-cancel').click();assert.equal(await page.locator('#profile option').count(),2);
   await upload(exported);await page.locator('#import-apply').click();
   assert.equal(await page.locator('#profile option').count(),3);assert.equal(posts,0);assert.deepEqual(device,original);
-  assert.equal(await page.locator('#profile-name').inputValue(),'浏览1');assert.equal(await page.locator('#current-profile').textContent(),'当前：默认');
+  assert.equal(await page.locator('#profile-name').inputValue(),'浏览1');assert.equal(await page.locator('#current-profile').textContent(),'当前：coding模式');
   const replacement=JSON.parse(exported);replacement.profile.bindings[10]={title:'测试三击',steps:[{type:1,modifiers:8,keys:[6],consumer:0,delay_ms:0}]};
   await upload(JSON.stringify(replacement));await page.locator('#import-mode').selectOption('replace');
   assert(await page.locator('#import-name').isDisabled());await page.locator('#import-apply').click();
@@ -178,10 +178,12 @@ async function main(){
   assert.equal(await page.locator('#profile option').count(),1);assert.equal(posts,2);assert.deepEqual(device,beforeFull);
   // Manual selection retains every left/right modifier and all ordinary usages.
   await page.locator('.tab[data-key="0"]').click();await page.locator('.event[data-event="0"]').click();
+  assert.equal(await page.locator('#steps .step').count(),0);await page.locator('#add-step').click();
   await page.locator('.manual').first().click();const manual=page.locator('#key-editor');
   assert.deepEqual(await manual.locator('.modifier-column').nth(0).locator('label').allTextContents(),['左 Ctrl','左 Shift','左 Option/Alt','左 Command']);
   assert.deepEqual(await manual.locator('.modifier-column').nth(1).locator('label').allTextContents(),['右 Ctrl','右 Shift','右 Option/Alt','右 Command']);
   assert.equal(await manual.locator('select option').count(),K.keys.length);
+  await manual.locator('select').selectOption('41');
   await manual.getByLabel('左 Command',{exact:true}).check();await manual.getByLabel('右 Command',{exact:true}).check();
   await manual.getByLabel('左 Shift',{exact:true}).check();
   assert.equal(await manual.locator('.chord-preview').textContent(),'Shift+Command+RCommand+Esc');

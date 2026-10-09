@@ -169,13 +169,14 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     previous_ble = ble; previous_battery = battery;
     previous_home = *home; previous_minute = epoch / 60;
     bool home_page = m->page == KP_MENU;
+    bool pairing_notice = ble.pairing_hint != KP_PAIRING_NONE && !ble.secure && !ble.paused;
     kp_home_ui_set(home_page, home, ble, battery, m->selected, epoch);
     lv_obj_invalidate(lv_screen_active());
     snprintf(previous_message, sizeof(previous_message), "%s", message);
     snprintf(previous_ssid, sizeof(previous_ssid), "%s", ssid);
     snprintf(previous_password, sizeof(previous_password), "%s", password);
     const char *titles[] = {"开始控制", "Passport", "设置", "通过本机热点", "清除配对", "情景列表", "屏幕", "屏幕", "配对系统", "文件流转", "Passport配置"};
-    bool command = m->page == KP_CONSOLE && m->feedback.visible;
+    bool command = m->page == KP_CONSOLE && m->feedback.visible && !pairing_notice;
     hidden(s_title, false);
     lv_obj_set_pos(s_title, 18, 20); lv_obj_set_width(s_title, 151);
     lv_obj_set_pos(s_battery, 178, 24); lv_obj_set_width(s_battery, 45);
@@ -185,7 +186,8 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     if (m->page == KP_HOTSPOT && m->lan.wifi) lv_label_set_text(s_title, "通过 WiFi");
     if (battery >= 0) lv_label_set_text_fmt(s_battery, "%d%%", battery);
     else lv_label_set_text(s_battery, "--");
-    lv_label_set_text(s_state, ble.paused ? "蓝牙已暂停" : ble.failed ? "蓝牙异常" : ble.ready ? "蓝牙已连接" :
+    lv_label_set_text(s_state, ble.paused ? "蓝牙已暂停" : pairing_notice ? kp_pairing_title(ble.pairing_hint) :
+                      ble.failed ? "蓝牙异常" : ble.ready ? "蓝牙已连接" :
                       ble.connected ? (!ble.handles_ready ? "键盘服务未就绪" :
                           !ble.secure ? "等待配对完成" : "等待电脑启用键盘") :
                       "等待电脑连接");
@@ -211,12 +213,14 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         hidden(s_panels[i], true);
         // Hidden macro titles can otherwise retain almost 1 KiB while a large
         // command glyph needs its decode buffer. Refill on returning to control.
-        if (m->page != KP_CONSOLE || command)
+        if (m->page != KP_CONSOLE || command || pairing_notice)
             for (int j = 0; j < 4; ++j) lv_label_set_text(s_lines[i][j], "");
     }
     hidden(s_body, true);
     for (int i = 0; i < 4; ++i) {
         hidden(s_profile_rows[i], true); lv_label_set_text(s_profile_rows[i], "");
+        lv_label_set_long_mode(s_profile_rows[i], LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_line_space(s_profile_rows[i], 0, 0);
         hidden(s_screen_values[i], m->page != KP_CONSOLE || command); lv_label_set_text(s_screen_values[i], "");
     }
     hidden(s_screen_fill, true);
@@ -273,13 +277,14 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         const lv_font_t *font = size.x <= 122 ? &passport_font_20_menu : &passport_font_16;
         lv_obj_set_pos(name, 98, 79); lv_obj_set_size(name, 122, font->line_height);
         lv_obj_set_style_text_font(name, font, 0); lv_obj_set_style_text_color(name, lv_color_hex(INK), 0);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
         lv_label_set_text(name, home->name);
         lv_obj_set_pos(badge, 98, 109); lv_obj_set_size(badge, 122, passport_font_16.line_height);
         lv_obj_set_style_text_font(badge, &passport_font_16, 0); lv_obj_set_style_text_color(badge, lv_color_hex(0xa3b5a5), 0);
         lv_label_set_text(badge, home->badge);
         lv_obj_set_pos(s_state, 30, 233); lv_obj_set_size(s_state, 78, passport_font_16.line_height);
         lv_obj_set_style_text_font(s_state, &passport_font_16, 0); lv_obj_set_style_text_color(s_state, lv_color_hex(INK), 0);
-        lv_label_set_text(s_state, ble.paused ? "已暂停" : ble.failed ? "蓝牙异常" : ble.ready ? "已连接" :
+        lv_label_set_text(s_state, ble.paused ? "已暂停" : pairing_notice ? "重新配对" : ble.failed ? "蓝牙异常" : ble.ready ? "已连接" :
             ble.connected ? (!ble.handles_ready ? "服务未就绪" : !ble.secure ? "等待配对" : "等待启用") : "等待连接");
         hidden(s_message, false); lv_obj_set_pos(s_message, 20, 257); lv_obj_set_size(s_message, 88, passport_font_16.line_height);
         lv_obj_set_style_text_font(s_message, &passport_font_16, 0);
@@ -287,6 +292,14 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         lv_obj_set_pos(s_footer, 20, 277); lv_obj_set_size(s_footer, 88, passport_font_16.line_height);
         lv_obj_set_style_text_font(s_footer, &passport_font_16, 0); lv_obj_set_style_text_color(s_footer, lv_color_hex(INK), 0);
         lv_label_set_text(s_footer, kp_text(&m->config, m->config.profiles[m->config.active_profile].name));
+        if (pairing_notice) {
+            hidden(user, true); hidden(badge, true);
+            lv_obj_set_pos(name, 20, 83); lv_obj_set_size(name, 200, 130);
+            lv_label_set_long_mode(name, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_font(name, &passport_font_16, 0);
+            lv_obj_set_style_text_line_space(name, 2, 0);
+            lv_label_set_text(name, kp_pairing_instructions(ble.pairing_hint));
+        }
         const char *menu[] = {"开始控制", "情景列表", "设置"};
         lv_obj_t *rows[] = {s_profile_rows[2], s_profile_rows[3], s_body};
         for (unsigned i = 0; i < 3; ++i) {
@@ -442,13 +455,17 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     } else if (m->page == KP_CONSOLE) {
         hidden(s_title, true);
         lv_obj_set_pos(s_state, 18, 20); lv_obj_set_width(s_state, 151);
-        if (ble.ready && !ble.paused && !ble.failed) lv_label_set_text_fmt(s_state, "%s · 已连接",
+        if (!pairing_notice && ble.ready && !ble.paused && !ble.failed) lv_label_set_text_fmt(s_state, "%s · 已连接",
             kp_text(&m->config, m->config.profiles[m->config.active_profile].name));
         lv_obj_set_pos(s_footer, 18, 296);
         lv_obj_set_style_text_align(s_footer, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(s_footer, "长按 OK 返回");
         const char *keys[] = {"上", "下", "OK"}; const char *gestures[] = {"单", "双", "三", "长"};
-        for (int i = 0; i < 3; ++i) {
+        if (pairing_notice) {
+            hidden(s_body, false); lv_obj_set_pos(s_body, 20, 83); lv_obj_set_size(s_body, 200, 160);
+            lv_label_set_text(s_body, kp_pairing_instructions(ble.pairing_hint));
+        }
+        for (int i = 0; i < 3 && !pairing_notice; ++i) {
             hidden(s_panels[i], false); lv_label_set_text(s_keys[i], keys[i]);
             for (int j = 0; j < 4; ++j) {
                 char action[128], escaped[256], line[288];

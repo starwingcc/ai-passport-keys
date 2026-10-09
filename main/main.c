@@ -45,7 +45,8 @@ static void effect(void *user, kp_effect_t event, const kp_action_t *action) {
         (void)action;
         kp_ble_status_t status = kp_ble_status();
         if (!status.ready) {
-            message(!status.connected ? "尚未连接，指令已忽略" :
+            message(status.pairing_hint != KP_PAIRING_NONE ? kp_pairing_title(status.pairing_hint) :
+                    !status.connected ? "尚未连接，指令已忽略" :
                     !status.handles_ready ? "键盘服务未就绪" :
                     !status.secure ? "等待配对完成" : "等待电脑启用键盘");
             break;
@@ -105,8 +106,8 @@ static void on_key(bsp_btn_t key, bsp_btn_ev_t ev, void *user) {
     if (xQueueSend(s_queue, &input, 0) != pdTRUE) atomic_store(&s_overflow, true);
 }
 static void sync_physical_input(void) {
-    // Drop all queued events on mode/link transitions. Synchronize the physical
-    // state as well, including a release that could have been lost on overflow.
+    // Drop queued events for a mode change or input recovery. Synchronize the
+    // physical state, including a release that could have been lost on overflow.
     xQueueReset(s_queue);
     unsigned physical = atomic_load(&s_physical);
     if (physical != s_model.screen.down_mask) s_model.screen.last_activity = now_ms();
@@ -117,6 +118,24 @@ static void sync_physical_input(void) {
 static void resync_input(void) {
     sync_physical_input();
     kp_cancel(&s_model);
+}
+static void sync_link_input(uint32_t now) {
+    // Keep queued local navigation, including OK press/release edges. Only
+    // discard computer shortcuts that arrived before the connection changed.
+    input_t input;
+    while (xQueueReceive(s_queue, &input, 0) == pdTRUE) {
+        if ((uint32_t)(now_ms() - input.at) > 250) { resync_input(); break; }
+        if (s_model.page != KP_CONSOLE || input.key == 2)
+            kp_input(&s_model, input.key, input.down, input.at);
+    }
+    if (s_model.page == KP_CONSOLE) {
+        unsigned physical = atomic_load(&s_physical) & 3U;
+        if (physical != (s_model.screen.down_mask & 3U)) s_model.screen.last_activity = now;
+        s_model.down_mask = (s_model.down_mask & 4U) | physical;
+        s_model.screen.down_mask = (s_model.screen.down_mask & 4U) | physical;
+        if (!s_model.screen.down_mask) s_model.screen.waking = false;
+    }
+    kp_link_changed(&s_model, now);
 }
 static void memory_log(const char *phase) {
     ESP_LOGI("keypad", "%s free=%u largest=%u min=%u stack=%u", phase,
@@ -159,7 +178,7 @@ void app_main(void) {
         kp_ble_status_t ble = kp_ble_status();
         if (ble.generation != generation) {
             bool interrupted = s_runner.running;
-            generation = ble.generation; sync_physical_input(); kp_link_changed(&s_model, now);
+            generation = ble.generation; sync_link_input(now);
             if (interrupted) message("连接状态变化，指令已停止");
         }
         if (atomic_exchange(&s_overflow, false)) { resync_input(); message("输入已恢复，请重新按键"); }

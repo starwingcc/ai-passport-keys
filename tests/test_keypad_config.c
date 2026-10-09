@@ -26,7 +26,7 @@ int main(int argc,char **argv){
     memcpy(&word,&descriptor,sizeof(word));assert(word==(5735U|(2868U<<13)|(64U<<25)));
     // Validate legacy binary migration independently from the JSON conversion.
     for(unsigned logical=0;logical<4;logical++)for(unsigned modifiers=0;modifiers<256;modifiers++){
-        kp_config_t old;kp_defaults(&old);
+        kp_config_t old;kp_config_empty(&old);assert(kp_profile_add(&old,"Legacy"));
         kp_step_t legacy_step={.action={.type=KP_KEYBOARD,.modifiers=modifiers,.keys={4,5}}};
         assert(kp_binding_set(&old,0,0,"",&legacy_step,1));
         unsigned offset=kp_binding(&old,0)->steps*2U;old.version=5;
@@ -36,12 +36,16 @@ int main(int argc,char **argv){
         assert(legacy_step.action.modifiers==(modifiers|(logical&1?8:0)|(logical&2?128:0)));
         assert(!legacy_step.action.consumer&&!legacy_step.action.system&&legacy_step.action.keys[0]==4&&legacy_step.action.keys[1]==5);
     }
-    kp_config_t broken;kp_defaults(&broken);broken.version=5;
+    kp_config_t broken;kp_config_empty(&broken);assert(kp_profile_add(&broken,"Legacy"));
+    kp_step_t invalid_legacy={.action={.type=KP_KEYBOARD,.keys={41}}};
+    assert(kp_binding_set(&broken,0,0,"",&invalid_legacy,1));broken.version=5;
     broken.data[kp_binding(&broken,0)->steps*2U+8]=4;assert(!kp_config_upgrade(&broken));
     kp_config_t c,decoded;kp_defaults(&c);assert(kp_config_encode(&c,write_json,NULL));
     assert(kp_config_decode_string(encoded,&decoded));
     assert(decoded.profile_count==1&&decoded.active_profile==0&&kp_binding(&decoded,8)->count==1);
     reader_t reader={encoded,0};assert(kp_config_decode(one_byte,&reader,&decoded));
+    // Parser fault injection uses a single common action, not the initial empty UP click.
+    assert(kp_binding_set(&c,0,0,"",&invalid_legacy,1));size=0;assert(kp_config_encode(&c,write_json,NULL));
     cJSON *root=cJSON_Parse(encoded);assert(root);
     cJSON *profiles=cJSON_GetObjectItem(root,"profiles"),*profile=cJSON_GetArrayItem(profiles,0);
     cJSON *bindings=cJSON_GetObjectItem(profile,"bindings"),*binding=cJSON_GetArrayItem(bindings,0);

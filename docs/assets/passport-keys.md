@@ -23,9 +23,17 @@ returns or cancels the current action. Enter Start control to send keys.
 
 | Button | Single click | Double click | Triple click | Hold |
 | --- | --- | --- | --- | --- |
-| UP | Esc | None | None | Hold left Option/Alt |
-| DOWN | Backspace | Left Command+A | None | Hold Down arrow |
+| UP | None | Undo | Redo | Hold left Option/Alt, titled “Can be configured for voice input” |
+| DOWN | Backspace | None | None | Select all and delete |
 | OK | Enter | None | None | Return / cancel |
+
+The initial scenario is **coding mode** (displayed as `coding` followed by the
+Chinese word for mode). These defaults apply on first initialization and after
+restoring defaults; updates retain saved scenarios. Select the matching
+**Pairing system**: macOS uses Command+Z, Shift+Command+Z and Command+A;
+Windows uses Control+Z, Control+Y and Control+A. Select-all is followed by
+Backspace once. The voice-input title labels an Alt hold; configure the host's
+voice-input shortcut as needed.
 
 Settings are ordered **Screen → Passport configuration → File transfer → Pairing system →
 Clear Bluetooth pairing**.
@@ -44,6 +52,12 @@ Clear Bluetooth pairing**.
 - **Clear Bluetooth pairing**: when changing computers, clear pairing and forget
   Passport Keys on the old computer. Shortcuts, macros, scenarios and the selected
   system survive clearing pairing and restart.
+- **Pairing recovery**: if the computer requests a key missing on the device,
+  the home and control screens ask you to forget/delete Passport Keys in the
+  computer's Bluetooth settings and pair again. Repeated unsecured failures
+  with no saved local pairing show a tentative old-pairing notice. The notice
+  stays stable during retries and clears when a secure connection succeeds;
+  local navigation remains available.
 
 ## Web configuration
 
@@ -134,3 +148,5 @@ This application-only update preserves NVS when the installed partition layout i
 compatible. For first installation or an intentional complete refresh, replace
 the final line with `0x0 build/FoloToy-AI-Passport-full.bin`; **this resets saved
 settings and pairing**. See the [flashing/data policy](../development/engineering/firmware-layout.md#flashing-and-stored-data).
+After a complete refresh, forget the old Passport Keys pairing on your computer
+and pair again so both devices use the new pairing keys.
