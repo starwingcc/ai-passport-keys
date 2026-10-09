@@ -41,6 +41,11 @@ typedef struct {ble_uuid_t u;} ble_uuid16_t;
 #define BLE_GAP_DISC_MODE_GEN 1
 #define BLE_HS_FOREVER -1
 #define BLE_HS_EALREADY 9
+#define BLE_HS_ENOMEM 6
+#define BLE_HCI_ADV_FILT_CONN 2
+#define BLE_HCI_ADV_FILT_NONE 0
+#define BLE_STORE_EVENT_FULL 1
+#define BLE_STORE_EVENT_OVERFLOW 2
 #define BLE_HS_EBUSY 15
 #define BLE_HS_ENOTCONN 7
 #define BLE_HS_ENOENT 5
@@ -63,14 +68,22 @@ union ble_store_value {uint8_t bytes[64];};
 typedef int ble_store_read_fn(int, const union ble_store_key *, union ble_store_value *);
 struct ble_gap_conn_desc {ble_addr_t peer_id_addr;struct {bool encrypted,authenticated,bonded;uint8_t key_size;} sec_state;};
 struct ble_hs_adv_fields {uint8_t flags;uint16_t appearance;bool appearance_is_present;ble_uuid16_t *uuids16;int num_uuids16;bool uuids16_is_complete;uint8_t *name;int name_len;bool name_is_complete;};
-struct ble_gap_adv_params {int conn_mode,disc_mode,itvl_min,itvl_max;};
+struct ble_gap_adv_params {int conn_mode,disc_mode,itvl_min,itvl_max,filter_policy;};
 struct fake_chr {const ble_uuid_t *uuid;int flags;};
 struct fake_dsc {const ble_uuid_t *uuid;void *arg;};
 struct ble_gatt_register_ctxt {int op;struct {struct fake_chr *chr_def;uint16_t val_handle;} chr;struct {struct fake_dsc *dsc_def;uint16_t handle;} dsc;};
 struct ble_gap_event {int type;struct {int status;uint16_t conn_handle;} connect,enc_change;struct {int reason;struct {uint16_t conn_handle;ble_addr_t peer_id_addr;struct {bool encrypted;} sec_state;} conn;} disconnect;struct {uint16_t conn_handle,attr_handle;bool cur_notify;} subscribe;struct {uint16_t conn_handle;} passkey;};
 struct ble_npl_event {void (*fn)(struct ble_npl_event*);};
-struct os_mbuf {uint8_t data[8];size_t len;};
-struct {void (*reset_cb)(int);void (*sync_cb)(void);void (*gatts_register_cb)(struct ble_gatt_register_ctxt*,void*);ble_store_read_fn *store_read_cb;int sm_io_cap,sm_bonding,sm_mitm,sm_sc,sm_our_key_dist,sm_their_key_dist;} ble_hs_cfg;
+struct os_mbuf {uint8_t data[64];size_t len;};
+struct ble_gatt_error {uint16_t status;};
+struct ble_gatt_attr {struct os_mbuf *om;};
+struct ble_store_status_event {int event_code;};
+#define OS_MBUF_PKTLEN(b) ((b)->len)
+static int (*fake_name_callback)(uint16_t,const struct ble_gatt_error*,struct ble_gatt_attr*,void*);
+static void *fake_name_arg;
+static unsigned fake_name_reads;
+static inline int ble_gattc_read_by_uuid(uint16_t h,uint16_t start,uint16_t end,const ble_uuid_t*u,int(*cb)(uint16_t,const struct ble_gatt_error*,struct ble_gatt_attr*,void*),void *arg){(void)h;(void)start;(void)end;assert(u->value==0x2a00);fake_name_callback=cb;fake_name_arg=arg;fake_name_reads++;return 0;}
+struct {int (*store_status_cb)(struct ble_store_status_event*,void*);void (*reset_cb)(int);void (*sync_cb)(void);void (*gatts_register_cb)(struct ble_gatt_register_ctxt*,void*);ble_store_read_fn *store_read_cb;int sm_io_cap,sm_bonding,sm_mitm,sm_sc,sm_our_key_dist,sm_their_key_dist;} ble_hs_cfg;
 static int64_t fake_time_us;
 static inline int64_t esp_timer_get_time(void){return fake_time_us;}
 static int fake_sem, fake_adv, fake_notify_count, fake_terminate_count;
@@ -87,7 +100,9 @@ static int fake_bonds;
 static int fake_connections, fake_adv_error;
 static uint16_t fake_conn_handle=1, fake_last_terminate_handle;
 static unsigned fake_security_count;
-static ble_addr_t fake_peer;
+static ble_addr_t fake_peer, fake_second_peer, fake_whitelist;
+static int fake_filter, fake_whitelist_count, fake_whitelist_error;
+static inline int ble_gap_wl_set(const ble_addr_t*p,uint8_t n){if(fake_whitelist_error)return fake_whitelist_error;fake_whitelist_count=n;if(n)fake_whitelist=*p;return 0;}
 static inline SemaphoreHandle_t xSemaphoreCreateBinary(void){fake_sem=0;return &fake_sem;}
 static inline int xSemaphoreTake(SemaphoreHandle_t s,int t){(void)t;if(!*s)return 0;*s=0;return 1;}
 static inline void xSemaphoreGive(SemaphoreHandle_t s){*s=1;}
@@ -96,13 +111,13 @@ static inline int ble_uuid_u16(const ble_uuid_t *u){return u->value;}
 static inline bool ble_gap_adv_active(void){return fake_adv;}
 static inline int ble_gap_adv_set_fields(const struct ble_hs_adv_fields *f){(void)f;return 0;}
 static inline void ble_gap_conn_foreach_handle(int(*cb)(uint16_t,void*),void *arg){if(fake_connections)cb(0,arg);}
-static inline int ble_gap_adv_start(uint8_t t,void*p,int d,const struct ble_gap_adv_params*a,int(*cb)(struct ble_gap_event*,void*),void*u){(void)t;(void)p;(void)d;(void)a;(void)cb;(void)u;if(fake_adv_error)return fake_adv_error;fake_adv=1;return 0;}
+static inline int ble_gap_adv_start(uint8_t t,void*p,int d,const struct ble_gap_adv_params*a,int(*cb)(struct ble_gap_event*,void*),void*u){(void)t;(void)p;(void)d;fake_filter=a->filter_policy;(void)cb;(void)u;if(fake_adv_error)return fake_adv_error;fake_adv=1;return 0;}
 static inline int ble_gap_adv_stop(void){fake_adv=0;return 0;}
 static inline int ble_hs_id_infer_auto(int x,uint8_t *t){(void)x;*t=0;return 0;}
 static inline int ble_gap_conn_find(uint16_t h,struct ble_gap_conn_desc*d){if(h!=fake_conn_handle)return BLE_HS_ENOTCONN;*d=fake_desc;return 0;}
 static inline int ble_gap_terminate(uint16_t h,int reason){(void)reason;fake_last_terminate_handle=h;fake_terminate_count++;return 0;}
 static inline int ble_gap_security_initiate(uint16_t h){if(h!=fake_conn_handle)return BLE_HS_ENOTCONN;fake_security_count++;return 0;}
-static inline int ble_store_util_bonded_peers(ble_addr_t*p,int*n,int max){(void)max;*n=fake_bonds;*p=fake_peer;return 0;}
+static inline int ble_store_util_bonded_peers(ble_addr_t*p,int*n,int max){assert(fake_bonds<=max);*n=fake_bonds;if(fake_bonds)*p=fake_peer;if(fake_bonds==2)p[1]=fake_second_peer;return 0;}
 static inline int ble_addr_cmp(const ble_addr_t*a,const ble_addr_t*b){return memcmp(a,b,sizeof(*a));}
 static inline int ble_store_clear(void){if(fake_fail_clear)return -1;fake_bonds=0;return 0;}
 static inline struct os_mbuf *ble_hs_mbuf_from_flat(const void *p,size_t n){if(fake_fail_alloc)return NULL;struct os_mbuf *b=calloc(1,sizeof(*b));if(b){memcpy(b->data,p,n);b->len=n;}return b;}

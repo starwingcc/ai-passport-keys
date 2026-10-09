@@ -313,6 +313,7 @@ void kp_init(kp_model_t *m, const kp_config_t *c, kp_emit_t cb, void *u) {
     memset(m, 0, sizeof(*m));
     if (kp_config_valid(c)) m->config = *c; else kp_defaults(&m->config);
     m->emit = cb; m->user = u; m->page = KP_CONSOLE;
+    kp_devices_defaults(&m->devices); m->actual_device = -1; m->system = KP_SYSTEM_UNSET;
     kp_screen_defaults(&m->screen_config);
     kp_screen_init(&m->screen, &m->screen_config, 0);
 }
@@ -334,7 +335,28 @@ uint8_t kp_screen_level(const kp_model_t *m) {
 void kp_system_saved(kp_model_t *m, bool success) {
     if (!m->system_saving) return;
     m->system_saving = false; m->system_save_failed = !success; m->system_saved = success;
-    if (success) m->system = m->selected;
+    if (success) {
+        m->devices.slot[m->device_selected].system = m->selected;
+        if (m->devices.target == m->device_selected) m->system = m->selected;
+        page(m, KP_CONSOLE);
+    }
+    ++m->config_revision;
+}
+void kp_device_switched(kp_model_t *m, bool success) {
+    if (success) page(m, KP_CONSOLE);
+    m->system_save_failed = !success;
+    ++m->config_revision;
+}
+bool kp_model_can_send(const kp_model_t *m) {
+    return !m->pairing_adding && kp_device_can_send(&m->devices, m->actual_device,
+        m->hid_ready, m->page == KP_SYSTEM || m->system_saving, m->devices_committed);
+}
+void kp_system_open(kp_model_t *m, unsigned device) {
+    if (device >= KP_DEVICE_COUNT || !m->devices.slot[device].occupied) return;
+    page(m, KP_SYSTEM); m->device_selected = device;
+    unsigned system = m->devices.slot[device].system;
+    m->selected = system < KP_SYSTEM_COUNT ? system : KP_SYSTEM_MACOS;
+    m->system_saved = m->system_save_failed = false;
     ++m->config_revision;
 }
 void kp_hotspot_exit(kp_model_t *m) {
@@ -348,16 +370,24 @@ static void back(kp_model_t *m) {
     case KP_CONSOLE: case KP_SETTINGS: page(m, KP_MENU); break;
     case KP_HOTSPOT: kp_hotspot_exit(m); break;
     case KP_FORGET: page(m, KP_SETTINGS); break;
-    case KP_LAN: page(m, KP_SETTINGS); m->selected = 1; break;
+    case KP_LAN: page(m, KP_SETTINGS); m->selected = KP_SETTING_PASSPORT; break;
     case KP_PROFILES: page(m, KP_MENU); break;
     case KP_SCREEN: page(m, KP_SETTINGS); break;
-    case KP_TRANSFER: page(m, KP_SETTINGS); m->selected = 2; break;
+    case KP_TRANSFER: page(m, KP_SETTINGS); m->selected = KP_SETTING_TRANSFER; break;
     case KP_SYSTEM:
-        if (!m->system_saving) page(m, KP_SETTINGS);
+        if (!m->system_saving) {
+            page(m, KP_DEVICE_ACTIONS); m->selected = 1;
+            m->system_saved = m->system_save_failed = false;
+        }
         break;
     case KP_SCREEN_EDIT:
         if (!m->screen_saving) { page(m, KP_SCREEN); m->selected = m->screen_setting; }
         break;
+    case KP_DEVICES: page(m, KP_SETTINGS); m->selected = KP_SETTING_DEVICES; break;
+    case KP_DEVICE_ACTIONS: page(m, KP_DEVICES); m->selected = m->device_selected; break;
+    case KP_ADD_DEVICE:
+        page(m, KP_DEVICES); m->selected = m->device_selected;
+        emit(m, KP_END_PAIRING, NULL); break;
     case KP_MENU: kp_cancel(m); break;
     }
 }
@@ -375,6 +405,22 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
         if (m->transfer.state == KP_TRANSFER_STOPPING) return;
         if (key < 2) m->selected = (m->selected + 1) % 2;
         else emit(m, m->selected ? KP_TRANSFER_START : KP_TRANSFER_STOP, NULL);
+    } else if (m->page == KP_ADD_DEVICE) {
+        // Pairing is explicitly entered from a free slot; hold OK cancels.
+        return;
+    } else if (m->page == KP_DEVICES) {
+        if (key < 2) m->selected = (m->selected + 1) % KP_DEVICE_COUNT;
+        else {
+            m->device_selected = m->selected;
+            if (m->devices.slot[m->selected].occupied) {
+                page(m, KP_DEVICE_ACTIONS); m->system_saved = m->system_save_failed = false;
+            }
+            else { page(m, KP_ADD_DEVICE); emit(m, KP_ADD_PAIRING, NULL); }
+        }
+    } else if (m->page == KP_DEVICE_ACTIONS) {
+        if (key < 2) m->selected = (m->selected + 1) % 2;
+        else if (m->selected == 1) kp_system_open(m, m->device_selected);
+        else { kp_cancel(m); emit(m, KP_SWITCH_DEVICE, NULL); }
     } else if (m->page == KP_SYSTEM) {
         if (m->system_saving) return;
         if (key < 2) {
@@ -405,12 +451,16 @@ static void click(kp_model_t *m, unsigned key, unsigned clicks) {
         if (target == KP_PROFILES) m->selected = m->config.active_profile;
     } else if (m->page == KP_PROFILES) emit(m, KP_SELECT_PROFILE, NULL);
     else if (m->page == KP_SETTINGS) {
-        kp_page_t target = m->selected == 0 ? KP_SCREEN : m->selected == 1 ? KP_LAN :
-                           m->selected == 2 ? KP_TRANSFER : m->selected == 3 ? KP_SYSTEM : KP_FORGET;
+        static const kp_page_t targets[KP_SETTINGS_COUNT] = {
+            [KP_SETTING_SCREEN] = KP_SCREEN, [KP_SETTING_DEVICES] = KP_DEVICES,
+            [KP_SETTING_TRANSFER] = KP_TRANSFER, [KP_SETTING_PASSPORT] = KP_LAN,
+            [KP_SETTING_FORGET] = KP_FORGET,
+        };
+        kp_page_t target = targets[m->selected];
         page(m, target);
         if (target == KP_TRANSFER) m->selected = m->transfer.enabled ? 0 : 1;
-        if (target == KP_SYSTEM) {
-            m->selected = m->system;
+        if (target == KP_DEVICES) {
+            m->selected = m->devices.target < KP_DEVICE_COUNT ? m->devices.target : 0;
             m->system_saved = m->system_save_failed = false;
         }
     } else if (m->page == KP_SCREEN) {

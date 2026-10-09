@@ -9,6 +9,7 @@ static SemaphoreHandle_t s_lock;
 static kp_settings_t s_settings;
 static kp_screen_config_t s_screen;
 static kp_system_t s_system;
+static kp_devices_t s_devices;
 static kp_clock_t s_clock;
 static esp_err_t persist(nvs_handle_t nvs, const kp_settings_t *settings) {
     esp_err_t rc = nvs_set_blob(nvs, "settings_v1", settings, kp_settings_size(settings));
@@ -21,9 +22,13 @@ esp_err_t kp_store_init(void) {
     kp_settings_defaults(&s_settings); s_clock = (kp_clock_t){0};
     kp_screen_defaults(&s_screen);
     s_system = KP_SYSTEM_MACOS;
+    kp_devices_defaults(&s_devices);
     nvs_handle_t nvs;
     esp_err_t rc = nvs_open("passport_keys", NVS_READWRITE, &nvs);
     if (rc != ESP_OK) return rc;
+    kp_devices_t devices; size_t devices_size = sizeof(devices);
+    if (nvs_get_blob(nvs, "devices_v1", &devices, &devices_size) == ESP_OK &&
+        devices_size == sizeof(devices) && kp_devices_valid(&devices)) s_devices = devices;
     kp_screen_config_t screen = {0}; size_t screen_size = sizeof(screen);
     if (nvs_get_blob(nvs, "screen_v1", &screen, &screen_size) == ESP_OK &&
         screen_size == sizeof(screen) && kp_screen_valid(&screen)) s_screen = screen;
@@ -123,6 +128,22 @@ bool kp_store_time_sync(uint64_t epoch, uint64_t now) {
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool result = kp_clock_sync(&s_clock, epoch, now);
     xSemaphoreGive(s_lock); return result;
+}
+void kp_store_devices_get(kp_devices_t *out) {
+    xSemaphoreTake(s_lock, portMAX_DELAY); *out = s_devices; xSemaphoreGive(s_lock);
+}
+esp_err_t kp_store_devices_save(const kp_devices_t *devices) {
+    if (!kp_devices_valid(devices)) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    nvs_handle_t nvs;
+    esp_err_t rc = nvs_open("passport_keys", NVS_READWRITE, &nvs);
+    if (rc == ESP_OK) {
+        rc = nvs_set_blob(nvs, "devices_v1", devices, sizeof(*devices));
+        if (rc == ESP_OK) rc = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    if (rc == ESP_OK) s_devices = *devices;
+    xSemaphoreGive(s_lock); return rc;
 }
 void kp_store_system_get(kp_system_t *out) {
     xSemaphoreTake(s_lock, portMAX_DELAY); *out = s_system; xSemaphoreGive(s_lock);

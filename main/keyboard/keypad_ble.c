@@ -10,6 +10,7 @@
 #include "host/ble_sm.h"
 #include "host/ble_store.h"
 #include "host/ble_att.h"
+#include "host/ble_gatt.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "services/gap/ble_svc_gap.h"
@@ -42,11 +43,17 @@ static void (*s_hid_sync)(void);
 static void (*s_hid_reset)(int);
 static struct ble_npl_event s_job;
 static SemaphoreHandle_t s_done;
-typedef enum { JOB_SEND, JOB_PAUSE, JOB_RESUME, JOB_FORGET, JOB_RECOVER, JOB_POLL } job_command_t;
+typedef enum { JOB_SEND, JOB_PAUSE, JOB_RESUME, JOB_FORGET, JOB_RECOVER, JOB_POLL, JOB_SELECT, JOB_ALLOW, JOB_IDLE } job_command_t;
 static job_command_t s_command;
 static kp_action_t s_action;
 static esp_err_t s_result;
 static bool s_job_pending;
+static bool s_target_valid, s_pair_mode, s_admitted, s_name_requested;
+static ble_addr_t s_target, s_pair_existing[KP_DEVICE_COUNT];
+static int s_pair_existing_count;
+static uint8_t s_job_peer[7];
+static bool s_job_allow, s_job_pair;
+static uint32_t s_connection_serial;
 static int gap_event(struct ble_gap_event *event, void *arg);
 void ble_store_config_init(void);
 // Exported by IDF 5.5.3's ble_gap.c; its public header declares the callback
@@ -88,6 +95,8 @@ static void readiness(void) {
     s_status.secure = s_encrypted;
     s_status.keyboard_subscribed = s_boot_mode ? s_boot_notify : s_notify[0];
     s_status.handles_ready = s_input[0] && s_input[1] && s_boot && s_protocol_handle;
+    s_status.release_ready = s_status.connected && s_encrypted && !s_status.paused &&
+        s_status.handles_ready && (s_status.keyboard_subscribed || (!s_boot_mode && s_notify[1]));
     bool ready = s_status.connected && s_encrypted && !s_status.paused &&
                  s_status.handles_ready && s_status.keyboard_subscribed;
     if (s_status.ready != ready) ++s_status.generation;
@@ -102,9 +111,23 @@ static int count_connection(uint16_t handle, void *arg) {
     ++*(unsigned *)arg;
     return 0;
 }
+static void bond_snapshot(void) {
+    ble_addr_t peers[KP_DEVICE_COUNT]; int count = 0;
+    int rc = ble_store_util_bonded_peers(peers, &count, KP_DEVICE_COUNT);
+    portENTER_CRITICAL(&s_mux);
+    s_status.peers_valid = !rc && count <= KP_DEVICE_COUNT;
+    if (s_status.peers_valid) {
+        s_status.bond_count = count; memset(s_status.bonds, 0, sizeof(s_status.bonds));
+        for (int i = 0; i < count; ++i) {
+            s_status.bonds[i][0] = peers[i].type;
+            memcpy(s_status.bonds[i] + 1, peers[i].val, 6);
+        }
+    }
+    portEXIT_CRITICAL(&s_mux);
+}
 static void advertise(void) {
     kp_ble_status_t status = kp_ble_status();
-    if (!status.synced || status.paused || s_conn != BLE_HS_CONN_HANDLE_NONE || ble_gap_adv_active()) return;
+    if ((!s_target_valid && !s_pair_mode) || !status.synced || status.paused || s_conn != BLE_HS_CONN_HANDLE_NONE || ble_gap_adv_active()) return;
     // NimBLE allocates the connection before delivering CONNECT (remote feature
     // exchange completes first). Do not retry connectable advertising in that
     // interval: MAX_CONNECTIONS=1 would report BLE_HS_ENOMEM, despite free heap.
@@ -123,7 +146,13 @@ static void advertise(void) {
         .conn_mode = BLE_GAP_CONN_MODE_UND, .disc_mode = BLE_GAP_DISC_MODE_GEN,
         .itvl_min = 48, .itvl_max = 80,
     };
-    int rc = ble_gap_adv_set_fields(&fields);
+    int rc = s_target_valid ? ble_gap_wl_set(&s_target, 1) : ble_gap_wl_set(NULL, 0);
+    if (rc) {
+        portENTER_CRITICAL(&s_mux); s_status.failed = true; portEXIT_CRITICAL(&s_mux);
+        return; // Never advertise without the selected identity filter.
+    }
+    params.filter_policy = s_target_valid ? BLE_HCI_ADV_FILT_CONN : BLE_HCI_ADV_FILT_NONE;
+    rc = ble_gap_adv_set_fields(&fields);
     const char *stage = "fields";
     if (!rc) { stage = "start"; rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &params, gap_event, NULL); }
     if (rc && rc != BLE_HS_EALREADY) {
@@ -141,6 +170,7 @@ static void synced(void) {
     portEXIT_CRITICAL(&s_mux);
     ESP_LOGI("keypad_ble", "Sync rc=%d handles keyboard=%u consumer=%u boot=%u protocol=%u",
              rc, s_input[0], s_input[1], s_boot, s_protocol_handle);
+    bond_snapshot();
     readiness();
     advertise();
 }
@@ -149,7 +179,8 @@ static void reset(int reason) {
     s_encrypted = s_notify[0] = s_notify[1] = s_boot_notify = false;
     portENTER_CRITICAL(&s_mux);
     s_status.synced = s_status.connected = s_status.ready = false;
-    s_status.secure = s_status.keyboard_subscribed = false;
+    s_status.secure = s_status.keyboard_subscribed = s_status.peer_valid = false;
+    s_status.input_enabled = false; s_admitted = false; ++s_connection_serial;
     ++s_status.generation;
     portEXIT_CRITICAL(&s_mux);
     if (s_hid_reset) s_hid_reset(reason);
@@ -172,9 +203,46 @@ static void registered(struct ble_gatt_register_ctxt *ctx, void *arg) {
     if (uuid == 0x2a4e) s_protocol_handle = ctx->chr.val_handle;
 }
 static bool allowed_peer(const struct ble_gap_conn_desc *desc) {
-    ble_addr_t peers[1]; int count = 0;
-    if (ble_store_util_bonded_peers(peers, &count, 1)) return false;
-    return count == 0 || ble_addr_cmp(&peers[0], &desc->peer_id_addr) == 0;
+    if (s_target_valid) return ble_addr_cmp(&s_target, &desc->peer_id_addr) == 0;
+    if (!s_pair_mode) return false;
+    for (int i = 0; i < s_pair_existing_count; ++i)
+        if (!ble_addr_cmp(&s_pair_existing[i], &desc->peer_id_addr)) return false;
+    return s_pair_existing_count < KP_DEVICE_COUNT;
+}
+static void peer_snapshot(const struct ble_gap_conn_desc *desc) {
+    portENTER_CRITICAL(&s_mux);
+    s_status.peer_valid = s_admitted;
+    s_status.peer[0] = desc->peer_id_addr.type;
+    memcpy(s_status.peer + 1, desc->peer_id_addr.val, 6);
+    portEXIT_CRITICAL(&s_mux);
+}
+static int name_read(uint16_t handle, const struct ble_gatt_error *error,
+                     struct ble_gatt_attr *attr, void *arg) {
+    // Handles can be reused; bind the callback to this connection incarnation.
+    if ((uint32_t)(uintptr_t)arg != s_connection_serial || handle != s_conn ||
+        !s_admitted || !s_encrypted || error->status || !attr || !attr->om) return 0;
+    unsigned size = OS_MBUF_PKTLEN(attr->om);
+    if (!size || size >= KP_DEVICE_NAME_BYTES) return 0;
+    char name[KP_DEVICE_NAME_BYTES] = {0};
+    if (ble_hs_mbuf_to_flat(attr->om, name, size, NULL) || memchr(name, 0, size) ||
+        !kp_text_valid(name, 12, false)) return 0;
+    portENTER_CRITICAL(&s_mux);
+    memcpy(s_status.peer_name, name, sizeof(name));
+    portEXIT_CRITICAL(&s_mux);
+    return 0;
+}
+static void request_name(void) {
+    if (!s_admitted || !s_encrypted || s_name_requested || !kp_ble_status().connected) return;
+    static const ble_uuid16_t uuid = BLE_UUID16_INIT(0x2a00);
+    s_name_requested = true; // One bounded attempt per connection; fallback remains.
+    int rc = ble_gattc_read_by_uuid(s_conn, 1, 0xffff, &uuid.u, name_read,
+                                  (void *)(uintptr_t)s_connection_serial);
+    ESP_LOGI("keypad_ble", "Peer name request rc=%d", rc);
+}
+// No automatic eviction, including CCCD exhaustion or a malicious third peer.
+static int store_status(struct ble_store_status_event *event, void *arg) {
+    (void)arg;
+    return event->event_code == BLE_STORE_EVENT_FULL ? 0 : BLE_HS_ENOMEM;
 }
 static bool secure_connection(const struct ble_gap_conn_desc *desc) {
     return desc->sec_state.encrypted && desc->sec_state.bonded &&
@@ -184,7 +252,12 @@ static void begin_connection(uint16_t handle) {
     // Encryption and restored subscriptions can arrive before CONNECT while
     // NimBLE waits for remote feature exchange. Reset only for a new handle.
     if (s_conn == handle) return;
-    s_conn = handle;
+    s_conn = handle; ++s_connection_serial;
+    s_admitted = s_name_requested = false;
+    portENTER_CRITICAL(&s_mux);
+    s_status.peer_valid = s_status.input_enabled = false;
+    memset(s_status.peer_name, 0, sizeof(s_status.peer_name));
+    portEXIT_CRITICAL(&s_mux);
     s_notify[0] = s_notify[1] = s_boot_notify = s_encrypted = false;
     s_boot_mode = false;
 }
@@ -192,7 +265,9 @@ static void clear_connection(void) {
     s_conn = BLE_HS_CONN_HANDLE_NONE;
     s_encrypted = s_notify[0] = s_notify[1] = s_boot_notify = s_boot_mode = false;
     portENTER_CRITICAL(&s_mux);
-    s_status.connected = s_status.ready = false; ++s_status.generation;
+    s_status.connected = s_status.ready = s_status.peer_valid = s_status.input_enabled = false;
+    s_admitted = false; ++s_connection_serial;
+    memset(s_status.peer_name, 0, sizeof(s_status.peer_name)); ++s_status.generation;
     portEXIT_CRITICAL(&s_mux);
     readiness();
 }
@@ -215,6 +290,7 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
             s_encrypted = false;
             ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
         } else {
+            s_admitted = true; peer_snapshot(&desc);
             s_encrypted = secure_connection(&desc);
             if (desc.sec_state.encrypted && !s_encrypted) {
                 ESP_LOGW("keypad_ble", "Rejecting encrypted connection without a bond and 16-byte key");
@@ -231,14 +307,14 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
                      desc.sec_state.encrypted, desc.sec_state.bonded, desc.sec_state.key_size,
                      s_boot_mode ? s_boot_notify : s_notify[0]);
         }
-        readiness();
+        readiness(); request_name();
         break;
     case BLE_GAP_EVENT_DISCONNECT: {
         if (s_conn != BLE_HS_CONN_HANDLE_NONE && event->disconnect.conn.conn_handle != s_conn) break;
         ESP_LOGI("keypad_ble", "Disconnect reason=%d", event->disconnect.reason);
-        ble_addr_t peers[1];
+        ble_addr_t peers[KP_DEVICE_COUNT];
         int count = 0;
-        bool empty = !ble_store_util_bonded_peers(peers, &count, 1) && count == 0;
+        bool empty = !ble_store_util_bonded_peers(peers, &count, KP_DEVICE_COUNT) && count == 0;
         uint8_t peer[7] = {event->disconnect.conn.peer_id_addr.type};
         memcpy(peer + 1, event->disconnect.conn.peer_id_addr.val, 6);
         kp_pairing_disconnected(&s_pairing, (uint32_t)(esp_timer_get_time() / 1000), peer,
@@ -257,9 +333,12 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
                  desc.sec_state.authenticated, desc.sec_state.bonded, desc.sec_state.key_size, handle);
         if (found) break; // A stale event must not change or terminate another connection.
         begin_connection(handle);
-        s_encrypted = !event->enc_change.status && secure_connection(&desc);
+        s_encrypted = !event->enc_change.status && secure_connection(&desc) && allowed_peer(&desc);
+        if (s_admitted) peer_snapshot(&desc);
+        bond_snapshot();
         readiness();
         if (!s_encrypted) ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
+        else request_name();
         break;
     }
     case BLE_GAP_EVENT_SUBSCRIBE:
@@ -296,14 +375,25 @@ static esp_err_t notify(uint16_t handle, const uint8_t *data, unsigned size) {
 }
 static esp_err_t send_report(const kp_action_t *action) {
     if (action && !kp_action_valid(action, true)) return ESP_ERR_INVALID_ARG;
-    if (!kp_ble_status().ready) return ESP_ERR_INVALID_STATE;
+    kp_ble_status_t status = kp_ble_status();
+    if (action ? !status.ready : !status.release_ready) return ESP_ERR_INVALID_STATE;
+    if (action && (!status.input_enabled || !s_target_valid || !s_admitted ||
+        !status.peer_valid || status.peer[0] != s_target.type ||
+        memcmp(status.peer + 1, s_target.val, 6))) return ESP_ERR_INVALID_STATE;
     if (action && action->type == KP_MEDIA && (s_boot_mode || !s_notify[1])) return ESP_ERR_NOT_SUPPORTED;
     uint8_t keyboard[8], consumer[2];
     kp_report(action, keyboard, consumer);
     // Send on the handles registered by esp_hid. This keeps allocation failure
     // recoverable (IDF 5.5.3 input_set asserts on mbuf exhaustion).
-    esp_err_t rc = notify(s_boot_mode ? s_boot : s_input[0], keyboard, sizeof(keyboard));
-    if (rc == ESP_OK && !s_boot_mode && s_notify[1]) rc = notify(s_input[1], consumer, sizeof(consumer));
+    esp_err_t rc = ESP_OK;
+    if (action || (s_boot_mode ? s_boot_notify : s_notify[0]))
+        rc = notify(s_boot_mode ? s_boot : s_input[0], keyboard, sizeof(keyboard));
+    // Releases attempt every remaining subscribed channel even if another
+    // report fails. Consumer release must survive keyboard unsubscription.
+    if ((rc == ESP_OK || !action) && !s_boot_mode && s_notify[1]) {
+        esp_err_t media_rc = notify(s_input[1], consumer, sizeof(consumer));
+        if (rc == ESP_OK) rc = media_rc;
+    }
     ESP_LOGD("keypad_ble", "Input report type=%u boot=%d result=%d",
              action ? (unsigned)action->type : 0, s_boot_mode, (int)rc);
     return rc;
@@ -331,9 +421,9 @@ static void job(struct ble_npl_event *event) {
     s_result = ESP_OK;
     refresh_protocol();
     switch (s_command) {
-    case JOB_SEND: s_result = send_report(&s_action); break;
+    case JOB_SEND: s_result = send_report(s_action.type == KP_NONE ? NULL : &s_action); break;
     case JOB_PAUSE:
-        if (kp_ble_status().ready) (void)send_report(NULL);
+        if (kp_ble_status().release_ready) (void)send_report(NULL);
         portENTER_CRITICAL(&s_mux); s_status.paused = true; portEXIT_CRITICAL(&s_mux);
         readiness();
         if (ble_gap_adv_active()) ble_gap_adv_stop();
@@ -346,6 +436,9 @@ static void job(struct ble_npl_event *event) {
         if (s_conn != BLE_HS_CONN_HANDLE_NONE) s_result = ESP_ERR_INVALID_STATE;
         else if (ble_store_clear()) s_result = ESP_FAIL;
         else {
+            s_target_valid = s_pair_mode = false;
+            portENTER_CRITICAL(&s_mux); s_status.input_enabled = false; portEXIT_CRITICAL(&s_mux);
+            bond_snapshot();
             kp_pairing_reset(&s_pairing);
             pairing_status();
         }
@@ -354,11 +447,47 @@ static void job(struct ble_npl_event *event) {
         if (s_conn != BLE_HS_CONN_HANDLE_NONE) ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
         else advertise();
         break;
-    case JOB_POLL: advertise(); break;
+    case JOB_SELECT: {
+        ble_addr_t target = {.type = s_job_peer[0]}; memcpy(target.val, s_job_peer + 1, 6);
+        struct ble_gap_conn_desc current;
+        bool same = !s_job_pair && s_conn != BLE_HS_CONN_HANDLE_NONE && s_admitted &&
+            !ble_gap_conn_find(s_conn, &current) && !ble_addr_cmp(&target, &current.peer_id_addr);
+        // Release the old connection before changing the target or permission.
+        if (!same && kp_ble_status().release_ready) (void)send_report(NULL);
+        portENTER_CRITICAL(&s_mux); s_status.input_enabled = false; portEXIT_CRITICAL(&s_mux);
+        if (ble_gap_adv_active()) ble_gap_adv_stop();
+        if (s_job_pair) {
+            s_result = ble_store_util_bonded_peers(s_pair_existing, &s_pair_existing_count, KP_DEVICE_COUNT) ? ESP_FAIL : ESP_OK;
+            if (s_result == ESP_OK && s_pair_existing_count >= KP_DEVICE_COUNT) s_result = ESP_ERR_INVALID_STATE;
+            if (s_result != ESP_OK) break;
+        }
+        s_pair_mode = s_job_pair; s_target_valid = !s_job_pair; s_target = target;
+        portENTER_CRITICAL(&s_mux); s_status.pairing = s_pair_mode; ++s_status.generation; portEXIT_CRITICAL(&s_mux);
+        if (!same && s_conn != BLE_HS_CONN_HANDLE_NONE) {
+            s_admitted = false;
+            s_encrypted = false; readiness();
+            if (ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM)) s_result = ESP_FAIL;
+        } else advertise();
+        break;
+    }
+    case JOB_IDLE:
+        if (kp_ble_status().release_ready) (void)send_report(NULL);
+        s_pair_mode = s_target_valid = s_admitted = false;
+        portENTER_CRITICAL(&s_mux); s_status.input_enabled = s_status.pairing = false; portEXIT_CRITICAL(&s_mux);
+        if (ble_gap_adv_active()) ble_gap_adv_stop();
+        if (s_conn != BLE_HS_CONN_HANDLE_NONE) ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+        break;
+    case JOB_ALLOW:
+        if (!s_job_allow && kp_ble_status().release_ready) (void)send_report(NULL);
+        portENTER_CRITICAL(&s_mux);
+        s_status.input_enabled = s_job_allow && s_target_valid && s_admitted && s_status.ready;
+        portEXIT_CRITICAL(&s_mux);
+        break;
+    case JOB_POLL: bond_snapshot(); request_name(); advertise(); break;
     }
     xSemaphoreGive(s_done);
 }
-static esp_err_t command(job_command_t code, const kp_action_t *action) {
+static esp_err_t command_args(job_command_t code, const kp_action_t *action, const uint8_t *peer, bool allow) {
     if (!s_done || !kp_ble_status().synced) return ESP_ERR_INVALID_STATE;
     // Single caller: the application worker. A timed-out job retains ownership
     // of the shared command until its completion has been consumed.
@@ -366,7 +495,8 @@ static esp_err_t command(job_command_t code, const kp_action_t *action) {
         if (xSemaphoreTake(s_done, 0) != pdTRUE) return ESP_ERR_TIMEOUT;
         s_job_pending = false;
     }
-    s_command = code;
+    s_command = code; s_job_allow = allow; s_job_pair = peer == NULL;
+    memset(s_job_peer, 0, sizeof(s_job_peer)); if (peer) memcpy(s_job_peer, peer, 7);
     memset(&s_action, 0, sizeof(s_action));
     if (action) s_action = *action;
     s_job_pending = true;
@@ -375,6 +505,12 @@ static esp_err_t command(job_command_t code, const kp_action_t *action) {
     s_job_pending = false;
     return s_result;
 }
+static esp_err_t command(job_command_t code, const kp_action_t *action) {
+    return command_args(code, action, NULL, false);
+}
+esp_err_t kp_ble_select(const uint8_t identity[7]) { return command_args(JOB_SELECT, NULL, identity, false); }
+esp_err_t kp_ble_allow_input(bool allow) { return command_args(JOB_ALLOW, NULL, NULL, allow); }
+esp_err_t kp_ble_end_pairing(void) { return command(JOB_IDLE, NULL); }
 esp_err_t kp_ble_send(const kp_action_t *action) { return command(JOB_SEND, action); }
 void kp_ble_recover(void) { (void)command(JOB_RECOVER, NULL); }
 void kp_ble_poll(void) { (void)command(JOB_POLL, NULL); }
@@ -428,6 +564,7 @@ esp_err_t kp_ble_init(void) {
     s_store_read = ble_hs_cfg.store_read_cb;
     if (!s_store_read) return ESP_ERR_INVALID_STATE;
     ble_hs_cfg.store_read_cb = read_bond;
+    ble_hs_cfg.store_status_cb = store_status;
     ble_svc_gap_device_name_set("Passport Keys");
     ble_npl_event_init(&s_job, job, NULL);
     nimble_port_freertos_init(host_task);

@@ -3,6 +3,7 @@
 #include "bsp_battery.h"
 #include "keypad_model.h"
 #include "keypad_ble.h"
+#include "keypad_devices_runtime.h"
 #include "keypad_store.h"
 #include "keypad_ui.h"
 #include "keypad_runner.h"
@@ -28,13 +29,14 @@ static atomic_bool s_overflow;
 static kp_model_t s_model;
 static char s_message[96] = "准备连接 Passport Keys";
 static bool s_forget, s_ap_active, s_select_profile;
-static bool s_save_screen, s_save_system;
+static bool s_save_screen, s_save_system, s_switch_device, s_add_device, s_end_pairing;
+static kp_devices_runtime_t s_devices_runtime = {.select_pending = true};
 static unsigned s_target_profile;
 static kp_runner_t s_runner;
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 static void message(const char *text) { snprintf(s_message, sizeof(s_message), "%s", text); }
 static void release(void) {
-    if (kp_ble_status().ready && kp_ble_send(NULL) != ESP_OK) {
+    if (kp_ble_status().release_ready && kp_ble_send(NULL) != ESP_OK) {
         kp_ble_recover(); message("发送异常，正在重连");
     }
 }
@@ -44,8 +46,9 @@ static void effect(void *user, kp_effect_t event, const kp_action_t *action) {
     case KP_TAP: case KP_HOLD: {
         (void)action;
         kp_ble_status_t status = kp_ble_status();
-        if (!status.ready) {
-            message(status.pairing_hint != KP_PAIRING_NONE ? kp_pairing_title(status.pairing_hint) :
+        if (!status.ready || !kp_model_can_send(&s_model) || !status.input_enabled) {
+            message(s_model.page == KP_SYSTEM ? "键盘已暂停" : s_model.system == KP_SYSTEM_UNSET ? "未选系统，键盘禁用" :
+                    status.pairing_hint != KP_PAIRING_NONE ? kp_pairing_title(status.pairing_hint) :
                     !status.connected ? "尚未连接，指令已忽略" :
                     !status.handles_ready ? "键盘服务未就绪" :
                     !status.secure ? "等待配对完成" : "等待电脑启用键盘");
@@ -67,6 +70,9 @@ static void effect(void *user, kp_effect_t event, const kp_action_t *action) {
     case KP_SELECT_PROFILE: s_target_profile = s_model.selected; s_select_profile = true; break;
     case KP_SAVE_SCREEN: s_save_screen = true; break;
     case KP_SAVE_SYSTEM: s_save_system = true; break;
+    case KP_SWITCH_DEVICE: s_switch_device = true; break;
+    case KP_ADD_PAIRING: s_add_device = true; break;
+    case KP_END_PAIRING: s_end_pairing = true; break;
     case KP_AP_START: kp_network_service_ap(true); break;
     case KP_AP_STOP: kp_network_service_ap(false); break;
     case KP_WIFI_START: kp_network_service_config(true, true); break;
@@ -77,6 +83,7 @@ static void effect(void *user, kp_effect_t event, const kp_action_t *action) {
 }
 static void advance_runner(void) {
     kp_action_t action;
+    if (!kp_model_can_send(&s_model)) { kp_runner_cancel(&s_runner); kp_set_busy(&s_model, false); return; }
     if (!kp_runner_request(&s_runner, now_ms(), &action)) return;
     kp_action_t resolved;
     esp_err_t sent = kp_action_resolve(&action, s_runner.system, &resolved) ?
@@ -144,6 +151,10 @@ static void memory_log(const char *phase) {
              (unsigned)esp_get_minimum_free_heap_size(),
              (unsigned)uxTaskGetStackHighWaterMark(NULL));
 }
+static void sync_devices(uint32_t now) {
+    if (kp_devices_runtime_sync(&s_model, &s_devices_runtime, now) == ESP_FAIL)
+        message("保存失败，请重试");
+}
 void app_main(void) {
     esp_err_t rc = nvs_flash_init();
     if (rc != ESP_OK) { ESP_LOGE("keypad", "NVS unavailable: %s; not erasing user data", esp_err_to_name(rc)); return; }
@@ -154,7 +165,9 @@ void app_main(void) {
     if (!config) { ESP_LOGE("keypad", "Configuration allocation failed"); return; }
     kp_store_get(config); kp_init(&s_model, config, effect, NULL); free(config);
     kp_store_screen_get(&s_model.screen_config);
-    kp_store_system_get(&s_model.system);
+    kp_store_devices_get(&s_model.devices);
+    s_model.devices_committed = true;
+    s_model.pairing_adding = kp_devices_count(&s_model.devices) == 0;
     kp_screen_init(&s_model.screen, &s_model.screen_config, now_ms());
     s_model.page = KP_MENU;
     kp_home_config_t home; kp_store_home_get(&home);
@@ -193,11 +206,42 @@ void app_main(void) {
         }
         now = now_ms();
         kp_tick(&s_model, now);
+        if (s_switch_device) {
+            s_switch_device = false;
+            kp_devices_t next = s_model.devices;
+            next.target = s_model.device_selected;
+            if (kp_store_devices_save(&next) == ESP_OK) {
+                s_model.devices = next; s_model.devices_committed = true;
+                s_model.pairing_adding = false; s_devices_runtime.select_pending = true;
+                kp_device_switched(&s_model, true); message("等待电脑连接");
+            } else { kp_device_switched(&s_model, false); message("保存失败，请重试"); }
+        }
+        if (s_add_device) {
+            s_add_device = false;
+            if (kp_devices_count(&s_model.devices) < KP_DEVICE_COUNT) {
+                kp_cancel(&s_model); s_model.pairing_adding = true; s_devices_runtime.select_pending = true;
+                message("等待新设备配对");
+            } else { s_model.page = KP_DEVICES; message("记录已满"); }
+        }
+        if (s_end_pairing) {
+            s_end_pairing = false;
+            // Stop a pending pairing before discarding its slot. A peer that
+            // has already bonded is reconciled and still starts UNSET.
+            kp_cancel(&s_model); s_model.pairing_adding = false;
+            (void)kp_ble_pause(true); s_devices_runtime.select_pending = true;
+            (void)kp_ble_pause(false); message("已取消");
+        }
+        sync_devices(now_ms());
         advance_runner();
         if (s_save_system) {
             s_save_system = false; resync_input();
-            bool saved = kp_store_system_save(s_model.selected) == ESP_OK;
+            kp_devices_t next = s_model.devices;
+            unsigned slot = s_model.device_selected;
+            next.slot[slot].system = s_model.selected;
+            bool saved = kp_store_devices_save(&next) == ESP_OK;
             kp_system_saved(&s_model, saved);
+            if (saved) { s_model.devices = next; s_model.devices_committed = true; }
+            sync_devices(now_ms());
         }
         if (s_save_screen) {
             s_save_screen = false;
@@ -238,7 +282,15 @@ void app_main(void) {
         }
         if (s_forget) {
             s_forget = false; resync_input();
-            message(kp_ble_forget() == ESP_OK ? "配对已清除，请重新连接" : "清除失败，请重试");
+            bool cleared = kp_ble_forget() == ESP_OK;
+            if (cleared) {
+                kp_devices_defaults(&s_model.devices); s_model.devices_committed = false;
+                s_model.actual_device = -1; s_model.system = KP_SYSTEM_UNSET;
+                s_model.pairing_adding = true; s_devices_runtime.select_pending = true;
+                s_devices_runtime.metadata_retry = 0; ++s_model.config_revision;
+                sync_devices(now_ms());
+            }
+            message(cleared ? "配对已清除" : "清除失败，请重试");
             resync_input();
         }
         uint8_t level = kp_screen_level(&s_model);

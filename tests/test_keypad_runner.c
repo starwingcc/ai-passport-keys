@@ -23,7 +23,7 @@ static void acknowledged(runtime_t *rt,uint32_t now,unsigned modifiers,unsigned 
 static void integration(void){
     kp_config_t c;kp_defaults(&c);assert(kp_binding_set(&c,0,0,"",NULL,0));
     assert(kp_binding_set(&c,0,1,"",NULL,0));assert(kp_binding_set(&c,0,2,"",NULL,0));
-    runtime_t rt={0};kp_init(&rt.model,&c,model_effect,&rt);
+    runtime_t rt={0};kp_init(&rt.model,&c,model_effect,&rt);rt.model.system=KP_SYSTEM_MACOS;
     edge(&rt,0,true,0);assert(rt.starts==1&&rt.model.executing);acknowledged(&rt,0,4,0);
     edge(&rt,1,true,10);edge(&rt,1,false,30);assert(rt.starts==1);
     edge(&rt,0,false,50);assert(rt.releases==1);acknowledged(&rt,50,0,0);assert(!rt.model.executing);
@@ -36,7 +36,7 @@ static void integration(void){
     kp_step_t steps[2]={{{.type=KP_KEYBOARD,.keys={4}},0},{{.type=KP_KEYBOARD,.keys={5}},0}};
     assert(kp_binding_set(&c,0,3,"",steps,2));assert(kp_binding_set(&c,0,4,"",NULL,0));assert(kp_binding_set(&c,0,5,"",NULL,0));
     kp_step_t down={.action={.type=KP_KEYBOARD,.keys={0x51}}};assert(kp_binding_set(&c,0,7,"",&down,1));
-    memset(&rt,0,sizeof(rt));kp_init(&rt.model,&c,model_effect,&rt);
+    memset(&rt,0,sizeof(rt));kp_init(&rt.model,&c,model_effect,&rt);rt.model.system=KP_SYSTEM_MACOS;
     edge(&rt,0,true,0);acknowledged(&rt,0,0,4);acknowledged(&rt,40,0,0);acknowledged(&rt,40,0,5);acknowledged(&rt,80,0,0);
     assert(rt.starts==1&&!rt.runner.running);kp_tick(&rt.model,500);assert(rt.starts==1);
     edge(&rt,1,true,600);acknowledged(&rt,600,0,0x51);edge(&rt,0,false,650);assert(rt.releases==0&&rt.runner.phase==KP_RUN_HOLD);

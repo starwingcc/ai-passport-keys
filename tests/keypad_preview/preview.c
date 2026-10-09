@@ -77,7 +77,16 @@ static void console_layout(const char *state){
         if(lv_obj_check_type(o,&lv_label_class)&&!strcmp(lv_label_get_text(o),state)){
             assert(lv_obj_get_x(o)==18&&lv_obj_get_y(o)==20&&lv_obj_get_width(o)==151);
             assert(lv_obj_get_style_text_font(o,LV_PART_MAIN)==&passport_font_16);
-            assert(lv_color_eq(lv_obj_get_style_text_color(o,LV_PART_MAIN),lv_color_hex(0xd8a466)));found=true;
+            assert(lv_color_eq(lv_obj_get_style_text_color(o,LV_PART_MAIN),lv_color_hex(0xd8a466)));
+            lv_point_t size;
+            lv_text_get_size(&size,state,&passport_font_16,0,2,LV_COORD_MAX,LV_TEXT_FLAG_NONE);
+            assert(size.x<=lv_obj_get_width(o)&&size.y<=lv_obj_get_height(o));
+            for(uint32_t offset=0;state[offset];){
+                uint32_t cp=lv_text_encoded_next(state,&offset);
+                lv_font_glyph_dsc_t glyph={0};
+                assert(lv_font_get_glyph_dsc(&passport_font_16,&glyph,cp,0)&&!glyph.is_placeholder);
+            }
+            found=true;
         }
         if(lv_obj_check_type(o,&lv_label_class)&&!strcmp(lv_label_get_text(o),"长按 OK 返回")){
             assert(lv_obj_get_y(o)==296&&lv_obj_get_style_text_font(o,LV_PART_MAIN)==&passport_font_16);footer=true;
@@ -194,18 +203,27 @@ int main(int argc,char **argv){
         }
     }assert(voice_title);m.feedback.visible=false;
     // All five settings entries and their status columns follow the new order.
-    const char *settings[]={"屏幕","Passport配置","文件流转","配对系统","清除蓝牙配对"};
+    const char *settings[]={"屏幕","配对设备","文件流转","Passport配置","清除蓝牙配对"};
     for(unsigned selected=0;selected<KP_SETTINGS_COUNT;selected++){
         m.page=KP_SETTINGS;m.selected=selected;
         kp_ui_update(&m,ble,100,"","","",&home,epoch);lv_refr_now(d);screen_layout(&m);menu_layout(4);
-        unsigned row=0,first=kp_settings_first(selected);
+        unsigned row=0,values=0,first=kp_settings_first(selected);
         for(unsigned i=0;i<lv_obj_get_child_count(lv_screen_active());i++){
             lv_obj_t *o=lv_obj_get_child(lv_screen_active(),i);
-            if(lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)||!lv_obj_check_type(o,&lv_label_class)||lv_obj_get_x(o)!=20||
+            if(lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)||!lv_obj_check_type(o,&lv_label_class))continue;
+            if(lv_obj_get_x(o)==137){
+                bool devices=!strcmp(lv_label_get_text(o),"0 台");
+                assert(devices||!strcmp(lv_label_get_text(o),"已关闭"));
+                unsigned item=devices?KP_SETTING_DEVICES:KP_SETTING_TRANSFER;
+                assert(lv_obj_get_y(o)==86+(int)(item-first)*42);
+                assert(lv_obj_get_width(o)==83&&lv_obj_get_style_text_font(o,0)==&passport_font_16);
+                ++values;
+            }
+            if(lv_obj_get_x(o)!=20||
                 lv_obj_get_style_text_font(o,0)!=&passport_font_20_menu)continue;
             assert(!strcmp(lv_label_get_text(o)+2,settings[first+row]));++row;
         }
-        assert(row==4);
+        assert(row==4&&values==2);
         char name[40];snprintf(name,sizeof(name),"settings_order_%u",selected);save(d,argv[1],name);
     }
     m.selected=0;
@@ -264,7 +282,7 @@ int main(int argc,char **argv){
     // Render the production system page, including saved/preview/failure states.
     const char *system_images[]={"system_mac","system_pending_windows","system_windows","system_save_failed"};
     for(unsigned state=0;state<4;state++){
-        m.page=KP_SYSTEM;m.system=state>=2?KP_SYSTEM_WINDOWS:KP_SYSTEM_MACOS;m.selected=state==0||state==3?0:1;
+        m.page=KP_SYSTEM;m.devices.slot[0].occupied=1;m.device_selected=0;m.devices.slot[0].system=state>=2?KP_SYSTEM_WINDOWS:KP_SYSTEM_MACOS;m.selected=state==0||state==3?0:1;
         m.system_saved=state==2;m.system_save_failed=state==3;++m.config_revision;
         kp_ui_update(&m,ble,100,"","","",&home,epoch);save(d,argv[1],system_images[state]);screen_layout(&m);menu_layout(2);battery_layout();
         // Every single line must fit at its actual selected font, without wrapping.
@@ -277,6 +295,22 @@ int main(int argc,char **argv){
             assert(!strchr(text,'\n')&&size.x<=lv_obj_get_width(o));
         }
     }
+    // Production pairing pages: no simulated renderer or copied UI logic.
+    uint8_t identities[2][7]={{0,1,2,3,4,5,6},{1,6,5,4,3,2,1}};
+    kp_devices_defaults(&m.devices);kp_devices_reconcile(&m.devices,identities,2);
+    kp_device_name_set(&m.devices.slot[0],"MacBook Air");
+    m.devices.slot[0].system=KP_SYSTEM_MACOS;m.devices.slot[1].system=KP_SYSTEM_WINDOWS;
+    m.actual_device=1;m.devices.target=1;m.device_selected=1;m.selected=0;
+    const kp_page_t pairing_pages[]={KP_DEVICES,KP_DEVICE_ACTIONS,KP_SYSTEM,KP_ADD_DEVICE};
+    const char *pairing_names[]={"pairing_devices","pairing_actions","pairing_system","pairing_add"};
+    for(unsigned i=0;i<4;i++){
+        m.page=pairing_pages[i];++m.config_revision;kp_ui_update(&m,ble,100,"","","",&home,epoch);
+        save(d,argv[1],pairing_names[i]);screen_layout(&m);battery_layout();
+    }
+    m.page=KP_SYSTEM;m.devices.slot[1].system=KP_SYSTEM_UNSET;m.system_saved=m.system_save_failed=false;
+    ++m.config_revision;kp_ui_update(&m,ble,100,"","","",&home,epoch);save(d,argv[1],"pairing_unset");screen_layout(&m);
+    m.page=KP_DEVICES;m.devices.slot[1]=(kp_device_t){.system=KP_SYSTEM_UNSET};m.actual_device=-1;
+    ++m.config_revision;kp_ui_update(&m,ble,100,"","","",&home,epoch);save(d,argv[1],"pairing_empty");screen_layout(&m);
     m.system=KP_SYSTEM_WINDOWS;m.page=KP_SETTINGS;m.selected=1;++m.config_revision;
     kp_ui_update(&m,ble,100,"","","",&home,epoch);save(d,argv[1],"settings_windows");menu_layout(4);screen_layout(&m);
     // Repeated recreation of mutually exclusive label roles stays in the 28 KiB pool.
@@ -369,7 +403,15 @@ int main(int argc,char **argv){
             save(d,argv[1],name);
         }
     }
-    m.page=KP_CONSOLE;kp_ui_update(&m,ble,85,"","","",&home,epoch);lv_refr_now(d);console_layout("默认 · 已连接");
+    m.page=KP_CONSOLE;m.system=KP_SYSTEM_MACOS;
+    kp_ui_update(&m,ble,85,"","","",&home,epoch);lv_refr_now(d);console_layout("默认 · 已连接");
+    // Connected without a committed system must show the exact prompt even
+    // when transport is HID-ready. Render the actual widgets and glyphs.
+    m.system=KP_SYSTEM_WINDOWS;m.actual_device=0;m.devices.slot[0].system=KP_SYSTEM_UNSET;++m.config_revision;
+    kp_ui_update(&m,ble,85,"","","",&home,epoch);save(d,argv[1],"control_system_required");console_layout("需配置操作系统");
+    m.system=KP_SYSTEM_UNSET;m.devices.slot[0].system=KP_SYSTEM_MACOS;++m.config_revision;
+    kp_ui_update(&m,ble,85,"","","",&home,epoch);lv_refr_now(d);console_layout("默认 · 已连接");
+    m.system=KP_SYSTEM_MACOS;m.actual_device=-1;++m.config_revision;
     const char *states[]={"等待电脑连接","等待配对完成","键盘服务未就绪","等待电脑启用键盘","蓝牙异常","蓝牙已暂停"};
     const char *screens[]={"console_waiting","console_pairing","console_service","console_subscription","console_failed","console_paused"};
     for(unsigned n=0;n<6;n++){

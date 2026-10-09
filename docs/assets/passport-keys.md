@@ -30,12 +30,12 @@ returns or cancels the current action. Enter Start control to send keys.
 The initial scenario is **coding mode** (displayed as `coding` followed by the
 Chinese word for mode). These defaults apply on first initialization and after
 restoring defaults; updates retain saved scenarios. Select the matching
-**Pairing system**: macOS uses Command+Z, Shift+Command+Z and Command+A;
+**Paired devices**: macOS uses Command+Z, Shift+Command+Z and Command+A;
 Windows uses Control+Z, Control+Y and Control+A. Select-all is followed by
 Backspace once. The voice-input title labels an Alt hold; configure the host's
 voice-input shortcut as needed.
 
-Settings are ordered **Screen → Passport configuration → File transfer → Pairing system →
+Settings are ordered **Screen → Paired devices → File transfer → Passport configuration →
 Clear Bluetooth pairing**.
 
 - **Screen**: adjust brightness and idle dim/off timers; zero disables a timer.
@@ -46,12 +46,28 @@ Clear Bluetooth pairing**.
   running state. Hold OK returns without disabling sharing. Open the displayed
   URL or QR after the service is ready. Configure Wi-Fi through the hotspot first
   if needed; select Enable to retry a failure. Restart or entering configuration ends sharing.
-- **Pairing system**: manually select the global macOS (first-use default) or
-  Windows setting. UP/DOWN previews, OK saves, hold OK returns; `*` marks the saved
-  system. Changes cancel actions and release keys.
-- **Clear Bluetooth pairing**: when changing computers, clear pairing and forget
-  Passport Keys on the old computer. Shortcuts, macros, scenarios and the selected
-  system survive clearing pairing and restart.
+- **Paired devices**: retain A and B, with a separate macOS/Windows setting
+  for each. Select an empty slot and press OK to add a host; hold OK cancels.
+  Full slots are never overwritten automatically. Device actions contain
+  **Switch device** and **Change operating system**. Switching keeps only one
+  host connected; a sleeping host may need to reconnect from its Bluetooth settings.
+  Selecting the connected host keeps that connection. Successfully saving
+  a switch target opens Start control; input still waits for the selected host's
+  connection and HID readiness.
+- After pairing, **Operating system** opens immediately. UP/DOWN selects,
+  OK saves, `>` marks the cursor and `*` the saved system. Keyboard, media and
+  macros stay disabled until that host's system is saved successfully.
+  A successful system save opens Start control. A connected host without a
+  saved system shows an operating-system setup prompt at the top of that page.
+  Editing pauses input; hold OK cancels and retains the previous system.
+  A failed save retains the previous value and allows retry. Switching and restart
+  restore each host's saved system. Older global system settings need one
+  identity-specific confirmation after upgrading.
+- Names are read from the host when available; unreadable, empty, unsupported
+  or overlong names use **Device A/B**. Names never select an operating system.
+- **Clear Bluetooth pairing**: confirmation clears both bonds, names and systems,
+  then opens initial pairing again. Forget Passport Keys on the affected computers
+  before pairing again. Shortcuts, macros and scenarios remain saved.
 - **Pairing recovery**: if the computer requests a key missing on the device,
   the home and control screens ask you to forget/delete Passport Keys in the
   computer's Bluetooth settings and pair again. Repeated unsecured failures
@@ -104,7 +120,7 @@ the editor; save to apply. Single-scenario export shares keys only and preserves
 badge and Wi-Fi edits on import.
 
 **Restore defaults** resets the badge, Wi-Fi and scenarios after saving. Screen,
-pairing-system and Bluetooth pairing settings remain outside this configuration.
+per-device systems and Bluetooth pairing settings remain outside this configuration.
 
 ## Local browser transfer
 

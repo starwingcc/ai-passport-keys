@@ -5,15 +5,17 @@
 static kp_settings_t stored_settings, staged_settings;static size_t settings_size, staged_settings_size;
 static kp_screen_config_t stored_screen, staged_screen; static size_t screen_size, staged_screen_size;
 static uint8_t stored_system[2], staged_system[2];static size_t system_size, staged_system_size;
+static kp_devices_t stored_devices, staged_devices; static size_t devices_size, staged_devices_size;
 static bool fail_open,fail_set,fail_commit;
 static int locked,opened,commits;
 SemaphoreHandle_t xSemaphoreCreateMutex(void){return &locked;}
 int xSemaphoreTake(SemaphoreHandle_t h,int t){(void)t;assert(h==&locked&&!locked);locked=1;return 1;}
 void xSemaphoreGive(SemaphoreHandle_t h){assert(h==&locked&&locked);locked=0;}
-esp_err_t nvs_open(const char *ns,int mode,nvs_handle_t *h){assert(!strcmp(ns,"passport_keys")&&mode==NVS_READWRITE&&!opened);if(fail_open)return ESP_FAIL;opened=1;staged_settings_size=staged_screen_size=staged_system_size=0;*h=1;return ESP_OK;}
+esp_err_t nvs_open(const char *ns,int mode,nvs_handle_t *h){assert(!strcmp(ns,"passport_keys")&&mode==NVS_READWRITE&&!opened);if(fail_open)return ESP_FAIL;opened=1;staged_settings_size=staged_screen_size=staged_system_size=staged_devices_size=0;*h=1;return ESP_OK;}
 esp_err_t nvs_get_blob(nvs_handle_t h,const char *key,void *out,size_t *size){
     assert(h==1&&opened);const void *data;size_t n;
     if(!strcmp(key,"settings_v1")){if(!settings_size)return ESP_FAIL;data=&stored_settings;n=settings_size;}
+    else if(!strcmp(key,"devices_v1")){if(!devices_size)return ESP_FAIL;data=&stored_devices;n=devices_size;}
     else if(!strcmp(key,"system_v1")){if(!system_size)return ESP_FAIL;data=stored_system;n=system_size;}
     else {assert(!strcmp(key,"screen_v1"));if(!screen_size)return ESP_FAIL;data=&stored_screen;n=screen_size;}
     if(!out){*size=n;return ESP_OK;}if(*size<n)return ESP_FAIL;memcpy(out,data,n);*size=n;return ESP_OK;
@@ -21,6 +23,7 @@ esp_err_t nvs_get_blob(nvs_handle_t h,const char *key,void *out,size_t *size){
 esp_err_t nvs_set_blob(nvs_handle_t h,const char *key,const void *data,size_t n){
     assert(h==1&&opened&&n<=sizeof(staged_settings));if(fail_set)return ESP_FAIL;
     if(!strcmp(key,"settings_v1")){memset(&staged_settings,0,sizeof(staged_settings));memcpy(&staged_settings,data,n);staged_settings_size=n;}
+    else if(!strcmp(key,"devices_v1")){assert(n==sizeof(staged_devices));memcpy(&staged_devices,data,n);staged_devices_size=n;}
     else if(!strcmp(key,"system_v1")){assert(n==sizeof(staged_system));memcpy(staged_system,data,n);staged_system_size=n;}
     else {assert(!strcmp(key,"screen_v1")&&n==sizeof(staged_screen));memcpy(&staged_screen,data,n);staged_screen_size=n;}
     return ESP_OK;
@@ -30,6 +33,7 @@ esp_err_t nvs_commit(nvs_handle_t h){
     if(staged_settings_size){stored_settings=staged_settings;settings_size=staged_settings_size;}
     if(staged_screen_size){stored_screen=staged_screen;screen_size=staged_screen_size;}
     if(staged_system_size){memcpy(stored_system,staged_system,staged_system_size);system_size=staged_system_size;}
+    if(staged_devices_size){stored_devices=staged_devices;devices_size=staged_devices_size;}
     ++commits;return ESP_OK;
 }
 void nvs_close(nvs_handle_t h){assert(h==1&&opened);opened=0;}
@@ -46,6 +50,23 @@ static bool copy_settings(const kp_settings_t *settings, void *user){
     assert(locked && settings==&s_settings);*(kp_settings_t *)user=*settings;return true;
 }
 int main(void){
+    kp_devices_t d, old, got; uint8_t peers[2][7]={{0,1,2,3,4,5,6},{1,6,5,4,3,2,1}};
+    assert(kp_store_init()==ESP_OK); kp_store_devices_get(&d); assert(!kp_devices_count(&d));
+    kp_devices_reconcile(&d,peers,2); d.slot[0].system=KP_SYSTEM_MACOS; d.slot[1].system=KP_SYSTEM_WINDOWS;
+    assert(kp_device_name_set(&d.slot[0],"MacBook Air")); d.target=1;
+    assert(kp_store_devices_save(&d)==ESP_OK); old=d;
+    assert(kp_store_init()==ESP_OK); kp_store_devices_get(&got); assert(!memcmp(&got,&old,sizeof(got)));
+    for(unsigned fault=0;fault<3;fault++){
+        d=old;d.slot[1].system=KP_SYSTEM_MACOS;
+        fail_open=fault==0;fail_set=fault==1;fail_commit=fault==2;
+        assert(kp_store_devices_save(&d)==ESP_FAIL);kp_store_devices_get(&got);
+        assert(!memcmp(&got,&old,sizeof(got)));
+    }
+    fail_open=fail_set=fail_commit=false;
+    assert(kp_store_init()==ESP_OK);kp_store_devices_get(&got);assert(!memcmp(&got,&old,sizeof(got)));
+    d=old;d.slot[1].system=99;assert(kp_store_devices_save(&d)==ESP_ERR_INVALID_ARG);
+    stored_devices.slot[1].system=99;assert(kp_store_init()==ESP_OK);kp_store_devices_get(&got);
+    assert(!kp_devices_count(&got)); devices_size=0;
     kp_config_t c,actual,original;kp_defaults(&original);assert(kp_store_init()==ESP_OK);kp_store_get(&actual);assert(!memcmp(&actual,&original,sizeof(actual)));
     assert(kp_store_read(read_committed,&original)&&!locked);
     assert(!kp_store_read(NULL,NULL)&&!locked);

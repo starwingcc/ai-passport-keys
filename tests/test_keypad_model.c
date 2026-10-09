@@ -80,7 +80,7 @@ int main(void) {
     click(&m,2,4100); assert(count[KP_SELECT_PROFILE]==1 && m.page==KP_PROFILES);
     press(&m,2,4400); kp_tick(&m,4900); release(&m,2,5000); assert(m.page==KP_MENU);
     click(&m,0,5100); click(&m,2,5400); assert(m.page==KP_SETTINGS); // UP wraps to third entry.
-    quick(&m,1,5450);quick(&m,2,5500);assert(m.page==KP_LAN);
+    m.selected=KP_SETTING_PASSPORT;quick(&m,2,5500);assert(m.page==KP_LAN);
     quick(&m,2,5550);assert(m.page==KP_HOTSPOT&&!m.lan.wifi&&m.lan.state==KP_AP_STARTING&&count[KP_AP_START]==1);
     quick(&m,2,5600);assert(m.page==KP_HOTSPOT&&count[KP_AP_START]==1);
     press(&m,2,5700);kp_tick(&m,6200);release(&m,2,6210);assert(m.page==KP_LAN&&!m.selected&&count[KP_AP_STOP]==1);
@@ -92,8 +92,8 @@ int main(void) {
     kp_hotspot_exit(&m);assert(m.page==KP_LAN&&m.selected==1&&count[KP_AP_STOP]==3);
     m.lan.configured=true;quick(&m,2,7200);assert(m.page==KP_HOTSPOT&&count[KP_WIFI_START]==2);
     kp_hotspot_exit(&m);assert(m.page==KP_LAN&&m.selected==1&&count[KP_AP_STOP]==4);
-    press(&m,2,7250);kp_tick(&m,7750);release(&m,2,7760);assert(m.page==KP_SETTINGS&&m.selected==1);
-    quick(&m,0,7800);quick(&m,0,7850);quick(&m,2,7900);assert(m.page==KP_FORGET&&!m.selected);
+    press(&m,2,7250);kp_tick(&m,7750);release(&m,2,7760);assert(m.page==KP_SETTINGS&&m.selected==KP_SETTING_PASSPORT);
+    quick(&m,1,7800);quick(&m,2,7900);assert(m.page==KP_FORGET&&!m.selected);
     quick(&m,2,7950);assert(m.page==KP_SETTINGS&&!count[KP_CLEAR_BOND]);
     quick(&m,0,8000);quick(&m,2,8050);quick(&m,1,8100);quick(&m,2,8150);
     assert(count[KP_CLEAR_BOND]==1&&m.page==KP_SETTINGS);
@@ -246,19 +246,58 @@ int main(void) {
     // Background link transitions preserve the idle deadline and current page.
     kp_init(&m,&c,effect,NULL);kp_tick(&m,10000);kp_link_changed(&m,20000);kp_tick(&m,30000);
     assert(m.screen.state==KP_SCREEN_OFF&&m.page==KP_CONSOLE);
-    // Manual system selection previews only; commit failure and back retain the saved value.
-    kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));m.page=KP_SETTINGS;
-    quick(&m,1,0);quick(&m,1,15);quick(&m,1,25);quick(&m,2,50);assert(m.page==KP_SYSTEM&&m.system==KP_SYSTEM_MACOS&&m.selected==0);
-    quick(&m,1,100);assert(m.selected==1&&m.system==KP_SYSTEM_MACOS&&!count[KP_SAVE_SYSTEM]);
-    press(&m,2,200);kp_tick(&m,700);release(&m,2,710);assert(m.page==KP_SETTINGS&&m.system==KP_SYSTEM_MACOS);
-    quick(&m,1,800);quick(&m,1,815);quick(&m,1,825);quick(&m,2,850);quick(&m,0,900);assert(m.selected==1);
-    m.executing=true;unsigned canceled=count[KP_CANCEL];quick(&m,2,950);
-    assert(m.system_saving&&count[KP_SAVE_SYSTEM]==1&&count[KP_CANCEL]==canceled+1&&!m.executing);
-    quick(&m,1,1000);assert(m.selected==1);kp_system_saved(&m,false);
-    assert(m.system==KP_SYSTEM_MACOS&&m.system_save_failed&&!m.system_saved);
-    quick(&m,2,1050);kp_system_saved(&m,true);assert(m.system==KP_SYSTEM_WINDOWS&&m.system_saved&&!m.system_save_failed);
-    quick(&m,1,1100);assert(m.selected==0&&m.system==KP_SYSTEM_WINDOWS&&!m.system_saved);
-    press(&m,2,1200);kp_tick(&m,1700);release(&m,2,1710);assert(m.page==KP_SETTINGS&&m.system==KP_SYSTEM_WINDOWS);
+    // Real A/B records, mandatory first confirmation and repeatable edits.
+    kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
+    uint8_t identities[2][7]={{0,1,2,3,4,5,6},{1,6,5,4,3,2,1}};
+    assert(kp_devices_reconcile(&m.devices,identities,2)==1);
+    m.devices.slot[0].system=KP_SYSTEM_MACOS;m.devices.target=1;
+    m.actual_device=1;m.hid_ready=m.devices_committed=true;m.system=KP_SYSTEM_UNSET;
+    assert(!kp_model_can_send(&m));kp_system_open(&m,1);
+    assert(m.page==KP_SYSTEM&&m.selected==0&&!kp_model_can_send(&m));
+    quick(&m,1,0);assert(m.selected==1&&m.devices.slot[1].system==KP_SYSTEM_UNSET);
+    quick(&m,2,50);assert(m.system_saving&&count[KP_SAVE_SYSTEM]==1);
+    press(&m,2,100);kp_tick(&m,600);release(&m,2,610);assert(m.page==KP_SYSTEM);
+    kp_system_saved(&m,false);assert(!kp_model_can_send(&m)&&m.devices.slot[1].system==KP_SYSTEM_UNSET);
+    press(&m,2,700);kp_tick(&m,1200);release(&m,2,1210);
+    assert(m.page==KP_DEVICE_ACTIONS&&!kp_model_can_send(&m));
+    quick(&m,2,1300);assert(m.page==KP_SYSTEM);quick(&m,1,1350);quick(&m,2,1400);
+    kp_system_saved(&m,true);assert(m.page==KP_CONSOLE&&m.system==KP_SYSTEM_WINDOWS&&kp_model_can_send(&m));
+    assert(m.devices.slot[0].system==KP_SYSTEM_MACOS);
+    for(unsigned slot=0;slot<2;slot++)for(unsigned repeat=0;repeat<3;repeat++){
+        uint8_t original=m.devices.slot[slot].system,other=m.devices.slot[1-slot].system;
+        uint32_t at=2000+slot*10000+repeat*2000;
+        kp_system_open(&m,slot);quick(&m,1,at);assert(!kp_model_can_send(&m));
+        press(&m,2,at+50);kp_tick(&m,at+550);release(&m,2,at+560);
+        assert(kp_model_can_send(&m)&&m.devices.slot[slot].system==original);
+        kp_system_open(&m,slot);quick(&m,1,at+600);quick(&m,2,at+650);kp_system_saved(&m,false);
+        assert(!kp_model_can_send(&m)&&m.devices.slot[slot].system==original);
+        quick(&m,2,at+700);kp_system_saved(&m,true);
+        assert(m.page==KP_CONSOLE&&kp_model_can_send(&m)&&m.devices.slot[slot].system==1-original&&m.devices.slot[1-slot].system==other);
+    }
+    m.devices.target=0;assert(!kp_model_can_send(&m));m.actual_device=0;assert(kp_model_can_send(&m));
+    m.hid_ready=false;assert(!kp_model_can_send(&m));m.hid_ready=true;m.devices_committed=false;assert(!kp_model_can_send(&m));
+    m.devices_committed=true;m.device_selected=0;m.page=KP_DEVICE_ACTIONS;m.selected=0;
+    quick(&m,2,30000);assert(count[KP_SWITCH_DEVICE]==1&&m.devices.target==0);
+    kp_device_switched(&m,false);assert(m.page==KP_DEVICE_ACTIONS&&m.system_save_failed);
+    kp_device_switched(&m,true);assert(m.page==KP_CONSOLE&&m.selected==0&&!m.system_save_failed);
+    // Opening control does not grant input to an offline or unconfigured peer.
+    m.hid_ready=false;assert(!kp_model_can_send(&m));m.hid_ready=true;
+    m.devices.slot[0].system=KP_SYSTEM_UNSET;assert(!kp_model_can_send(&m));
+    m.page=KP_DEVICES;m.selected=1;quick(&m,2,30100);assert(m.page==KP_DEVICE_ACTIONS&&m.device_selected==1&&m.selected==0);
+    kp_devices_defaults(&m.devices);m.page=KP_DEVICES;m.selected=1;quick(&m,2,30200);
+    assert(m.page==KP_ADD_DEVICE&&count[KP_ADD_PAIRING]==1);
+    press(&m,2,30300);kp_tick(&m,30800);release(&m,2,30810);assert(m.page==KP_DEVICES&&count[KP_END_PAIRING]==1);
+    // Reordering and RPA changes cannot reassign identity metadata. Removal
+    // clears only that slot, and a replacement never inherits its name/OS.
+    kp_devices_t devices;kp_devices_defaults(&devices);kp_devices_reconcile(&devices,identities,2);
+    devices.slot[0].system=0;devices.slot[1].system=1;devices.target=1;
+    assert(kp_device_name_set(&devices.slot[0],"MacBook Air"));
+    assert(!kp_device_name_set(&devices.slot[1],"😀")&&!kp_device_name_set(&devices.slot[1],""));
+    uint8_t reversed[2][7];memcpy(reversed[0],identities[1],7);memcpy(reversed[1],identities[0],7);
+    assert(kp_devices_reconcile(&devices,reversed,2)==-1&&devices.slot[0].system==0&&devices.slot[1].system==1);
+    kp_devices_reconcile(&devices,reversed,1);assert(!devices.slot[0].occupied&&!devices.slot[0].name[0]&&devices.slot[0].system==KP_SYSTEM_UNSET);
+    reversed[1][1]=99;assert(kp_devices_reconcile(&devices,reversed,2)==0&&devices.slot[0].system==KP_SYSTEM_UNSET);
+    assert(!strcmp(kp_device_name(&devices,0),"设备 A"));assert(kp_devices_valid(&devices));
     // Fixed modifiers keep identical HID codes on both host systems.
     for(unsigned system=0;system<KP_SYSTEM_COUNT;system++)for(unsigned mods=0;mods<256;mods++){
         kp_action_t source={.type=KP_KEYBOARD,.modifiers=mods,.keys={4}},resolved;
@@ -284,6 +323,13 @@ int main(void) {
     press(&m,2,650);kp_tick(&m,1150);release(&m,2,1160);assert(m.page==KP_SETTINGS&&m.selected==2&&m.transfer.enabled);
     quick(&m,2,1200);assert(m.page==KP_TRANSFER&&m.selected==0);m.transfer.state=KP_TRANSFER_FAILED;
     quick(&m,1,1250);quick(&m,2,1300);assert(count[KP_TRANSFER_START]==2);
+    const kp_page_t setting_pages[]={KP_SCREEN,KP_DEVICES,KP_TRANSFER,KP_LAN,KP_FORGET};
+    for(unsigned item=0;item<KP_SETTINGS_COUNT;item++){
+        kp_init(&m,&c,effect,NULL);m.page=KP_SETTINGS;m.selected=item;
+        quick(&m,2,0);assert(m.page==setting_pages[item]);
+        press(&m,2,50);kp_tick(&m,550);release(&m,2,560);
+        assert(m.page==KP_SETTINGS&&m.selected==(item==KP_SETTING_FORGET?0:item));
+    }
     // Device labels and fallback titles reflect the actual execution path.
     kp_step_t display_steps[]={
         {.action={.type=KP_KEYBOARD,.modifiers=10,.keys={29},.system=KP_TARGET_MACOS},.delay_ms=80},

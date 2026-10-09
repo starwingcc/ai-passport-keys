@@ -11,5 +11,3 @@ typedef struct {
     unsigned peers;
     char ip[16];
 } kp_transfer_view_t;
-#define KP_SETTINGS_COUNT 5U
-static inline unsigned kp_settings_first(unsigned selected) { return selected >= 4 ? selected - 3 : 0; }

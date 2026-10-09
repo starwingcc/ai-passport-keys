@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "keypad_screen.h"
+#include "keypad_devices.h"
 #include "keypad_transfer.h"
 #include "keypad_lan.h"
 
@@ -52,9 +53,12 @@ _Static_assert(offsetof(kp_action_t, consumer) == 8 && offsetof(kp_action_t, sys
                offsetof(kp_step_t, delay_ms) == 10, "version 5 migration offsets");
 
 typedef enum { KP_CONSOLE, KP_MENU, KP_SETTINGS, KP_HOTSPOT, KP_FORGET, KP_PROFILES,
-               KP_SCREEN, KP_SCREEN_EDIT, KP_SYSTEM, KP_TRANSFER, KP_LAN } kp_page_t;
+               KP_SCREEN, KP_SCREEN_EDIT, KP_SYSTEM, KP_TRANSFER, KP_LAN, KP_DEVICES, KP_DEVICE_ACTIONS, KP_ADD_DEVICE } kp_page_t;
+typedef enum { KP_SETTING_SCREEN, KP_SETTING_DEVICES, KP_SETTING_TRANSFER,
+               KP_SETTING_PASSPORT, KP_SETTING_FORGET, KP_SETTINGS_COUNT } kp_setting_t;
+static inline unsigned kp_settings_first(unsigned selected) { return selected >= 4 ? selected - 3 : 0; }
 typedef enum { KP_TAP, KP_HOLD, KP_RELEASE, KP_AP_START, KP_AP_STOP,
-               KP_CLEAR_BOND, KP_CANCEL, KP_SELECT_PROFILE, KP_SAVE_SCREEN, KP_SAVE_SYSTEM, KP_TRANSFER_START, KP_TRANSFER_STOP, KP_WIFI_START } kp_effect_t;
+               KP_CLEAR_BOND, KP_CANCEL, KP_SELECT_PROFILE, KP_SAVE_SCREEN, KP_SAVE_SYSTEM, KP_SWITCH_DEVICE, KP_ADD_PAIRING, KP_END_PAIRING, KP_TRANSFER_START, KP_TRANSFER_STOP, KP_WIFI_START } kp_effect_t;
 typedef void (*kp_emit_t)(void *user, kp_effect_t effect, const kp_action_t *action);
 typedef struct {
     bool down, pending, long_sent, ignored;
@@ -85,6 +89,10 @@ typedef struct {
     kp_transfer_view_t transfer;
     kp_lan_view_t lan;
     kp_system_t system;
+    kp_devices_t devices;
+    unsigned device_selected;
+    int actual_device;
+    bool devices_committed, hid_ready, pairing_adding;
     bool system_saving, system_save_failed, system_saved;
     kp_emit_t emit;
     void *user;
@@ -126,4 +134,7 @@ void kp_set_busy(kp_model_t *model, bool busy);
 void kp_hotspot_exit(kp_model_t *model);
 void kp_screen_saved(kp_model_t *model, bool success);
 void kp_system_saved(kp_model_t *model, bool success);
+void kp_device_switched(kp_model_t *model, bool success);
+void kp_system_open(kp_model_t *model, unsigned device);
+bool kp_model_can_send(const kp_model_t *model);
 uint8_t kp_screen_level(const kp_model_t *model);
