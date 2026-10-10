@@ -2,7 +2,8 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 function page(rtc,closeEvent=true,navigator={}){
   let now=0,nextTimer=1,nextNonce=0;
-  const timers=new Map(),sockets=[],events={},nodes=new Map(),clipboard=[];
+  const timers=new Map(),sockets=[],events={},nodes=new Map(),clipboard=[],fetches=[];
+  let fetchImpl=async()=>({ok:true,body:{cancel:async()=>{}}});
   class Element{
     constructor(tag='div'){this.tag=tag;this.children=[];this.value='';this.textContent='';this.hidden=false;this.disabled=false;this.classList={toggle(){}};this.dataset={};this.style={};this.attributes={};this.isConnected=true;}
     append(...children){for(const child of children)child.parent=this;this.children.push(...children);}
@@ -32,7 +33,8 @@ function page(rtc,closeEvent=true,navigator={}){
     document:{getElementById:node,createElement:tag=>new Element(tag),createElementNS:(ns,tag)=>{const e=new Element(tag);e.namespaceURI=ns;return e;},createTextNode:text=>{const e=new Element('#text');e.textContent=text;return e;},body:node('body'),execCommand:command=>{assert.equal(command,'copy');clipboard.push(node('body').children.find(e=>e.selected).value);return true;},visibilityState:'visible'},
     navigator:{userAgent:'Chrome',platform:'MacIntel',maxTouchPoints:0,...navigator},
     location:{protocol:'http:',host:'192.168.1.11'},localStorage:{getItem(){return null;},setItem(){}},
-    RTCPeerConnection:rtc,WebSocket:Socket,TextEncoder,Uint8Array,ArrayBuffer,Blob,URL,
+    RTCPeerConnection:rtc,WebSocket:Socket,TextEncoder,Uint8Array,ArrayBuffer,Blob,URL,AbortController,
+    fetch:(url,options)=>{fetches.push({url,options});return fetchImpl(url,options);},
     Date:class extends Date{static now(){return now;}},crypto:{getRandomValues:a=>a.fill(++nextNonce)},
     setTimeout:(fn,ms)=>schedule(fn,ms),setInterval:(fn,ms)=>schedule(fn,ms,ms),
     clearTimeout:id=>timers.delete(id),clearInterval:id=>timers.delete(id),
@@ -41,7 +43,7 @@ function page(rtc,closeEvent=true,navigator={}){
   for(const name of ['transfer-protocol.js','transfer.js'])vm.runInContext(fs.readFileSync(`main/web/${name}`,'utf8'),context);
   const welcome=(socket=sockets.at(-1))=>{socket.receive({type:'welcome',id:1});socket.receive({type:'peers',peers:[{id:1,name:'本机',rtc:!!rtc},{id:2,name:'电脑',rtc:true}]});advance(100);};
   const find=(root,predicate)=>predicate(root)?root:root.children.map(c=>find(c,predicate)).find(Boolean);
-  return {context,node,sockets,events,welcome,advance,clipboard,find};
+  return {context,node,sockets,events,welcome,advance,clipboard,find,fetches,setFetch:fn=>fetchImpl=fn};
 }
 async function receiveBudget(navigator,limit){
   const p=page(function(){},true,navigator);p.welcome();
@@ -180,7 +182,8 @@ async function main(){
   assert.equal(active.node('connection').textContent,'流转已关闭');
   const failing=page(function(){});failing.advance(120000);
   assert.equal(failing.sockets.length,6);assert(failing.sockets.every(s=>s.readyState===3));
-  failing.node('reconnect').onclick();assert.equal(failing.sockets.length,7);
+  await failing.node('reconnect').onclick();assert.equal(failing.sockets.length,7);
+  assert.equal(failing.fetches.length,1);assert.equal(failing.fetches[0].url,'/transfer');assert.equal(failing.fetches[0].options.cache,'no-store');
   failing.events.pagehide();failing.advance(60000);assert.equal(failing.sockets.length,7);
   const silent=page(function(){},false);silent.advance(120000);
   assert.equal(silent.sockets.length,6); // missing onclose cannot strand connecting forever
@@ -189,6 +192,21 @@ async function main(){
   const congested=page(function(){},false);congested.welcome();
   congested.sockets[0].bufferedAmount=20000;congested.advance(11000);
   assert.equal(congested.sockets.length,2); // throwing ping cannot bypass liveness checks
+  const keys=page(function(){});keys.welcome();const sent=[];
+  keys.context.PassportTransfer.links.set(2,{id:2,ready:Promise.resolve(),pc:{close(){}},dc:{readyState:'open',send:data=>sent.push(JSON.parse(data)),close(){}}});
+  let prevented=0;
+  const enter=extra=>({key:'Enter',shiftKey:false,isComposing:false,keyCode:13,repeat:false,preventDefault(){++prevented;},...extra});
+  keys.node('text').value='候选文字';
+  for(const event of [enter({shiftKey:true}),enter({isComposing:true}),enter({keyCode:229}),{key:'a'}])await keys.node('text').onkeydown(event);
+  assert.equal(prevented,0);assert.equal(sent.length,0);
+  await keys.node('text').onkeydown(enter({repeat:true}));assert.equal(sent.length,0);
+  keys.node('text').value='第一行\n第二行';await keys.node('text').onkeydown(enter());
+  assert.equal(sent.filter(m=>m.type==='text').length,1);assert.equal(sent[0].text,'第一行\n第二行');assert.equal(keys.node('text').value,'');
+  keys.advance(100);keys.node('send-text').disabled=true;keys.node('text').value='离线不发送';await keys.node('text').onkeydown(enter());assert.equal(sent.length,1);
+  // A pending page wake must not resurrect a page after pagehide.
+  const waking=page(function(){});let respond;waking.setFetch(()=>new Promise(resolve=>{respond=resolve;}));
+  const pendingWake=waking.node('reconnect').onclick();waking.events.pagehide();respond({ok:true});await pendingWake;assert.equal(waking.sockets.length,1);
+  const rejected=page(function(){});rejected.setFetch(async()=>({ok:false}));await rejected.node('reconnect').onclick();assert.equal(rejected.sockets.length,1);assert.match(rejected.node('notice').textContent,/恢复/);
   console.log('Transfer sessions: mobile/desktop aggregate receive budgets, pending reservations, cancellation, RTC capability, heartbeat, bounded reconnect, stale callbacks and explicit shutdown: PASS');
 }
 main().catch(e=>{console.error(e);process.exit(1);});

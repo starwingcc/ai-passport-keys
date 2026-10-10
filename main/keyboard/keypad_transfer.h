@@ -4,7 +4,8 @@
 // Runtime-only state: never stored in the keyboard configuration or NVS.
 typedef enum { KP_TRANSFER_OFF, KP_TRANSFER_NO_WIFI, KP_TRANSFER_CONNECTING,
                KP_TRANSFER_READY, KP_TRANSFER_RECONNECTING, KP_TRANSFER_FAILED,
-               KP_TRANSFER_STOPPING } kp_transfer_state_t;
+               KP_TRANSFER_STOPPING, KP_TRANSFER_LISTENING,
+               KP_TRANSFER_WAITING } kp_transfer_state_t;
 typedef struct {
     bool enabled;
     kp_transfer_state_t state;

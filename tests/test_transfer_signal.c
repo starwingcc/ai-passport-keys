@@ -4,7 +4,8 @@
 #include <string.h>
 static bool saw_rtc_false;static unsigned sends;static int last_fd;static char last[KP_TRANSFER_MESSAGE+1];
 static bool send_message(void *user,int fd,const char *data,size_t size){(void)user;assert(size<=KP_TRANSFER_MESSAGE);++sends;last_fd=fd;memcpy(last,data,size);last[size]=0;if(strstr(last,"\"rtc\":false"))saw_rtc_false=true;return true;}
-static bool message(kp_transfer_signal_t *s,int fd,const char *data,uint32_t now){return kp_transfer_signal_message(s,fd,data,strlen(data),now);}
+static uint64_t mono(uint32_t now){return (uint64_t)UINT32_MAX+1+now;}
+static bool message(kp_transfer_signal_t *s,int fd,const char *data,uint32_t now){return kp_transfer_signal_message(s,fd,data,strlen(data),mono(now));}
 int main(void){
     kp_transfer_signal_t s;kp_transfer_signal_init(&s,send_message,NULL);
     for(int fd=10;fd<14;++fd)assert(kp_transfer_signal_open(&s,fd,UINT32_MAX-20));
@@ -33,9 +34,15 @@ int main(void){
     char wide[1000];strcpy(wide,"{\"type\":\"files\",\"files\":[");
     for(unsigned i=0;i<200;++i)strcat(wide,i?",0":"0");strcat(wide,"]}");assert(!message(&s,10,wide,5));
     assert(message(&s,10,"{\"type\":\"hello\",\"name\":\"braces {} [] \\\" quote\"}",5));
-    char huge[KP_TRANSFER_MESSAGE+2];memset(huge,'x',sizeof(huge));assert(!kp_transfer_signal_message(&s,10,huge,sizeof(huge),5));
-    assert(kp_transfer_signal_expired(&s,KP_TRANSFER_IDLE_MS-22)==-1);assert(kp_transfer_signal_expired(&s,KP_TRANSFER_IDLE_MS-21)==12);
-    kp_transfer_signal_close(&s,10);assert(kp_transfer_signal_count(&s)==1&&!s.peers[0].catalog[0]);assert(kp_transfer_signal_open(&s,20,10)&&s.peers[0].id==5);
+    char huge[KP_TRANSFER_MESSAGE+2];memset(huge,'x',sizeof(huge));assert(!kp_transfer_signal_message(&s,10,huge,sizeof(huge),mono(5)));
+    assert(kp_transfer_signal_expired(&s,mono(KP_TRANSFER_IDLE_MS-22))==-1);assert(kp_transfer_signal_expired(&s,mono(KP_TRANSFER_IDLE_MS-21))==12);
+    kp_transfer_signal_close(&s,10);assert(kp_transfer_signal_count(&s)==1&&!s.peers[0].catalog[0]);assert(kp_transfer_signal_open(&s,20,mono(10))&&s.peers[0].id==5);
     kp_transfer_signal_end(&s);assert(!strcmp(last,"{\"type\":\"end\"}"));
+    assert(kp_transfer_signal_online(&s,mono(KP_TRANSFER_IDLE_MS+10))==0);
+    assert(!message(&s,11,"{\"type\":\"ping\"}",KP_TRANSFER_IDLE_MS+10));
+    kp_transfer_signal_init(&s,send_message,NULL);assert(kp_transfer_signal_open(&s,30,UINT64_MAX-20));
+    const char hello[]="{\"type\":\"hello\",\"name\":\"wrap\"}";
+    assert(kp_transfer_signal_message(&s,30,hello,strlen(hello),0));
+    assert(kp_transfer_signal_online(&s,119999)==1&&kp_transfer_signal_online(&s,120000)==0);
     puts("Transfer signaling: bounded sessions, catalogs, SDP/ICE, sender identity, content rejection, wrap and shutdown: PASS");
 }

@@ -22,3 +22,6 @@ bool kp_network_ip(char out[16]);
 // Worker-only: lend the running station to configuration scans/tests without
 // destroying its netif. Event callbacks keep tracking DHCP during the loan.
 void kp_network_setup_pause(bool pause, uint32_t now_ms);
+// Worker-only, while setup owns the station: DHCP for a candidate test, then
+// restore the fixed LAN address before reconnecting the original association.
+esp_err_t kp_network_setup_test_address(bool candidate);

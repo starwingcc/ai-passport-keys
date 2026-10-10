@@ -9,7 +9,8 @@
 // Pure bounded signaling state; file bytes and text content are never accepted.
 typedef struct {
     int fd;
-    uint32_t id, last_ms;
+    uint32_t id;
+    uint64_t last_ms;
     bool joined, rtc;
     char name[49], catalog[KP_TRANSFER_CATALOG + 1];
 } kp_transfer_peer_t;
@@ -21,10 +22,11 @@ typedef struct {
     void *user;
 } kp_transfer_signal_t;
 void kp_transfer_signal_init(kp_transfer_signal_t *s, kp_transfer_send_t send, void *user);
-bool kp_transfer_signal_open(kp_transfer_signal_t *s, int fd, uint32_t now);
+bool kp_transfer_signal_open(kp_transfer_signal_t *s, int fd, uint64_t now);
 void kp_transfer_signal_close(kp_transfer_signal_t *s, int fd);
-bool kp_transfer_signal_message(kp_transfer_signal_t *s, int fd, const char *data, size_t size, uint32_t now);
+bool kp_transfer_signal_message(kp_transfer_signal_t *s, int fd, const char *data, size_t size, uint64_t now);
 unsigned kp_transfer_signal_count(const kp_transfer_signal_t *s);
+unsigned kp_transfer_signal_online(const kp_transfer_signal_t *s, uint64_t now);
 // Return one expired descriptor at a time; transport closes it, retaining ordering.
-int kp_transfer_signal_expired(const kp_transfer_signal_t *s, uint32_t now);
+int kp_transfer_signal_expired(const kp_transfer_signal_t *s, uint64_t now);
 void kp_transfer_signal_end(kp_transfer_signal_t *s);

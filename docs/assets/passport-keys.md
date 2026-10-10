@@ -41,11 +41,14 @@ Clear Bluetooth pairing**.
 - **Screen**: adjust brightness and idle dim/off timers; zero disables a timer.
   UP/DOWN adjusts, short OK saves, hold OK cancels. After screen-off, the first
   button press only wakes the screen; release before operating.
-- **File transfer**: connect to saved Wi-Fi while keeping Bluetooth usable.
-  UP/DOWN selects Disable (top) or Enable (bottom); short OK applies, `>` marks the cursor and `*` the
-  running state. Hold OK returns without disabling sharing. Open the displayed
-  URL or QR after the service is ready. Configure Wi-Fi through the hotspot first
-  if needed; select Enable to retry a failure. Restart or entering configuration ends sharing.
+- **File transfer**: saved Wi-Fi stays connected. Opening `http://192.168.1.11`
+  or `/transfer` from the same LAN automatically starts sharing while keeping
+  the current screen, screen-off state and Bluetooth keyboard intact.
+  UP/DOWN selects Disable (top) or Enable (bottom); short OK applies, `>` marks
+  the cursor and `*` the running state. Disable ends current sessions and returns
+  to listening; the next webpage visit can start sharing again. Hold OK returns.
+  Configure Wi-Fi through the hotspot first if needed. Configuration temporarily
+  replaces the transfer entry; exiting restores listening.
 - **Paired devices**: retain A and B, with a separate macOS/Windows setting
   for each. Select an empty slot and press OK to add a host; hold OK cancels.
   Full slots are never overwritten automatically. Device actions contain
@@ -110,8 +113,9 @@ is available. Wi-Fi requires a 2.4 GHz network. Both configuration modes support
 scanning and connection testing; obtaining an IP passes the test without time
 synchronization, and a test does not save credentials. In WiFi mode,
 a test temporarily interrupts the page and restores the original network after
-success, failure or timeout. Keep the page open while it retries; if the displayed
-IP changes, reopen the new address. If recovery fails, use hotspot configuration.
+success, failure or timeout. Candidate tests temporarily use DHCP; restoring the
+original network restores its fixed address and DNS. Keep the page open while it
+retries. If recovery fails, use hotspot configuration.
 Network edits apply after saving and exiting configuration.
 
 **Export complete configuration** backs up the badge, Wi-Fi and all scenarios,
@@ -124,12 +128,27 @@ per-device systems and Bluetooth pairing settings remain outside this configurat
 
 ## Local browser transfer
 
-Enable **Settings → File transfer** and open the displayed `http://<IP>/transfer`
-(or scan its QR) on devices in the same network. Name each browser, select one
-recipient or all online devices, then send text or share files for recipients to
-receive. Text records show recipients and their confirmations; click **Copy** to
+On the configured LAN, open `http://192.168.1.11` or
+`http://192.168.1.11/transfer`; manual enabling on Passport is optional. Name each
+browser, select one recipient or all online devices, then send text or share
+files for recipients to receive. **Enter** sends text; **Shift+Enter** adds a
+newline. Text records show recipients and their confirmations; click **Copy** to
 copy the text. At most four browser sessions and eight shared files per sender
 are available.
+
+The firmware uses `192.168.1.11`, mask `255.255.255.0`, gateway and DNS
+`192.168.1.1`. Verify that the address belongs to Passport and reserve or exclude
+it in the router before use. Another subnet may be incompatible; the firmware
+does not silently fall back to another address.
+
+A browser is online only after joining and until its session expires. After all
+browsers go offline, sharing waits one minute before releasing its sessions
+and catalogs; a joined browser cancels that wait. Opening a page without joining
+also has a one-minute limit. Closing a page normally detects departure quickly;
+sudden network loss can take the separate 120-second heartbeat timeout first.
+Wi-Fi and the HTTP entry remain available in standby. Modem power saving operates
+throughout; standby does not enter whole-device deep sleep. **Reconnect** on the
+webpage can automatically start sharing again.
 
 Keep pages open and phones in the foreground. Refreshing or closing a page ends
 its transfers, removes its shared files and discards unsaved received files.

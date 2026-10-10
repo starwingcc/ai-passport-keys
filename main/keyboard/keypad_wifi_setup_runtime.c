@@ -16,6 +16,7 @@ static kp_wifi_config_t s_candidate;
 static bool s_ready, s_queued, s_scan, s_station, s_finishing;
 static bool s_disconnect_requested;
 static bool s_lan, s_borrowed, s_restore, s_restoring, s_leaving;
+static bool s_address_borrowed;
 static wifi_config_t s_original;
 static kp_wifi_job_state_t s_final;
 static uint32_t s_at, s_cleanup_at;
@@ -98,6 +99,11 @@ esp_err_t kp_wifi_setup_stop(void) {
     if (s_station) {
         esp_err_t rc = esp_wifi_disconnect();
         if (rc != ESP_OK && rc != ESP_ERR_WIFI_NOT_CONNECT) return rc;
+        if (s_address_borrowed) {
+            rc = kp_network_setup_test_address(false);
+            if (rc != ESP_OK) return rc;
+            s_address_borrowed = false;
+        }
         rc = s_restore ? esp_wifi_set_config(WIFI_IF_STA, &s_original) : clear_station();
         if (rc != ESP_OK) return rc;
         s_station = false;
@@ -167,6 +173,10 @@ static void cleanup(uint32_t now) {
         // Drain disconnect/IP events before accepting another password test.
         wifi_ap_record_t ap;
         if ((uint32_t)(now - s_cleanup_at) < 100 || esp_wifi_sta_get_ap_info(&ap) == ESP_OK) return;
+        if (s_address_borrowed) {
+            if (kp_network_setup_test_address(false) != ESP_OK) return;
+            s_address_borrowed = false;
+        }
         if ((s_restore ? esp_wifi_set_config(WIFI_IF_STA, &s_original) : clear_station()) != ESP_OK) return;
         s_station = false;
     }
@@ -225,7 +235,12 @@ void kp_wifi_setup_poll(uint32_t now) {
         memcpy(cfg.sta.ssid, candidate.ssid, strlen(candidate.ssid));
         memcpy(cfg.sta.password, candidate.password, strlen(candidate.password));
         cfg.sta.threshold.authmode = candidate.password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-        esp_err_t rc = esp_wifi_set_config(WIFI_IF_STA, &cfg);
+        esp_err_t rc = ESP_OK;
+        if (s_lan) {
+            s_address_borrowed = true;
+            rc = kp_network_setup_test_address(true);
+        }
+        if (rc == ESP_OK) rc = esp_wifi_set_config(WIFI_IF_STA, &cfg);
         xSemaphoreTake(s_lock, portMAX_DELAY); s_candidate = (kp_wifi_config_t){0}; xSemaphoreGive(s_lock);
         memset(&candidate, 0, sizeof(candidate)); memset(&cfg, 0, sizeof(cfg));
         if (rc == ESP_OK) { s_station = true; rc = esp_wifi_connect(); }

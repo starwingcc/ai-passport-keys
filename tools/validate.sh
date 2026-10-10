@@ -81,6 +81,9 @@ run_static_checks() {
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain/keyboard -Itests/third_party/cjson \
         tests/test_transfer_signal.c main/keyboard/keypad_transfer_signal.c tests/third_party/cjson/cJSON.c -lm -o "${test_dir}/test_transfer_signal"
     "${test_dir}/test_transfer_signal"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain/keyboard \
+        tests/test_transfer_idle.c main/keyboard/keypad_transfer_lifecycle.c -o "${test_dir}/test_transfer_idle"
+    "${test_dir}/test_transfer_idle"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/keypad_web_stubs -Imain/keyboard \
         tests/test_socket_io.c -o "${test_dir}/test_socket_io"
     "${test_dir}/test_socket_io"
@@ -88,7 +91,7 @@ run_static_checks() {
         tests/test_transfer_http.c main/keyboard/keypad_transfer_signal.c tests/third_party/cjson/cJSON.c -lm -o "${test_dir}/test_transfer_http"
     "${test_dir}/test_transfer_http"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/transfer_stubs -Itests/keypad_web_stubs -Itests/keypad_store_stubs -Imain/keyboard \
-        tests/test_transfer_lifecycle.c main/keyboard/keypad_wifi.c main/keyboard/keypad_text.c -o "${test_dir}/test_transfer_lifecycle"
+        tests/test_transfer_lifecycle.c main/keyboard/keypad_transfer_lifecycle.c main/keyboard/keypad_wifi.c main/keyboard/keypad_text.c -o "${test_dir}/test_transfer_lifecycle"
     "${test_dir}/test_transfer_lifecycle"
     "${NODE:-node}" tests/test_transfer_protocol.js
     "${NODE:-node}" tests/test_transfer_session.js

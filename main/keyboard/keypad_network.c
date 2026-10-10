@@ -1,4 +1,5 @@
 #include "keypad_network.h"
+#include "keypad_network_address.h"
 #include "keypad_store.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -22,6 +23,7 @@ static bool s_initialized, s_started, s_sntp, s_suspended, s_scheduled;
 static uint32_t s_attempt_at, s_next_at, s_connect_at;
 static unsigned s_connects;
 static bool s_keep_online, s_had_ip, s_setup_paused;
+static bool s_candidate_address;
 static atomic_bool s_got_ip, s_reconnect, s_synced;
 static atomic_int s_status;
 
@@ -68,10 +70,11 @@ static esp_err_t stop(void) {
     }
     if (s_netif) { esp_netif_destroy_default_wifi(s_netif); s_netif = NULL; }
     atomic_store(&s_got_ip, false); atomic_store(&s_reconnect, false); atomic_store(&s_synced, false);
-    s_setup_paused = false;
+    s_setup_paused = s_candidate_address = false;
     return ESP_OK;
 }
 void kp_network_keep_online(bool keep) {
+    if (s_keep_online == keep) return;
     s_keep_online = keep; s_scheduled = false;
     if (keep && !s_started) atomic_store(&s_status, KP_NET_DISABLED);
 }
@@ -80,7 +83,9 @@ bool kp_network_ip(char out[16]) {
     if (!s_netif || !atomic_load(&s_got_ip)) return false;
     esp_netif_ip_info_t info;
     if (esp_netif_get_ip_info(s_netif, &info) != ESP_OK || !info.ip.addr) return false;
-    snprintf(out, 16, IPSTR, IP2STR(&info.ip)); return true;
+    snprintf(out, 16, IPSTR, IP2STR(&info.ip));
+    if (!s_candidate_address && strcmp(out, KP_LAN_IP)) { out[0] = 0; return false; }
+    return true;
 }
 esp_err_t kp_network_suspend(void) {
     s_suspended = true;
@@ -99,11 +104,47 @@ void kp_network_setup_pause(bool pause, uint32_t now) {
         atomic_store(&s_status, KP_NET_CONNECTING);
     }
 }
+static esp_err_t set_address(bool candidate) {
+    esp_netif_ip_info_t info = {0};
+    esp_netif_dns_info_t dns = {.ip.type = ESP_IPADDR_TYPE_V4};
+    esp_err_t rc = esp_netif_dhcpc_stop(s_netif);
+    if (rc != ESP_OK && rc != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) return rc;
+    if (!candidate) {
+        rc = esp_netif_str_to_ip4(KP_LAN_IP, &info.ip);
+        if (rc == ESP_OK) rc = esp_netif_str_to_ip4(KP_LAN_MASK, &info.netmask);
+        if (rc == ESP_OK) rc = esp_netif_str_to_ip4(KP_LAN_GATEWAY, &info.gw);
+        if (rc == ESP_OK) rc = esp_netif_str_to_ip4(KP_LAN_DNS, &dns.ip.u_addr.ip4);
+        if (rc != ESP_OK) return rc;
+    }
+    rc = esp_netif_set_ip_info(s_netif, &info);
+    if (!candidate) {
+        // IDF rejects an unspecified (0.0.0.0) DNS address. Overwrite every
+        // resolver slot with the confirmed server, including a prior lease's
+        // fallback. Candidate tests leave DNS to DHCP instead.
+        const esp_netif_dns_type_t types[] = {
+            ESP_NETIF_DNS_MAIN, ESP_NETIF_DNS_BACKUP, ESP_NETIF_DNS_FALLBACK
+        };
+        for (unsigned i = 0; rc == ESP_OK && i < sizeof(types)/sizeof(types[0]); ++i)
+            rc = esp_netif_set_dns_info(s_netif, types[i], &dns);
+    }
+    if (rc == ESP_OK && candidate) rc = esp_netif_dhcpc_start(s_netif);
+    if (rc == ESP_OK) {
+        s_candidate_address = candidate;
+        atomic_store(&s_got_ip, false);
+    }
+    return rc;
+}
+esp_err_t kp_network_setup_test_address(bool candidate) {
+    if (!s_setup_paused || !s_netif) return ESP_ERR_INVALID_STATE;
+    return set_address(candidate);
+}
 static esp_err_t start(const kp_wifi_config_t *wifi, uint32_t now) {
     s_netif = esp_netif_create_default_wifi_sta();
     if (!s_netif) return ESP_ERR_NO_MEM;
+    esp_err_t rc = set_address(false);
+    if (rc != ESP_OK) return rc;
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
-    esp_err_t rc = esp_wifi_init(&init);
+    rc = esp_wifi_init(&init);
     if (rc != ESP_OK) return rc;
     s_initialized = true;
     rc = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, event, NULL, &s_wifi_handler);
@@ -117,8 +158,12 @@ static esp_err_t start(const kp_wifi_config_t *wifi, uint32_t now) {
     if (rc == ESP_OK) rc = esp_wifi_set_mode(WIFI_MODE_STA);
     if (rc == ESP_OK) rc = esp_wifi_set_config(WIFI_IF_STA, &cfg);
     if (rc == ESP_OK) rc = esp_wifi_start();
+    if (rc == ESP_OK) {
+        s_started = true;
+        rc = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    }
     if (rc != ESP_OK) return rc;
-    s_started = true; s_had_ip = false; s_attempt_at = now; s_connect_at = now - CONNECT_RETRY_MS; s_connects = 0;
+    s_had_ip = false; s_attempt_at = now; s_connect_at = now - CONNECT_RETRY_MS; s_connects = 0;
     atomic_store(&s_status, KP_NET_CONNECTING);
     ESP_LOGI("keypad_time", "Network time attempt started");
     return ESP_OK;
@@ -142,7 +187,11 @@ void kp_network_tick(uint32_t now) {
         if (s_scheduled && (int32_t)(now - s_next_at) < 0) return;
         kp_wifi_config_t wifi; kp_store_wifi_get(&wifi);
         if (!wifi.ssid[0]) { atomic_store(&s_status, KP_NET_DISABLED); return; }
-        if (start(&wifi, now) != ESP_OK) finish(now, false);
+        esp_err_t rc = start(&wifi, now);
+        if (rc != ESP_OK) {
+            ESP_LOGW("keypad_time", "STA startup failed: %s", esp_err_to_name(rc));
+            finish(now, false);
+        }
         return;
     }
     if (atomic_exchange(&s_synced, false)) {

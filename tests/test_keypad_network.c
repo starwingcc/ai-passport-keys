@@ -13,6 +13,10 @@ static uint32_t test_now;
 static time_t utc;
 static unsigned fault, stop_fault, initialized, running, interfaces, handlers, sntp, connects;
 static esp_netif_t netif;
+static esp_netif_ip_info_t address;
+static bool dhcp;
+static unsigned address_order, address_fault;
+static uint32_t dns_servers[3];
 static network_event_handler_t wifi_cb, ip_cb;
 static void (*sync_cb)(struct timeval *);
 static unsigned registration;
@@ -39,6 +43,20 @@ esp_err_t esp_wifi_set_config(int iface, const wifi_config_t *cfg) {
     return fault == 7 ? ESP_FAIL : ESP_OK;
 }
 esp_err_t esp_wifi_start(void) { assert(initialized && !running); if (fault == 8) return ESP_FAIL; ++running; wifi_cb(NULL, WIFI_EVENT, WIFI_EVENT_STA_START, NULL); return ESP_OK; }
+esp_err_t esp_wifi_set_ps(int mode) { assert(running && mode == WIFI_PS_MIN_MODEM); return address_fault == 4 ? ESP_FAIL : ESP_OK; }
+esp_err_t esp_netif_dhcpc_stop(esp_netif_t *n) { assert(n==&netif); if(address_fault==1)return ESP_FAIL;dhcp=false;address_order=1;return ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED; }
+esp_err_t esp_netif_dhcpc_start(esp_netif_t *n) { assert(n==&netif&&!dhcp&&address_order==2&&!address.ip.addr);if(address_fault==5)return ESP_FAIL;dhcp=true;return ESP_OK; }
+esp_err_t esp_netif_str_to_ip4(const char *text,esp_ip4_addr_t *out) { unsigned a,b,c,d;assert(sscanf(text,"%u.%u.%u.%u",&a,&b,&c,&d)==4);out->addr=a|(b<<8)|(c<<16)|(d<<24);return ESP_OK; }
+esp_err_t esp_netif_set_ip_info(esp_netif_t *n,const esp_netif_ip_info_t *info) { assert(n==&netif&&!dhcp&&address_order==1);if(address_fault==2)return ESP_FAIL;address=*info;address_order=2;return ESP_OK; }
+esp_err_t esp_netif_set_dns_info(esp_netif_t *n,unsigned type,esp_netif_dns_info_t *dns) {
+    assert(n==&netif&&!dhcp&&address_order>=2&&dns->ip.type==ESP_IPADDR_TYPE_V4&&type<3);
+    // Match IDF's public API: an unspecified address is not a DNS-clear API.
+    if(!dns->ip.u_addr.ip4.addr)return ESP_ERR_ESP_NETIF_INVALID_PARAMS;
+    if(address_fault==3||(address_fault==6&&type==ESP_NETIF_DNS_BACKUP)||
+       (address_fault==7&&type==ESP_NETIF_DNS_FALLBACK))return ESP_FAIL;
+    assert(address_order==2+type&&dns->ip.u_addr.ip4.addr==0x0101a8c0U);
+    dns_servers[type]=dns->ip.u_addr.ip4.addr;++address_order;return ESP_OK;
+}
 esp_err_t esp_wifi_stop(void) { assert(running && !sntp && !handlers); if (stop_fault == 2) return ESP_FAIL; --running; return ESP_OK; }
 esp_err_t esp_wifi_connect(void) { assert(running); ++connects; return ESP_OK; }
 esp_err_t esp_event_handler_instance_register(esp_event_base_t base, int32_t id, network_event_handler_t cb, void *arg, esp_event_handler_instance_t *out) {
@@ -62,10 +80,10 @@ esp_err_t esp_netif_sntp_init(const esp_sntp_config_t *cfg) {
     ++sntp; sync_cb = cfg->sync_cb; return ESP_OK;
 }
 void esp_netif_sntp_deinit(void) { assert(sntp); --sntp; sync_cb = NULL; }
-esp_err_t esp_netif_get_ip_info(esp_netif_t *n,esp_netif_ip_info_t *out){assert(n==&netif);out->ip.addr=0x3201a8c0U;return ESP_OK;}
+esp_err_t esp_netif_get_ip_info(esp_netif_t *n,esp_netif_ip_info_t *out){assert(n==&netif);*out=address;return ESP_OK;}
 static void tick(uint32_t now) { test_now = now; kp_network_tick(now); }
 static void fresh(void) {
-    fault = stop_fault = 0; kp_network_keep_online(false); assert(kp_network_suspend() == ESP_OK);
+    fault = stop_fault = address_fault = 0; kp_network_keep_online(false); assert(kp_network_suspend() == ESP_OK);
     kp_network_resume(); kp_wifi_defaults(&settings);
     strcpy(settings.ssid, "test-network"); strcpy(settings.password, "test-pass");
     connects = 0; clock_value = (kp_clock_t){0}; utc = 1791167040;
@@ -120,7 +138,9 @@ int main(void) {
     fresh(); tick(UINT32_MAX - 100); tick(ATTEMPT_MS - 101); assert(kp_network_status() == KP_NET_FAILED);
     // Transfer leases keep STA alive after SNTP and without internet. IP loss
     // hides the address immediately, then DHCP recovery restores it.
-    fresh();kp_network_keep_online(true);connected(0);char ip[16];assert(kp_network_ip(ip)&&!strcmp(ip,"192.168.1.50"));
+    fresh();kp_network_keep_online(true);connected(0);char ip[16];assert(kp_network_ip(ip)&&!strcmp(ip,KP_LAN_IP));
+    assert(!dhcp&&address.netmask.addr==0x00ffffffU&&address.gw.addr==0x0101a8c0U);
+    for(unsigned i=0;i<3;++i)assert(dns_servers[i]==0x0101a8c0U);
     tv.tv_sec=utc;sync_cb(&tv);tick(5);assert(running&&interfaces&&!sntp&&kp_network_status()==KP_NET_SYNCED);
     tick(ATTEMPT_MS+100);assert(running&&kp_network_ip(ip));
     ip_cb(NULL,IP_EVENT,IP_EVENT_STA_LOST_IP,NULL);assert(!kp_network_ip(ip));
@@ -135,11 +155,24 @@ int main(void) {
     fresh(); kp_network_keep_online(true); connected(0);
     unsigned before = connects; kp_network_setup_pause(true, 3);
     assert(!sntp && running && interfaces && handlers == 2);
+    assert(kp_network_setup_test_address(true)==ESP_OK&&dhcp&&!address.ip.addr);
+    for(unsigned i=0;i<3;++i)dns_servers[i]=0x0100000aU+i; // Simulate candidate lease DNS.
+    assert(kp_network_setup_test_address(false)==ESP_OK&&!dhcp&&address.ip.addr==0x0b01a8c0U);
+    for(unsigned i=0;i<3;++i)assert(dns_servers[i]==0x0101a8c0U);
     wifi_cb(NULL, WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, NULL);
     tick(3 * ATTEMPT_MS); assert(connects == before && running && !sntp);
     ip_cb(NULL, IP_EVENT, IP_EVENT_STA_GOT_IP, NULL);
     kp_network_setup_pause(false, 3 * ATTEMPT_MS); tick(3 * ATTEMPT_MS + 1);
     assert(connects == before && running && sntp && kp_network_ip(ip));
     kp_network_keep_online(false); assert(kp_network_suspend() == ESP_OK);
-    puts("Network time: cold boot, valid SNTP, retry/refresh, wrap, AP handoff and fault cleanup: PASS");
+    const unsigned address_failures[]={1,2,3,4,6,7};
+    for(unsigned i=0;i<sizeof(address_failures)/sizeof(address_failures[0]);++i){fresh();address_fault=address_failures[i];tick(0);assert(kp_network_status()==KP_NET_FAILED&&!running&&!interfaces&&!initialized);address_fault=0;tick(RETRY_MS+1);assert(running);}
+    fresh();kp_network_keep_online(true);connected(0);kp_network_setup_pause(true,3);
+    address_fault=5;assert(kp_network_setup_test_address(true)==ESP_FAIL&&!dhcp);
+    address_fault=0;assert(kp_network_setup_test_address(false)==ESP_OK&&!dhcp);
+    for(unsigned i=0;i<3;++i)assert(dns_servers[i]==0x0101a8c0U);
+    assert(kp_network_suspend()==ESP_OK);
+    fresh();kp_network_keep_online(true);connected(0);address.ip.addr=0x3201a8c0U;assert(!kp_network_ip(ip)&&!ip[0]);
+    assert(kp_network_suspend()==ESP_OK);
+    puts("Network time: cold boot, valid SNTP, strict DNS API, DHCP/static restoration, retry/refresh, wrap, AP handoff and fault cleanup: PASS");
 }

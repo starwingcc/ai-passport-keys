@@ -152,7 +152,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     static kp_lan_view_t previous_lan;
     if (cached && revision == m->config_revision && previous_profile == m->config.active_profile &&
         previous_page == m->page && previous_selected == m->selected &&
-        !memcmp(&previous_transfer, &m->transfer, sizeof(m->transfer)) &&
+        ((m->page != KP_TRANSFER && m->page != KP_SETTINGS) || !memcmp(&previous_transfer, &m->transfer, sizeof(m->transfer))) &&
         !memcmp(&previous_lan, &m->lan, sizeof(m->lan)) &&
         !memcmp(&previous_feedback, &m->feedback, sizeof(m->feedback)) && !memcmp(&previous_ble, &ble, sizeof(ble)) &&
         battery == previous_battery && !strcmp(previous_message, message) &&
@@ -161,7 +161,8 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     if (!s_title || !bsp_lvgl_lock(1000)) return;
     previous_transfer = m->transfer;
     previous_lan = m->lan;
-    if (s_transfer_qr && (m->page != KP_TRANSFER || m->transfer.state != KP_TRANSFER_READY)) {
+    if (s_transfer_qr && (m->page != KP_TRANSFER || (m->transfer.state != KP_TRANSFER_READY &&
+        m->transfer.state != KP_TRANSFER_LISTENING && m->transfer.state != KP_TRANSFER_WAITING))) {
         lv_obj_delete(s_transfer_qr); s_transfer_qr = NULL; s_qr_url[0] = 0;
     }
     cached = true; revision = m->config_revision; previous_profile = m->config.active_profile;
@@ -313,7 +314,8 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     } else if (m->page == KP_TRANSFER) {
         const kp_transfer_view_t *t = &m->transfer;
         const char *states[] = {"已关闭", "未配置 Wi-Fi", "已开启 · 正在连接 Wi-Fi", "已开启 · Wi-Fi 已连接",
-                                "已开启 · Wi-Fi 正在重连", "已开启 · 连接或服务失败", "正在关闭"};
+                                "已开启 · Wi-Fi 正在重连", "连接或服务失败", "正在关闭",
+                                "监听待机 · Wi-Fi 已连接", "已开启 · 等待结束"};
         lv_label_set_text(s_state, states[t->state]);
         const char *choices[] = {"关闭", "开启"};
         for (unsigned i = 0; i < 2; ++i)
@@ -321,8 +323,9 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
                 choices[i], t->enabled == (i == 1) ? " *" : "");
         hidden(s_body, false); lv_obj_set_pos(s_body, 20, 186); lv_obj_set_size(s_body, 200, 68);
         lv_label_set_text(s_footer, "上下选择，OK 确认");
-        lv_label_set_text(s_message, t->enabled ? "返回后仍保持开启" : "长按 OK 返回");
-        if (t->state == KP_TRANSFER_READY && t->ip[0]) {
+        lv_label_set_text(s_message, t->state == KP_TRANSFER_WAITING ? "无人在线一分钟后待机" :
+            t->enabled ? "返回后仍保持开启" : "网页访问可自动开启");
+        if ((t->state == KP_TRANSFER_READY || t->state == KP_TRANSFER_LISTENING || t->state == KP_TRANSFER_WAITING) && t->ip[0]) {
             char url[40]; snprintf(url, sizeof(url), "http://%s/", t->ip);
             if (!s_transfer_qr) {
                 s_transfer_qr = lv_qrcode_create(lv_screen_active());
@@ -355,7 +358,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         else if (t->state == KP_TRANSFER_CONNECTING) lv_label_set_text(s_body, "正在连接已保存的 Wi-Fi\n连接成功后显示访问地址");
         else if (t->state == KP_TRANSFER_RECONNECTING) lv_label_set_text(s_body, "连接已断开，正在重连\n重连后更新访问地址");
         else if (t->state == KP_TRANSFER_STOPPING) {lv_label_set_text(s_body, "正在结束共享会话\n蓝牙键盘可继续使用");lv_label_set_text(s_message, "请稍候");}
-        else lv_label_set_text(s_body, "开启后，Wi-Fi 保持连接\n蓝牙键盘可继续使用\n文字、图片、文件直传");
+        else lv_label_set_text(s_body, "Wi-Fi 保持连接\n网页访问可自动开启\n蓝牙键盘可继续使用");
     } else if (m->page == KP_DEVICES) {
         lv_label_set_text_fmt(s_state, "%u 台设备", kp_devices_count(&m->devices));
         for (unsigned i = 0; i < KP_DEVICE_COUNT; ++i) {
@@ -549,7 +552,8 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
                     lv_obj_t *value = s_screen_values[i == KP_SETTING_DEVICES ? 0 : 1]; hidden(value, false);
                     lv_obj_set_pos(value, 137, MENU_TOP + (i - first) * MENU_PITCH); lv_obj_set_size(value, 83, MENU_HEIGHT);
                     lv_obj_set_style_text_color(value, lv_color_hex(m->selected == i ? ACCENT : INK), 0);
-                    if (i == KP_SETTING_TRANSFER) lv_label_set_text(value, m->transfer.enabled ? "已开启" : "已关闭");
+                    if (i == KP_SETTING_TRANSFER) lv_label_set_text(value, m->transfer.enabled ? "已开启" :
+                        m->transfer.state == KP_TRANSFER_LISTENING ? "监听待机" : "已关闭");
                     else lv_label_set_text_fmt(value, "%u 台", kp_devices_count(&m->devices));
                 }
             }

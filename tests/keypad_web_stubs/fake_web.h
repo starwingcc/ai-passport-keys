@@ -48,6 +48,19 @@ typedef struct { esp_ip4_addr_t ip, netmask, gw; } esp_netif_ip_info_t;
 #define IPSTR "%u.%u.%u.%u"
 #define IP2STR(p) (unsigned)((p)->addr&255),(unsigned)(((p)->addr>>8)&255),(unsigned)(((p)->addr>>16)&255),(unsigned)((p)->addr>>24)
 esp_err_t esp_netif_get_ip_info(esp_netif_t *, esp_netif_ip_info_t *);
+#define ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED 30
+#define ESP_ERR_ESP_NETIF_INVALID_PARAMS 31
+#define ESP_NETIF_DNS_MAIN 0
+#define ESP_NETIF_DNS_BACKUP 1
+#define ESP_NETIF_DNS_FALLBACK 2
+typedef unsigned esp_netif_dns_type_t;
+#define ESP_IPADDR_TYPE_V4 0
+typedef struct { struct { struct { esp_ip4_addr_t ip4; } u_addr; unsigned type; } ip; } esp_netif_dns_info_t;
+esp_err_t esp_netif_dhcpc_stop(esp_netif_t *);
+esp_err_t esp_netif_dhcpc_start(esp_netif_t *);
+esp_err_t esp_netif_set_ip_info(esp_netif_t *, const esp_netif_ip_info_t *);
+esp_err_t esp_netif_str_to_ip4(const char *, esp_ip4_addr_t *);
+esp_err_t esp_netif_set_dns_info(esp_netif_t *, unsigned, esp_netif_dns_info_t *);
 esp_netif_t *esp_netif_create_default_wifi_ap(void);
 esp_netif_t *esp_netif_create_default_wifi_sta(void);
 void esp_netif_destroy_default_wifi(esp_netif_t *);
@@ -72,6 +85,8 @@ esp_err_t esp_wifi_start(void);
 esp_err_t esp_wifi_stop(void);
 esp_err_t esp_wifi_set_storage(int);
 esp_err_t esp_wifi_set_mode(int);
+#define WIFI_PS_MIN_MODEM 1
+esp_err_t esp_wifi_set_ps(int);
 esp_err_t esp_wifi_set_config(int, const wifi_config_t *);
 esp_err_t esp_wifi_get_config(int, wifi_config_t *);
 esp_err_t esp_wifi_connect(void);

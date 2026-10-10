@@ -31,7 +31,7 @@ static void publish(kp_transfer_signal_t *s) {
 void kp_transfer_signal_init(kp_transfer_signal_t *s, kp_transfer_send_t send, void *user) {
     memset(s, 0, sizeof(*s)); s->next_id = 1; s->send = send; s->user = user;
 }
-bool kp_transfer_signal_open(kp_transfer_signal_t *s, int fd, uint32_t now) {
+bool kp_transfer_signal_open(kp_transfer_signal_t *s, int fd, uint64_t now) {
     if (peer(s, fd) || !s->next_id || s->next_id > INT32_MAX) return false;
     for (unsigned i = 0; i < KP_TRANSFER_PEERS; ++i) if (!s->peers[i].id) {
         kp_transfer_peer_t *p = &s->peers[i]; *p = (kp_transfer_peer_t){.fd = fd, .id = s->next_id++, .last_ms = now, .rtc = true};
@@ -99,9 +99,9 @@ static bool bounded_json(const char *data, size_t size) {
     }
     return !quoted && !depth;
 }
-bool kp_transfer_signal_message(kp_transfer_signal_t *s, int fd, const char *data, size_t size, uint32_t now) {
+bool kp_transfer_signal_message(kp_transfer_signal_t *s, int fd, const char *data, size_t size, uint64_t now) {
     kp_transfer_peer_t *p = peer(s, fd);
-    if (!p || !size || size > KP_TRANSFER_MESSAGE || memchr(data, 0, size) || !bounded_json(data, size)) return false;
+    if (!p || now - p->last_ms >= KP_TRANSFER_IDLE_MS || !size || size > KP_TRANSFER_MESSAGE || memchr(data, 0, size) || !bounded_json(data, size)) return false;
     const char *end; cJSON *msg = cJSON_ParseWithLengthOpts(data, size, &end, false);
     if (!msg || end != data + size || !string(get(msg,"type"), 1, 10)) { cJSON_Delete(msg); return false; }
     const char *type = get(msg,"type")->valuestring; bool ok = false;
@@ -147,5 +147,6 @@ bool kp_transfer_signal_message(kp_transfer_signal_t *s, int fd, const char *dat
     cJSON_Delete(msg); return ok;
 }
 unsigned kp_transfer_signal_count(const kp_transfer_signal_t *s) { unsigned n=0;for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)n+=s->peers[i].id&&s->peers[i].joined;return n; }
-int kp_transfer_signal_expired(const kp_transfer_signal_t *s,uint32_t now) {for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)if(s->peers[i].id&&(uint32_t)(now-s->peers[i].last_ms)>=KP_TRANSFER_IDLE_MS)return s->peers[i].fd;return -1;}
+unsigned kp_transfer_signal_online(const kp_transfer_signal_t *s,uint64_t now) {unsigned n=0;for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)n+=s->peers[i].id&&s->peers[i].joined&&now-s->peers[i].last_ms<KP_TRANSFER_IDLE_MS;return n;}
+int kp_transfer_signal_expired(const kp_transfer_signal_t *s,uint64_t now) {for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)if(s->peers[i].id&&now-s->peers[i].last_ms>=KP_TRANSFER_IDLE_MS)return s->peers[i].fd;return -1;}
 void kp_transfer_signal_end(kp_transfer_signal_t *s) {static const char end[]="{\"type\":\"end\"}";for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)if(s->peers[i].id)s->send(s->user,s->peers[i].fd,end,sizeof(end)-1);}

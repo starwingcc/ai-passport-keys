@@ -8,6 +8,7 @@
   const memoryLimitLabel=(memoryLimit/1024**2)+' MB';
   let ws, self=0, online=false, connecting=false, ended=false, heartbeat, retryTimer, connectDeadline, retries=0, rendering=false, sendingText=false;
   let noticeMessage='', noticeKind='action';
+  let wakeRequest=0, wakeAbort;
   let pendingReceive=0;
   const rtcHint='当前浏览器未提供 WebRTC，无法直传。请检查 WebRTC 扩展是否放行当前地址，或用其他浏览器重试；无需开启摄像头或麦克风。';
   let rtcIssue=typeof globalThis.RTCPeerConnection==='function'?'':rtcHint;
@@ -31,7 +32,7 @@
     $('connection').textContent=online?'局域网已连接':ended?'流转已关闭':connecting?'正在连接':'连接已中断';
     $('reconnect').hidden=online;
     $('reconnect').disabled=connecting;
-    const text=noticeMessage||(online?'局域网已连接，可以发送文字与共享文件。':ended?'文件流转已关闭。请在 Passport 上重新开启后，再连接。':connecting?'正在连接 Passport，请保持网页打开。':'连接已中断，请重新连接。');
+    const text=noticeMessage||(online?'局域网已连接，可以发送文字与共享文件。':ended?'流转已结束，点击重新连接即可自动开启。':connecting?'正在连接 Passport，请保持网页打开。':'连接已中断，请重新连接。');
     const tone=noticeMessage?'error':online?'connected':'connecting';
     $('notice').dataset.tone=tone;
     $('notice').replaceChildren(icon(tone==='connected'?'check':'info'),el('span',text));
@@ -265,27 +266,27 @@
     // callbacks and schedule the bounded retry independently of that event.
     ws=null;shutdown(ended?'Passport 已结束共享':'网页会话断开，直连已结束');
     socket.close();
-    if(!ended){const retry=retries<5;notice(hint||`Passport 网页会话断开（${code}），${retry?'正在重新连接':'请确认流转仍开启后重新连接'}。共享源仍在本机。`,'connection');if(retry){const delay=Math.min(1000*2**retries++,15000);retryTimer=setTimeout(()=>connect(true),delay);}}
+    if(!ended){const retry=retries<5;notice(hint||`Passport 网页会话断开（${code}），${retry?'正在重新连接':'请点击重新连接'}。共享源仍在本机。`,'connection');if(retry){const delay=Math.min(1000*2**retries++,15000);retryTimer=setTimeout(()=>connect(true),delay);}}
   }
   function ping(socket){
     if(ws!==socket||!online)return;
-    if(Date.now()-lastPong>120000){disconnected(socket,1006,'Passport 会话超时，请确认流转仍开启。');return;}
+    if(Date.now()-lastPong>120000){disconnected(socket,1006,'Passport 会话超时，请检查网络或重新连接。');return;}
     try{signal({type:'ping'});}catch{disconnected(socket,1006,'Passport 信令连接拥堵，正在重新连接。');}
   }
   function connect(automatic=false){
     clearTimeout(retryTimer);ended=false;if(!automatic)retries=0;const previous=ws;ws=null;previous?.close();shutdown('会话重新连接');
     connecting=true;notice('','connection');
     ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/transfer/ws`);const socket=ws;
-    connectDeadline=setTimeout(()=>{if(ws===socket&&!online)disconnected(socket,1006,'连接 Passport 超时，请确认流转仍开启。');},8000);
+    connectDeadline=setTimeout(()=>{if(ws===socket&&!online)disconnected(socket,1006,'连接 Passport 超时，请检查网络或重新连接。');},8000);
     ws.onmessage=event=>{if(ws!==socket)return;try{const m=JSON.parse(event.data);if(m.type==='welcome'){clearTimeout(connectDeadline);retries=0;self=m.id;online=true;connecting=false;rename();announce();if(noticeKind==='connection')notice('');if(rtcIssue)notice(rtcIssue,'rtc');heartbeat=setInterval(()=>ping(socket),10000);lastPong=Date.now();update();}
       else if(m.type==='pong')lastPong=Date.now();
       else if(m.type==='peers'){const next=new Map(m.peers.map(x=>[x.id,x.name]));rtcPeers.clear();for(const p of m.peers)rtcPeers.set(p.id,p.rtc!==false);for(const link of [...links.values()])if(!next.has(link.id)||rtcPeers.get(link.id)===false)closeLink(link,'对端已离线或无法直传');for(const id of catalogs.keys())if(!next.has(id))catalogs.delete(id);peers.clear();for(const [id,name] of next)peers.set(id,name);for(const item of files.values())if(item.to&&!peers.has(item.to)){files.delete(item.meta.id);notice('指定接收端已离线，该文件已取消共享。');}update();}
       else if(m.type==='files'&&m.from!==self&&peers.has(m.from)){if(!Array.isArray(m.files)||m.files.length>P.MAX_FILES||m.files.some(f=>!P.validFile(f)))throw Error('文件列表格式无效');catalogs.set(m.from,m.files);update();}
       else if(m.type==='signal')handleSignal(m).catch(e=>{const link=links.get(m.from);if(link)closeLink(link,e.message);notice(e.message);});
-      else if(m.type==='end'){ended=true;shutdown('Passport 已结束共享');notice('文件流转已关闭。请在 Passport 上重新开启后，再连接。');socket.close();}
+      else if(m.type==='end'){ended=true;shutdown('Passport 已结束共享');notice('流转已结束，点击重新连接即可自动开启。');socket.close();}
       else if(m.type==='error'){const reason=m.code==='peer-offline'?'接收端已离线，请重新选择设备':m.message||'协商消息无效，请重试';const link=links.get(m.to);if(link)closeLink(link,reason);notice(reason);}
     }catch(e){notice(e.message);}};
-    ws.onclose=event=>disconnected(socket,event.code);ws.onerror=()=>{if(ws===socket)notice('无法连接 Passport，请确认流转开启且处于同一网络。','connection');};update();
+    ws.onclose=event=>disconnected(socket,event.code);ws.onerror=()=>{if(ws===socket)notice('无法连接 Passport，请确认处于同一网络。','connection');};update();
   }
   let lastPong=0;
   function requireRTC(id){if(rtcIssue||typeof globalThis.RTCPeerConnection!=='function')throw Error(rtcIssue||rtcHint);if(rtcPeers.get(id)===false)throw Error('对端浏览器无法直传，请对端用访客窗口重试或检查 WebRTC 设置。');}
@@ -351,9 +352,21 @@
     catch(e){if(sink)await sink.abort().catch(()=>{});if(t)cancelTransfer(t,e.message);throw e;}finally{pendingReceive-=reservation;}
   }
   $('rename').onclick=()=>{try{rename();}catch(e){notice(e.message);}};
-  $('reconnect').onclick=()=>connect();
-  $('send-text').onclick=async()=>{
-    if(sendingText)return;
+  $('reconnect').onclick=async()=>{
+    const request=++wakeRequest;
+    wakeAbort?.abort();const controller=new AbortController();wakeAbort=controller;
+    clearTimeout(retryTimer);connecting=true;update();
+    const timeout=setTimeout(()=>controller.abort(),8000);
+    try{
+      const response=await fetch('/transfer',{cache:'no-store',signal:controller.signal});
+      if(!response.ok)throw Error('Passport 正在恢复，请稍后重新连接。');
+      await response.body?.cancel();
+      if(request===wakeRequest)connect();
+    }catch(e){if(request===wakeRequest){connecting=false;notice(e.name==='AbortError'?'无法访问 Passport，请检查网络后重新连接。':e.message,'connection');update();}}
+    finally{clearTimeout(timeout);if(wakeAbort===controller)wakeAbort=null;}
+  };
+  async function sendText(){
+    if(sendingText||!online)return;
     const value=$('text').value;
     try{
       requireRTC();
@@ -383,13 +396,19 @@
       },20000);
     }catch(e){notice(e.message);}
     finally{sendingText=false;update();}
+  }
+  $('send-text').onclick=sendText;
+  $('text').onkeydown=event=>{
+    if(event.key!=='Enter'||event.shiftKey||event.isComposing||event.keyCode===229)return;
+    event.preventDefault();
+    if(!event.repeat&&!$('send-text').disabled)return sendText();
   };
   $('files').onchange=()=>{try{requireRTC();for(const file of $('files').files){if(files.size>=P.MAX_FILES)throw Error('最多共享 8 个文件，请先取消部分共享');const meta={id:uuid(),name:file.name,size:file.size,mime:file.type};if(!P.validFile(meta))throw Error('文件名过长或尺寸超过 8 GB');const to=$('target').value==='all'?0:Number($('target').value);requireRTC(to||undefined);files.set(meta.id,{meta,file,to});try{const list=[...files.values()].map(x=>({...x.meta,to:x.to}));if(encoder.encode(JSON.stringify(list)).length>2304)throw Error('文件列表过长，请减少文件或缩短文件名');}catch(e){files.delete(meta.id);throw e;}}announce();notice('');}catch(e){notice(e.message);try{announce();}catch{}}finally{$('files').value='';update();}};
   $('save-mode').textContent=globalThis.isSecureContext&&typeof showSaveFilePicker==='function'?'接收时选择保存位置。':`接收总容量上限 ${memoryLimitLabel}，校验后点击保存。下载结果请在浏览器中确认。`;
   try{$('name').value=localStorage.getItem('passport-transfer-name')||(mobile?'手机':'电脑');}catch{$('name').value=mobile?'手机':'电脑';}
   setInterval(()=>{for(const link of links.values()){const t=link.rx;if(t&&!t.done&&Date.now()-t.last>(t.url?180000:45000))cancelTransfer(t,t.url?'保存等待超时，请重新接收':'接收超时，请重试');}},5000);
   addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&online)ping(ws);});
-  addEventListener('pagehide',()=>{clearTimeout(retryTimer);ended=true;shutdown('页面已退出');ws?.close();});
+  addEventListener('pagehide',()=>{++wakeRequest;wakeAbort?.abort();clearTimeout(retryTimer);ended=true;shutdown('页面已退出');ws?.close();});
   connect();
   // Exposed only as an application API, also used by the real-browser acceptance harness.
   globalThis.PassportTransfer={receive,files,links,history,texts,get self(){return self;},get peers(){return peers;}};

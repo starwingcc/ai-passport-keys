@@ -16,17 +16,22 @@
 
 static atomic_uint s_transfer_request, s_ap_request;
 static atomic_bool s_forget;
+static bool s_wake_pending;
+static uint64_t s_wake_at;
 static kp_network_view_t s_view;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t s_task;
 
 typedef struct {
     kp_network_view_t view;
-    bool desired, ap_desired, had_ready, server_failed;
+    bool desired, ap_desired, had_ready;
+    bool stop_requested, start_retry, stop_retry, link_down, disconnect_pending;
+    kp_transfer_lifecycle_t lifecycle;
+    uint64_t start_retry_at, stop_retry_at, background_poll_at;
     bool config_started, config_web_started, config_testing;
     bool config_ble_paused;
     uint32_t config_at;
-    uint32_t last_poll, last_stop_retry;
+    uint32_t last_poll;
 } service_t;
 
 static void publish(const kp_network_view_t *view) {
@@ -42,6 +47,11 @@ void kp_network_service_get(kp_network_view_t *view) {
 void kp_network_service_transfer(bool enable) { atomic_store(&s_transfer_request, enable ? 1 : 2); }
 void kp_network_service_ap(bool enable) { atomic_store(&s_ap_request, enable ? 1 : 2); }
 void kp_network_service_config(bool enable, bool wifi) { atomic_store(&s_ap_request, enable ? (wifi ? 3 : 1) : 2); }
+static void web_wake(uint64_t now) {
+    portENTER_CRITICAL(&s_lock);
+    if (!s_wake_pending) { s_wake_at = now; s_wake_pending = true; }
+    portEXIT_CRITICAL(&s_lock);
+}
 static void web_request(bool forget) {
     if (forget) atomic_store(&s_forget, true);
     kp_network_service_ap(false);
@@ -53,19 +63,6 @@ static void memory_log(const char *phase) {
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 }
-static esp_err_t stop_transfer(kp_network_view_t *view) {
-    view->transfer.state = KP_TRANSFER_STOPPING;
-    view->transfer.ip[0] = 0;
-    view->transfer.peers = 0;
-    publish(view);
-    esp_err_t rc = kp_transfer_web_stop();
-    if (rc != ESP_OK) return rc;
-    kp_network_keep_online(false);
-    rc = kp_network_suspend();
-    if (rc != ESP_OK) return rc;
-    view->transfer = (kp_transfer_view_t){.state = KP_TRANSFER_OFF};
-    return ESP_OK;
-}
 static esp_err_t resume_config_ble(service_t *s) {
     if (!s->config_ble_paused) return ESP_OK;
     esp_err_t rc = kp_ble_pause(false);
@@ -74,49 +71,47 @@ static esp_err_t resume_config_ble(service_t *s) {
 }
 // A finite lifecycle step makes ownership and failed teardown testable. Only
 // the network task calls this in firmware; event/HTTP/button callbacks enqueue.
-static void step(service_t *s, uint32_t now) {
+static void step(service_t *s, uint64_t monotonic_ms) {
+    uint32_t now = (uint32_t)monotonic_ms; // Existing bounded Wi-Fi/config timers.
     kp_network_view_t *v = &s->view;
     kp_wifi_config_t saved;
     kp_store_wifi_get(&saved);
     v->lan.configured = saved.ssid[0] != 0;
-    // Saved edits apply after exit; show the network used by this session.
     if (v->lan.state == KP_AP_OFF) snprintf(v->lan.ssid, sizeof(v->lan.ssid), "%s", saved.ssid);
     memset(&saved, 0, sizeof(saved));
     unsigned request = atomic_exchange(&s_transfer_request, 0);
     unsigned ap = atomic_exchange(&s_ap_request, 0);
+    uint64_t wake_at;
+    bool wake;
+    portENTER_CRITICAL(&s_lock);
+    wake = s_wake_pending; wake_at = s_wake_at; s_wake_pending = false;
+    portEXIT_CRITICAL(&s_lock);
     if (ap) {
         s->ap_desired = ap != 2;
-        if (s->ap_desired) {
-            s->desired = false;
-            if (v->lan.state == KP_AP_OFF) v->lan.wifi = ap == 3;
+        if (s->ap_desired && v->lan.state == KP_AP_OFF) v->lan.wifi = ap == 3;
+    }
+    if (!s->ap_desired && v->lan.state == KP_AP_OFF && v->transfer.state != KP_TRANSFER_STOPPING) {
+        if (request == 2) s->stop_requested = true;
+        else if (request == 1 || wake) {
+            if (!v->lan.configured) v->transfer.state = KP_TRANSFER_NO_WIFI;
+            else kp_transfer_lifecycle_enable(&s->lifecycle, wake ? wake_at : monotonic_ms);
         }
     }
-    if (request && !s->ap_desired && v->lan.state == KP_AP_OFF && v->transfer.state != KP_TRANSFER_STOPPING) {
-        s->desired = request == 1;
-        if (!s->desired && !v->transfer.enabled && !kp_transfer_web_running()) v->transfer = (kp_transfer_view_t){0};
-        if (s->desired) {
-            kp_wifi_config_t wifi;
-            kp_store_wifi_get(&wifi);
-            if (!wifi.ssid[0]) {
-                s->desired = false;
-                v->transfer = (kp_transfer_view_t){.state = KP_TRANSFER_NO_WIFI};
-            } else {
-                v->transfer.enabled = true;
-                v->transfer.state = KP_TRANSFER_CONNECTING;
-                s->server_failed = false;
-                kp_network_keep_online(true);
-            }
-            memset(&wifi, 0, sizeof(wifi));
-            publish(v);
-        }
-    }
-    if (!s->desired && (v->transfer.enabled || kp_transfer_web_running())) {
-        if ((uint32_t)(now - s->last_stop_retry) < 1000U && v->transfer.state == KP_TRANSFER_STOPPING) return;
-        s->last_stop_retry = now;
-        if (stop_transfer(v) != ESP_OK) return;
-        s->had_ready = s->server_failed = false;
-        if (!s->ap_desired) kp_network_resume();
-        memory_log("STA transfer stopped");
+    s->desired = s->lifecycle.phase != KP_TRANSFER_LISTEN;
+    // Both listener and catalogs relinquish HTTP before configuration obtains
+    // port 80 or the radio. A failed teardown retains the entire handoff lease.
+    if (s->ap_desired && v->lan.state == KP_AP_OFF) {
+        v->transfer.state = KP_TRANSFER_STOPPING;
+        v->transfer.ip[0] = 0; v->transfer.peers = 0;
+        publish(v);
+        if (s->stop_retry && monotonic_ms - s->stop_retry_at < 1000U) return;
+        esp_err_t rc = kp_transfer_web_stop();
+        if (rc == ESP_OK) rc = kp_network_suspend();
+        if (rc != ESP_OK) { s->stop_retry = true; s->stop_retry_at = monotonic_ms; return; }
+        kp_transfer_lifecycle_reset(&s->lifecycle);
+        s->desired = s->stop_requested = s->stop_retry = s->start_retry = false;
+        s->link_down = s->disconnect_pending = false;
+        v->transfer = (kp_transfer_view_t){.state=KP_TRANSFER_OFF};
     }
     if (s->ap_desired && !s->config_started && v->lan.state == KP_AP_OFF) {
         v->lan.state = KP_AP_STARTING;
@@ -222,42 +217,84 @@ static void step(service_t *s, uint32_t now) {
         }
         if (!v->lan.wifi) kp_wifi_setup_poll(now);
     } else if (v->lan.state == KP_AP_OFF) {
+        kp_network_keep_online(v->lan.configured);
         kp_network_tick(now);
-        if (s->desired) {
-            char ip[16];
-            bool connected = kp_network_ip(ip);
-            if (!connected || (v->transfer.ip[0] && strcmp(v->transfer.ip, ip))) {
-                v->transfer.ip[0] = 0;
-                v->transfer.peers = 0;
-                v->transfer.state = kp_network_status() == KP_NET_FAILED ? KP_TRANSFER_FAILED :
-                    s->had_ready ? KP_TRANSFER_RECONNECTING : KP_TRANSFER_CONNECTING;
-                publish(v);
-                if (kp_transfer_web_running() && kp_transfer_web_stop() != ESP_OK) return;
+        char ip[16];
+        bool connected = kp_network_ip(ip);
+        if (!v->lan.configured) {
+            if (kp_transfer_web_stop() != ESP_OK) { v->transfer.state=KP_TRANSFER_STOPPING; publish(v); return; }
+            kp_transfer_lifecycle_reset(&s->lifecycle);
+            s->desired = s->stop_requested = false;
+            v->transfer.enabled = false; v->transfer.ip[0] = 0; v->transfer.peers = 0;
+            if (v->transfer.state != KP_TRANSFER_NO_WIFI) v->transfer.state=KP_TRANSFER_OFF;
+            publish(v); return;
+        }
+        if ((!connected && !s->link_down && kp_transfer_web_running()) || s->disconnect_pending) {
+            s->disconnect_pending = true;
+            if (s->stop_retry && monotonic_ms - s->stop_retry_at < 1000U) { publish(v); return; }
+            if (kp_transfer_web_disconnect() != ESP_OK) {
+                s->stop_retry = true; s->stop_retry_at = monotonic_ms;
+                v->transfer.ip[0] = 0; v->transfer.peers = 0; v->transfer.state=KP_TRANSFER_RECONNECTING;
+                publish(v); return;
             }
-            if (connected && !s->server_failed && !kp_transfer_web_ready()) {
-                esp_err_t rc = kp_transfer_web_running() ? kp_transfer_web_stop() : ESP_OK;
-                if (rc == ESP_OK) rc = kp_transfer_web_start(ip);
-                if (rc != ESP_OK) {
-                    s->server_failed = true;
-                    v->transfer.state = KP_TRANSFER_FAILED;
-                    v->transfer.ip[0] = 0;
-                } else {
-                    v->transfer.state = KP_TRANSFER_READY;
-                    snprintf(v->transfer.ip, sizeof(v->transfer.ip), "%s", ip);
-                    s->had_ready = true;
-                    memory_log("STA transfer ready");
+            s->disconnect_pending = false; s->link_down = true; s->stop_retry = false;
+        }
+        kp_transfer_presence_t presence;
+        kp_transfer_web_presence(&presence);
+        kp_transfer_lifecycle_observe(&s->lifecycle, &presence);
+        bool expired = kp_transfer_lifecycle_expired(&s->lifecycle, monotonic_ms);
+        if (s->stop_requested || expired || s->stop_retry) {
+            if (s->stop_retry && monotonic_ms - s->stop_retry_at < 1000U) { publish(v); return; }
+            esp_err_t rc = kp_transfer_web_deactivate(s->stop_requested);
+            if (rc == ESP_ERR_INVALID_STATE && !s->stop_requested) {
+                // The HTTP thread observed a browser joining before its gate.
+                kp_transfer_web_presence(&presence);
+                kp_transfer_lifecycle_observe(&s->lifecycle, &presence);
+                s->stop_retry = false;
+            } else if (rc != ESP_OK) {
+                s->stop_retry = true; s->stop_retry_at = monotonic_ms;
+                v->transfer.state=KP_TRANSFER_STOPPING; publish(v); return;
+            } else {
+                kp_transfer_lifecycle_reset(&s->lifecycle);
+                s->stop_requested = s->stop_retry = s->start_retry = false;
+                memory_log("listening standby");
+            }
+        }
+        s->desired = s->lifecycle.phase != KP_TRANSFER_LISTEN;
+        v->transfer.enabled = s->desired;
+        if (connected && (!s->start_retry || monotonic_ms - s->start_retry_at >= 1000U)) {
+            esp_err_t rc = ESP_OK;
+            if (!kp_transfer_web_listening()) {
+                rc = kp_transfer_web_listen_start(ip, web_wake);
+                if (rc == ESP_ERR_INVALID_STATE) {
+                    // Includes partially registered HTTP startup and failed
+                    // httpd_stop: reuse only a completely initialized instance.
+                    rc = kp_transfer_web_stop();
+                    if (rc == ESP_OK) rc = kp_transfer_web_listen_start(ip, web_wake);
                 }
             }
-            if (s->server_failed) v->transfer.state = KP_TRANSFER_FAILED;
-            if (kp_transfer_web_ready() && !s->server_failed && connected) {
-                v->transfer.state = KP_TRANSFER_READY;
-                snprintf(v->transfer.ip, sizeof(v->transfer.ip), "%s", ip);
-                v->transfer.peers = kp_transfer_web_peers();
-                if ((uint32_t)(now - s->last_poll) >= 1000U) {
-                    kp_transfer_web_poll(now);
-                    s->last_poll = now;
-                }
-            }
+            if (rc == ESP_OK) s->link_down = false;
+            if (rc == ESP_OK && s->desired && !kp_transfer_web_ready())
+                rc = kp_transfer_web_activate(s->lifecycle.zero_since_ms);
+            s->start_retry = rc != ESP_OK;
+            if (s->start_retry) s->start_retry_at = monotonic_ms;
+            else if (s->desired && !s->had_ready) { s->had_ready = true; memory_log("transfer ready"); }
+        }
+        if (kp_transfer_web_running() && monotonic_ms - s->background_poll_at >= 1000U) {
+            kp_transfer_web_poll(monotonic_ms); s->background_poll_at = monotonic_ms;
+        }
+        kp_transfer_web_presence(&presence);
+        kp_transfer_lifecycle_observe(&s->lifecycle, &presence);
+        v->transfer.peers = connected ? presence.online : 0;
+        v->transfer.ip[0] = 0;
+        if (!connected) {
+            v->transfer.state = kp_network_status()==KP_NET_FAILED ? KP_TRANSFER_FAILED :
+                s->had_ready ? KP_TRANSFER_RECONNECTING : KP_TRANSFER_CONNECTING;
+        } else if (s->start_retry || !kp_transfer_web_listening()) v->transfer.state=KP_TRANSFER_FAILED;
+        else {
+            snprintf(v->transfer.ip, sizeof(v->transfer.ip), "%s", ip);
+            v->transfer.state = !s->desired ? KP_TRANSFER_LISTENING :
+                kp_transfer_web_ready() ? (presence.online ? KP_TRANSFER_READY : KP_TRANSFER_WAITING) : KP_TRANSFER_CONNECTING;
         }
     }
     publish(v);
@@ -266,7 +303,7 @@ static void worker(void *arg) {
     (void)arg;
     service_t state = {0};
     for (;;) {
-        step(&state, (uint32_t)(esp_timer_get_time() / 1000));
+        step(&state, (uint64_t)(esp_timer_get_time() / 1000));
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }

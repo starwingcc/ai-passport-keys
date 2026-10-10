@@ -7,6 +7,8 @@ esp_event_base_t WIFI_EVENT = "wifi", IP_EVENT = "ip";
 static int locked;
 static unsigned handlers, fault, connects, config_writes, sntp, clears, disconnects;
 static bool scan_running, associated, setup_paused;
+static bool candidate_dhcp;
+static unsigned address_fault;
 static network_event_handler_t wifi_cb, ip_cb;
 static wifi_config_t station_config;
 static wifi_ap_record_t records[96], associated_ap;
@@ -50,6 +52,7 @@ esp_err_t esp_wifi_set_config(int iface, const wifi_config_t *cfg) {
     station_config = *cfg; ++config_writes; return ESP_OK;
 }
 void kp_network_setup_pause(bool pause, uint32_t now) { (void)now; setup_paused = pause; }
+esp_err_t kp_network_setup_test_address(bool candidate) { assert(setup_paused&&!associated);if(address_fault==(candidate?1U:2U))return ESP_FAIL;candidate_dhcp=candidate;return ESP_OK; }
 esp_err_t esp_wifi_get_config(int iface, wifi_config_t *cfg) { assert(iface == WIFI_IF_STA); if (fault == 13) return ESP_FAIL; *cfg = station_config; return ESP_OK; }
 esp_err_t esp_wifi_connect(void) { assert(!locked && !scan_running); if (fault == 8) return ESP_FAIL; ++connects; return ESP_OK; }
 esp_err_t esp_wifi_disconnect(void) {
@@ -109,7 +112,7 @@ static void restored(uint32_t now, kp_wifi_job_state_t result) {
     associated = true; memcpy(associated_ap.ssid, station_config.sta.ssid, 32);
     memset(associated_ap.ssid + 17, 0x7f, 15); // Bytes after the SSID terminator are unspecified.
     ip_cb(NULL, IP_EVENT, IP_EVENT_STA_GOT_IP, NULL); tick(now);
-    assert(!get().busy && get().state == result && !get().restore_failed && !setup_paused);
+    assert(!get().busy && get().state == result && !get().restore_failed && !setup_paused && !candidate_dhcp);
     assert(!s_original.sta.password[0] && !s_candidate.password[0]);
 }
 int main(void) {
@@ -192,6 +195,13 @@ int main(void) {
     assert(!get().busy && get().restore_failed && !setup_paused && !strcmp((char *)station_config.sta.password, "original-pass"));
     lan_fresh(); test_begin(0); tick(100); fault = 10; assert(kp_wifi_setup_stop() == ESP_FAIL);
     fault = 0; assert(kp_wifi_setup_stop() == ESP_OK && !handlers && !setup_paused && !s_original.sta.password[0]);
+    // A failed DHCP loan or static restoration keeps setup ownership until
+    // the original address can be restored, before reconnecting the station.
+    lan_fresh();test_begin(0);address_fault=1;tick(100);address_fault=0;settle(101);
+    restored(202,KP_WIFI_ERROR);
+    lan_fresh();test_begin(0);tick(100);assert(candidate_dhcp);got_ip(101);tick(102);
+    address_fault=2;tick(202);assert(get().busy&&setup_paused&&candidate_dhcp&&!associated);
+    address_fault=0;tick(203);restored(204,KP_WIFI_VERIFIED);
     // Full-length SSIDs are valid and never indexed beyond the driver field.
     fresh(); kp_wifi_defaults(&same); memset(same.ssid, 'x', 32); strcpy(same.password, "test-pass");
     assert(kp_wifi_setup_test(&same, &id) == ESP_OK); tick(0); got_ip(1); settle(2);
