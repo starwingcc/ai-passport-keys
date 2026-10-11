@@ -3,8 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Continuous zero-online grace, separate from browser heartbeat expiration.
-#define KP_TRANSFER_QUIET_MS UINT64_C(60000)
+// Offline cleanup is immediate; admission is tracked by keypad_session.
 
 typedef enum {
     KP_TRANSFER_LISTEN,
@@ -19,10 +18,12 @@ typedef struct {
     uint32_t generation;
     uint64_t zero_since_ms;
     bool allocated;
+    unsigned joining;
 } kp_transfer_presence_t;
 
 typedef struct {
     kp_transfer_phase_t phase;
+    bool joining;
     uint64_t zero_since_ms;
 } kp_transfer_lifecycle_t;
 

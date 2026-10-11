@@ -35,7 +35,7 @@ Windows uses Control+Z, Control+Y and Control+A. Select-all is followed by
 Backspace once. The voice-input title labels an Alt hold; configure the host's
 voice-input shortcut as needed.
 
-Settings are ordered **Screen → Paired devices → File transfer → Passport configuration →
+Settings are ordered **Screen → Paired devices → File transfer → System configuration →
 Clear Bluetooth pairing**.
 
 - **Screen**: adjust brightness and idle dim/off timers; zero disables a timer.
@@ -47,8 +47,9 @@ Clear Bluetooth pairing**.
   UP/DOWN selects Disable (top) or Enable (bottom); short OK applies, `>` marks
   the cursor and `*` the running state. Disable ends current sessions and returns
   to listening; the next webpage visit can start sharing again. Hold OK returns.
-  Configure Wi-Fi through the hotspot first if needed. Configuration temporarily
-  replaces the transfer entry; exiting restores listening.
+  Configure Wi-Fi through the hotspot first if needed. The transfer and system
+  configuration rows show **Listening** or **Connected** on the right. Opening
+  either LAN entry switches from the other function; both keep Wi-Fi connected.
 - **Paired devices**: retain A and B, with a separate macOS/Windows setting
   for each. Select an empty slot and press OK to add a host; hold OK cancels.
   Full slots are never overwritten automatically. Device actions contain
@@ -83,8 +84,8 @@ Clear Bluetooth pairing**.
 1. With a working Wi-Fi network saved, open `http://192.168.1.11/config` in the same
    LAN to start configuration automatically. The device keeps its current screen,
    screen-off state and Bluetooth keyboard operation; configuration ends file transfer.
-   **Settings → Passport configuration → WiFi** remains a manual entry.
-2. For initial setup, select **Settings → Passport configuration → Device hotspot**,
+   **Settings → System configuration → WiFi** remains a manual entry.
+2. For initial setup, select **Settings → System configuration → Device hotspot**,
    join the displayed network and open `http://192.168.4.1`. The hotspot pauses
    Bluetooth and still requires a manual exit.
 3. Edit the home badge, Wi-Fi network, scenarios and keyboard/media steps; empty
@@ -99,14 +100,14 @@ Clear Bluetooth pairing**.
    A failed save leaves saved settings unchanged; keep the page open and retry.
 
 An online WiFi configuration page keeps configuration active even without edits.
-After all pages go offline for one minute, configuration exits and Wi-Fi/file
-transfer listening resumes using the saved Wi-Fi settings.
-A sudden network loss first waits for the 120-second heartbeat lease, then the
-one-minute grace. Without a successful page join, configuration lasts one minute.
-Scanning, network testing/restoration and saving pause the exit timer. During
-configuration, `/` and `/transfer` display a configuration-in-progress notice.
-Unsaved edits are never submitted automatically; export them before reopening
-`/config` if the session is lost.
+Closing the last joined page immediately restores listening; closing one of several
+pages leaves the others connected. Sudden network loss uses a 120-second heartbeat
+timeout. Loading and joining a new page have a separate 30-second startup lease.
+Scanning, network testing/restoration and saving finish safely before handoff.
+Opening `/` or `/transfer` switches to file transfer and ends all configuration
+sessions. The old editor stops reconnecting and retains its unsaved draft;
+**Reconnect** switches back without automatically saving. Device hotspot
+configuration retains its manual lifetime and does not participate in LAN switching.
 
 Each keyboard or media action targets **All**, **Windows** or **Mac**. The device
 runs All and matching actions using the saved pairing system, skipping other
@@ -155,14 +156,14 @@ The firmware uses `192.168.1.11`, mask `255.255.255.0`, gateway and DNS
 it in the router before use. Another subnet may be incompatible; the firmware
 does not silently fall back to another address.
 
-A browser is online only after joining and until its session expires. After all
-browsers go offline, sharing waits one minute before releasing its sessions
-and catalogs; a joined browser cancels that wait. Opening a page without joining
-also has a one-minute limit. Closing a page normally detects departure quickly;
-sudden network loss can take the separate 120-second heartbeat timeout first.
-Wi-Fi and the HTTP entry remain available in standby. Modem power saving operates
-throughout; standby does not enter whole-device deep sleep. **Reconnect** on the
-webpage can automatically start sharing again.
+A browser is online only after joining and until its session expires. Closing the
+last joined browser immediately releases the sessions and catalogs and restores
+listening; other joined browsers keep sharing active. Loading and joining have a
+30-second startup lease. Sudden network loss can take the 120-second heartbeat
+timeout. Wi-Fi and the HTTP entry stay available while listening. Modem power
+saving operates throughout; standby does not enter whole-device deep sleep.
+Opening `/config` ends all transfer sessions and switches to configuration. Old
+pages stop automatically reconnecting; **Reconnect** explicitly switches back.
 
 Keep pages open and phones in the foreground. Refreshing or closing a page ends
 its transfers, removes its shared files and discards unsaved received files.

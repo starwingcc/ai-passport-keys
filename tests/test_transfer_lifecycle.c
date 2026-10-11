@@ -19,26 +19,27 @@ static kp_wifi_job_t config_job;
 static kp_transfer_presence_t presence;
 static bool join_during_stop,partial_listener;
 static uint64_t test_now;
+static uint32_t server_generation,config_generation;
+static unsigned suspends;
 static char current_ip[16]="192.168.1.11";
 static kp_web_request_t request_callback;
-static kp_transfer_wake_t wake_callback, config_wake_callback;
 int64_t esp_timer_get_time(void){return (int64_t)test_now*1000;}
 void vTaskDelay(TickType_t ms){(void)ms;}
 int xTaskCreate(void (*f)(void *),const char *name,unsigned stack,void *arg,unsigned priority,TaskHandle_t *out){assert(f&&name&&stack==4096&&!arg&&priority==3);*out=(void *)1;return pdPASS;}
 void kp_store_wifi_get(kp_wifi_config_t *out){kp_wifi_defaults(out);if(has_wifi)strcpy(out->ssid,"saved");}
 void kp_network_keep_online(bool keep){leased=keep;}
-esp_err_t kp_network_suspend(void){if(suspend_fault)return suspend_fault;assert(!web_owned&&!ap_owned);suspended=true;connected=false;return ESP_OK;}
+esp_err_t kp_network_suspend(void){++suspends;if(suspend_fault)return suspend_fault;assert(!web_owned&&!ap_owned);suspended=true;connected=false;return ESP_OK;}
 void kp_network_resume(void){suspended=false;}
 void kp_network_tick(uint32_t now){(void)now;assert((!ap_owned||leased)&&!suspended);}
 bool kp_network_ip(char out[16]){if(connected)strcpy(out,current_ip);else out[0]=0;return connected;}
 kp_network_status_t kp_network_status(void){return connected?KP_NET_SYNCED:KP_NET_CONNECTING;}
-esp_err_t kp_transfer_web_listen_start(const char *ip,kp_transfer_wake_t wake,kp_transfer_wake_t config_wake){assert(connected&&leased&&!ap_owned&&!ble_paused&&!strcmp(ip,current_ip));if(web_owned){if(partial_listener)return ESP_ERR_INVALID_STATE;web_up=true;return ESP_OK;}++web_starts;wake_callback=wake;config_wake_callback=config_wake;if(listener_fault){if(partial_listener)web_owned=true;return listener_fault;}web_owned=web_up=true;return ESP_OK;}
-esp_err_t kp_transfer_web_activate(uint64_t zero){assert(web_owned&&web_up&&!ap_owned&&!ble_paused);++activations;if(web_start_fault)return web_start_fault;if(!presence.allocated){presence=(kp_transfer_presence_t){.allocated=true,.generation=presence.generation+1,.zero_since_ms=zero};}web_ready=true;return ESP_OK;}
-esp_err_t kp_transfer_web_deactivate(bool force){++deactivations;if(join_during_stop&&!force){join_during_stop=false;presence.online=1;return ESP_ERR_INVALID_STATE;}if(!force&&presence.allocated&&(presence.online||test_now-presence.zero_since_ms<KP_TRANSFER_QUIET_MS))return ESP_ERR_INVALID_STATE;if(release_fault){web_ready=false;return release_fault;}web_ready=false;presence.allocated=false;presence.online=0;return ESP_OK;}
+esp_err_t kp_transfer_web_listen_start(const char *ip){assert(connected&&leased&&!ap_owned&&!ble_paused&&!strcmp(ip,current_ip));if(web_owned){if(partial_listener)return ESP_ERR_INVALID_STATE;web_up=true;return ESP_OK;}++web_starts;if(listener_fault){if(partial_listener)web_owned=true;return listener_fault;}web_owned=web_up=true;return ESP_OK;}
+esp_err_t kp_transfer_web_activate(uint64_t zero){kp_session_view_t current;kp_session_get(&current);server_generation=current.generation;assert(web_owned&&web_up&&!ap_owned&&!ble_paused);++activations;if(web_start_fault)return web_start_fault;if(!presence.allocated){presence=(kp_transfer_presence_t){.allocated=true,.generation=presence.generation+1,.zero_since_ms=zero};}web_ready=true;return ESP_OK;}
+esp_err_t kp_transfer_web_deactivate(bool force){++deactivations;if(join_during_stop&&!force){join_during_stop=false;presence.online=1;return ESP_ERR_INVALID_STATE;}if(!force&&presence.allocated&&(presence.online||presence.joining))return ESP_ERR_INVALID_STATE;if(release_fault){web_ready=false;return release_fault;}web_ready=false;presence.allocated=false;presence.online=0;return ESP_OK;}
 esp_err_t kp_transfer_web_disconnect(void){web_ready=web_up=false;if(disconnect_fault)return disconnect_fault;if(presence.online)presence.zero_since_ms=test_now;presence.online=0;++presence.generation;return ESP_OK;}
 esp_err_t kp_transfer_web_stop(void){++web_stops;if(web_stop_fault){partial_listener=true;return web_stop_fault;}web_owned=web_ready=web_up=partial_listener=false;presence.allocated=false;presence.online=0;return ESP_OK;}
 bool kp_transfer_web_running(void){return web_owned;}
-bool kp_transfer_web_ready(void){return web_ready&&web_up;}
+bool kp_transfer_web_ready(void){return web_ready&&web_up&&kp_session_current(KP_SESSION_TRANSFER,server_generation);}
 bool kp_transfer_web_listening(void){return web_owned&&web_up&&!partial_listener;}
 void kp_transfer_web_presence(kp_transfer_presence_t *out){*out=presence;}
 unsigned kp_transfer_web_peers(void){return presence.online;}
@@ -49,99 +50,56 @@ esp_err_t kp_web_stop(void){if(ap_stop_fault)return ap_stop_fault;ap_owned=false
 void kp_web_poll(uint32_t now){(void)now;assert(ap_owned);++config_polls;}
 const char *kp_web_ssid(void){return "Passport-Keys-test";}
 const char *kp_web_password(void){return "test-pass";}
-esp_err_t kp_web_start_wifi(const char *ip,kp_web_request_t cb){assert(connected&&leased&&!suspended&&!ap_owned&&!web_owned&&!ble_paused&&!strcmp(ip,current_ip));if(config_start_fault)return config_start_fault;ap_owned=true;request_callback=cb;return ESP_OK;}
+uint32_t kp_web_generation(void){return config_generation;}
+esp_err_t kp_web_start_wifi(const char *ip,kp_web_request_t cb){kp_session_view_t current;kp_session_get(&current);config_generation=current.generation;assert(connected&&leased&&!suspended&&!ap_owned&&!web_owned&&!ble_paused&&!strcmp(ip,current_ip));if(config_start_fault)return config_start_fault;ap_owned=true;request_callback=cb;return ESP_OK;}
 bool kp_wifi_setup_testing(void){return config_job.busy&&config_job.kind==KP_WIFI_TEST;}
 void kp_web_update_ip(const char *ip){assert(ap_owned&&!strcmp(ip,current_ip));}
 void kp_wifi_setup_poll(uint32_t now){(void)now;assert(ap_owned);}
-static void tick(service_t *s,uint64_t now){test_now=now;step(s,now);}
-static void offline(uint64_t now){assert(presence.allocated);presence.online=0;presence.zero_since_ms=now;}
+static void tick(service_t *s,uint64_t now){test_now=now;kp_session_poll(now);kp_session_view_t current;kp_session_get(&current);presence.online=current.mode==KP_SESSION_TRANSFER?current.online:0;presence.joining=current.mode==KP_SESSION_TRANSFER?current.joining:0;step(s,now);}
+static uint32_t open_mode(kp_session_mode_t mode,uint64_t now,uint32_t *generation){test_now=now;uint32_t lease=kp_session_open(mode,now,generation);assert(lease);return lease;}
 int main(void){
-    service_t s={0};assert(kp_network_service_start()==ESP_OK);tick(&s,0);assert(s.view.transfer.state==KP_TRANSFER_OFF&&!leased&&!ble_pauses);
-    kp_network_service_transfer(true);tick(&s,1);assert(s.view.transfer.state==KP_TRANSFER_NO_WIFI&&!s.desired&&!leased);
-    has_wifi=true;tick(&s,2);assert(leased&&!s.desired&&!web_owned);
-    connected=true;tick(&s,50);assert(web_owned&&!presence.allocated&&s.view.transfer.state==KP_TRANSFER_LISTENING&&!ble_pauses);
-    wake_callback(100);tick(&s,100);assert(web_ready&&s.view.transfer.enabled&&s.view.transfer.state==KP_TRANSFER_WAITING&&presence.zero_since_ms==100);
-    wake_callback(1000);tick(&s,1000);assert(presence.zero_since_ms==100); // no join, repeated visit
-    tick(&s,60099);assert(web_ready&&s.view.transfer.state==KP_TRANSFER_WAITING);
-    tick(&s,60100);assert(!presence.allocated&&web_owned&&leased&&!suspended&&s.view.transfer.state==KP_TRANSFER_LISTENING);
-    wake_callback(200000);tick(&s,200000);presence.online=2;tick(&s,200001);assert(s.view.transfer.state==KP_TRANSFER_READY);
-    tick(&s,900000);assert(web_ready&&presence.allocated&&s.view.transfer.peers==2); // no file activity
-    offline(900001);tick(&s,900002);assert(s.view.transfer.state==KP_TRANSFER_WAITING);
-    presence.online=1;tick(&s,960000);assert(s.view.transfer.state==KP_TRANSFER_READY);
-    offline(1100000);tick(&s,1159999);assert(web_ready);
-    join_during_stop=true;tick(&s,1160000);assert(web_ready&&s.view.transfer.state==KP_TRANSFER_READY);
-    offline(1300000);release_fault=ESP_FAIL;tick(&s,1360000);assert(presence.allocated&&web_owned&&leased&&s.view.transfer.state==KP_TRANSFER_STOPPING);
-    unsigned starts=activations;kp_network_service_transfer(true);tick(&s,1360999);assert(activations==starts&&presence.allocated);
-    release_fault=0;tick(&s,1361000);assert(!presence.allocated&&web_owned&&leased&&s.view.transfer.state==KP_TRANSFER_LISTENING&&web_starts==1&&!ble_pauses);
-    // Activation errors retry in the original quiet window, keeping the entry.
-    web_start_fault=ESP_ERR_NO_MEM;wake_callback(1500000);tick(&s,1500000);assert(web_owned&&!web_ready&&s.view.transfer.state==KP_TRANSFER_FAILED);
-    starts=activations;tick(&s,1500999);assert(activations==starts);web_start_fault=0;tick(&s,1501000);assert(web_ready&&presence.zero_since_ms==1500000);
-    // IP loss invalidates old sessions once, keeps catalogs and does not restart time.
-    presence.online=1;tick(&s,1510000);connected=false;disconnect_fault=ESP_FAIL;tick(&s,1511000);assert(presence.allocated&&web_owned&&!s.view.transfer.ip[0]);
-    disconnect_fault=0;tick(&s,1512000);assert(presence.zero_since_ms==1512000&&presence.allocated&&!presence.online);
-    tick(&s,1542000);assert(presence.zero_since_ms==1512000);connected=true;tick(&s,1542001);assert(web_ready&&presence.zero_since_ms==1512000);
-    tick(&s,1572000);assert(!presence.allocated&&s.view.transfer.state==KP_TRANSFER_LISTENING&&web_owned&&leased);
-    // Manual enable/disable affects catalogs, never the standing radio lease.
-    kp_network_service_transfer(true);tick(&s,1700000);presence.online=1;tick(&s,1700001);
-    kp_network_service_transfer(false);tick(&s,1700002);assert(!presence.allocated&&web_owned&&leased&&!ble_pauses);
-    // Configuration cannot take port 80/STA until failed stops recover.
-    web_stop_fault=ESP_FAIL;kp_network_service_ap(true);tick(&s,1800000);assert(web_owned&&!ap_owned&&!ble_paused&&s.view.transfer.state==KP_TRANSFER_STOPPING);
-    web_stop_fault=0;suspend_fault=ESP_FAIL;tick(&s,1801000);assert(!web_owned&&!ap_owned&&!ble_paused);
-    suspend_fault=0;tick(&s,1802000);assert(ap_owned&&ble_paused&&s.config_ble_paused&&s.view.lan.state==KP_AP_ACTIVE);
-    ap_stop_fault=ESP_FAIL;request_callback(false);tick(&s,1803000);assert(ap_owned&&ble_paused&&s.view.lan.state==KP_AP_FAILED);
-    ap_stop_fault=0;tick(&s,1804000);assert(!ap_owned&&!ble_paused&&!suspended&&s.view.lan.state==KP_AP_OFF&&leased);
-    connected=true;tick(&s,1804001);assert(web_owned&&s.view.transfer.state==KP_TRANSFER_LISTENING);
-    // LAN configuration retains Bluetooth; tests temporarily own the station.
-    unsigned pauses=ble_pauses;kp_network_service_config(true,true);tick(&s,1900000);assert(s.view.lan.state==KP_AP_STARTING&&leased&&!web_owned&&!ap_owned);
-    connected=true;tick(&s,1901000);assert(ap_owned&&s.view.lan.state==KP_AP_ACTIVE&&ble_pauses==pauses);
-    config_job=(kp_wifi_job_t){.kind=KP_WIFI_TEST,.busy=true};connected=false;tick(&s,1902000);assert(ap_owned&&s.config_testing&&s.view.lan.state==KP_AP_ACTIVE);
-    connected=true;config_job.busy=false;tick(&s,1903000);assert(ap_owned&&!s.config_testing&&!strcmp(s.view.lan.ip,current_ip));
-    kp_network_service_config(false,true);tick(&s,1904000);connected=true;tick(&s,1904001);assert(!ap_owned&&web_owned&&!presence.allocated&&s.view.transfer.state==KP_TRANSFER_LISTENING&&ble_pauses==pauses);
-    // Partial HTTP starts and failed httpd_stop retain ownership until retry.
-    assert(kp_transfer_web_stop()==ESP_OK);listener_fault=ESP_FAIL;partial_listener=true;tick(&s,2000000);assert(web_owned&&s.view.transfer.state==KP_TRANSFER_FAILED);
-    web_stop_fault=ESP_FAIL;tick(&s,2001000);assert(web_owned&&!ap_owned);web_stop_fault=listener_fault=0;tick(&s,2002000);assert(kp_transfer_web_listening());
-    // Config failures roll back BLE pauses, including a pause reporting failure.
+    service_t s={0};assert(kp_network_service_start()==ESP_OK);tick(&s,0);assert(!leased&&!web_owned);
+    has_wifi=true;connected=true;tick(&s,10);assert(web_owned&&leased&&!presence.allocated);
+    unsigned idle_releases=deactivations;tick(&s,11);tick(&s,12);assert(deactivations==idle_releases);
+    uint32_t g;uint32_t a=open_mode(KP_SESSION_TRANSFER,20,&g);tick(&s,20);assert(web_ready&&s.view.transfer.state==KP_TRANSFER_WAITING);
+    tick(&s,30019);assert(presence.allocated);tick(&s,30020);assert(!presence.allocated&&web_owned&&leased);
+    a=open_mode(KP_SESSION_TRANSFER,40000,&g);tick(&s,40000);assert(kp_session_join(KP_SESSION_TRANSFER,g,a,40001));tick(&s,40001);
+    uint32_t b=open_mode(KP_SESSION_TRANSFER,40002,&g);assert(kp_session_join(KP_SESSION_TRANSFER,g,b,40003));tick(&s,40003);assert(s.view.transfer.peers==2);
+    kp_session_leave(KP_SESSION_TRANSFER,g,a,40004);tick(&s,40004);assert(presence.allocated&&s.view.transfer.peers==1);
+    kp_session_leave(KP_SESSION_TRANSFER,g,b,40005);tick(&s,40005);assert(!presence.allocated&&web_owned&&leased);
+    a=open_mode(KP_SESSION_TRANSFER,50000,&g);tick(&s,50000);assert(kp_session_join(KP_SESSION_TRANSFER,g,a,50001));tick(&s,50001);
+    unsigned radio_stops=suspends,ble_calls=ble_pauses;
+    uint32_t config_g,c=open_mode(KP_SESSION_CONFIG,50002,&config_g);tick(&s,50002);assert(web_owned&&!ap_owned);
+    tick(&s,50302);assert(ap_owned&&!web_owned&&connected&&suspends==radio_stops&&ble_pauses==ble_calls);
+    assert(kp_session_join(KP_SESSION_CONFIG,config_g,c,50303));tick(&s,50303);
+    kp_network_view_t view;kp_network_service_get(&view);assert(view.lan.online==1&&view.lan.listening&&!view.transfer.peers);
+    a=open_mode(KP_SESSION_TRANSFER,50304,&g);tick(&s,50304);tick(&s,50354);
+    assert(web_owned&&!ap_owned&&web_ready&&connected&&suspends==radio_stops&&ble_pauses==ble_calls);
+    assert(!kp_session_ping(KP_SESSION_CONFIG,config_g,c,50355));assert(kp_session_join(KP_SESSION_TRANSFER,g,a,50355));tick(&s,50355);
+    kp_network_service_get(&view);assert(view.transfer.peers==1&&view.lan.listening&&!view.lan.online);
+    c=open_mode(KP_SESSION_CONFIG,50356,&config_g);web_stop_fault=ESP_FAIL;tick(&s,50356);tick(&s,50656);assert(web_owned&&!ap_owned);
+    web_stop_fault=0;tick(&s,51656);assert(ap_owned&&!web_owned);assert(kp_session_join(KP_SESSION_CONFIG,config_g,c,51657));tick(&s,51657);
+    kp_session_leave(KP_SESSION_CONFIG,config_g,c,51658);ap_stop_fault=ESP_FAIL;tick(&s,51658);assert(ap_owned&&!web_owned);
+    ap_stop_fault=0;tick(&s,51708);assert(!ap_owned&&web_owned&&connected&&suspends==radio_stops);
+    // A heartbeat expiration has no second timer.
+    a=open_mode(KP_SESSION_TRANSFER,60000,&g);tick(&s,60000);assert(kp_session_join(KP_SESSION_TRANSFER,g,a,60001));tick(&s,60001);
+    tick(&s,180000);assert(presence.allocated);tick(&s,180001);assert(!presence.allocated&&web_owned);
+    // Activation/release failures preserve ownership and retry without radio churn.
+    a=open_mode(KP_SESSION_TRANSFER,200000,&g);web_start_fault=ESP_FAIL;tick(&s,200000);assert(web_owned&&!web_ready);
+    web_start_fault=0;tick(&s,201000);assert(web_ready);assert(kp_session_join(KP_SESSION_TRANSFER,g,a,201001));tick(&s,201001);
+    kp_session_leave(KP_SESSION_TRANSFER,g,a,201002);release_fault=ESP_FAIL;tick(&s,201002);assert(presence.allocated&&web_owned);
+    kp_network_service_get(&view);assert(!view.lan.listening&&view.transfer.state==KP_TRANSFER_STOPPING);
+    release_fault=0;tick(&s,202002);assert(!presence.allocated&&web_owned);
+    // SoftAP keeps its existing explicit lifecycle and BLE ownership.
+    kp_network_service_ap(true);tick(&s,210000);assert(ap_owned&&ble_paused&&!connected);
+    kp_network_service_ap(false);tick(&s,210050);connected=true;tick(&s,210100);assert(!ap_owned&&!ble_paused&&web_owned);
     for(unsigned f=0;f<2;++f){
         ble_pause_fault=f==0?ESP_FAIL:ESP_OK;ap_start_fault=f==1?ESP_FAIL:ESP_OK;
-        kp_network_service_ap(true);tick(&s,2100000+f*10000);assert(!ap_owned&&!ble_paused&&!s.config_ble_paused&&s.view.lan.state==KP_AP_FAILED);
-        ble_pause_fault=ap_start_fault=0;kp_network_service_ap(false);tick(&s,2101000+f*10000);connected=true;tick(&s,2101001+f*10000);assert(web_owned&&!suspended);
+        kp_network_service_ap(true);tick(&s,220000+f*10000);assert(!ap_owned&&!ble_paused);
+        ble_pause_fault=ap_start_fault=0;kp_network_service_ap(false);tick(&s,220050+f*10000);connected=true;tick(&s,220100+f*10000);assert(web_owned);
     }
-    kp_network_service_ap(true);tick(&s,2200000);assert(ap_owned&&ble_paused);
-    ble_resume_fault=ESP_FAIL;kp_network_service_ap(false);tick(&s,2201000);assert(!ap_owned&&ble_paused&&s.config_ble_paused);
-    ble_resume_fault=0;tick(&s,2202000);assert(!ble_paused&&!suspended&&s.view.lan.state==KP_AP_OFF);
-    // Browser entry leaves BLE untouched; repeated bootstrap visits neither
-    // restart the handoff grace nor override a queued manual cancellation.
-    connected=true;tick(&s,2300000);pauses=ble_pauses;
-    config_wake_callback(2300001);tick(&s,2300001);
-    assert(web_owned&&!ap_owned&&s.view.lan.automatic&&s.view.lan.wifi);
-    config_wake_callback(2300100);tick(&s,2300100);
-    tick(&s,2300300);assert(web_owned&&!ap_owned);
-    tick(&s,2300301);assert(!web_owned&&!ap_owned&&s.view.lan.state==KP_AP_STARTING);
-    connected=true;tick(&s,2300350);assert(ap_owned&&s.view.lan.state==KP_AP_ACTIVE&&ble_pauses==pauses);
-    request_callback(false);tick(&s,2300400);connected=true;tick(&s,2300401);
-    assert(web_owned&&s.view.lan.state==KP_AP_OFF&&s.view.lan.automatic&&ble_pauses==pauses);
-    config_wake_callback(2400000);kp_network_service_ap(false);config_wake_callback(2400000);
-    tick(&s,2400000);assert(web_owned&&!s.ap_desired);
-    // Automatic startup failure closes configuration and returns to listening.
-    config_wake_callback(2500000);tick(&s,2500000);tick(&s,2500300);
-    connected=true;config_start_fault=ESP_FAIL;tick(&s,2500350);
-    assert(s.view.lan.state==KP_AP_FAILED&&s.view.lan.automatic&&!ap_owned);
-    config_start_fault=0;tick(&s,2500400);connected=true;tick(&s,2500401);
-    assert(web_owned&&s.view.lan.state==KP_AP_OFF&&ble_pauses==pauses);
-    // Manual hotspot selection can take over an automatic LAN session only
-    // after configuration HTTP and STA have relinquished ownership.
-    config_wake_callback(2600000);tick(&s,2600000);tick(&s,2600300);connected=true;tick(&s,2600350);
-    // A timeout/exit already gated by HTTP cannot be lost to a simultaneous
-    // manual start. Stop the old instance, then start a fresh manual session.
-    request_callback(false);kp_network_service_config(true,true);tick(&s,2600360);
-    assert(!ap_owned&&s.view.lan.state==KP_AP_OFF);
-    tick(&s,2600361);connected=true;tick(&s,2600362);
-    assert(ap_owned&&s.view.lan.state==KP_AP_ACTIVE&&!s.view.lan.automatic);
-    kp_network_service_ap(true);tick(&s,2600400);assert(!ap_owned&&s.view.lan.state==KP_AP_OFF);
-    tick(&s,2600450);assert(ap_owned&&ble_paused&&!s.view.lan.wifi&&!s.view.lan.automatic);
-    kp_network_service_ap(false);tick(&s,2600500);connected=true;tick(&s,2600501);assert(web_owned&&!ble_paused);
-    // Worker time remains 64-bit across the old 49-day counter boundary.
-    connected=true;tick(&s,(uint64_t)UINT32_MAX-50);wake_callback((uint64_t)UINT32_MAX-10);tick(&s,(uint64_t)UINT32_MAX-10);
-    tick(&s,(uint64_t)UINT32_MAX+59989);assert(presence.allocated);tick(&s,(uint64_t)UINT32_MAX+59990);assert(!presence.allocated&&web_owned);
-    puts("Transfer worker: standing STA/listener, no-join timeout, online-only lifetime, exact 60s, reconnect, retry ownership, ordered configuration handoff, BLE preservation and 64-bit time: PASS");
+    a=open_mode(KP_SESSION_TRANSFER,(uint64_t)UINT32_MAX-10,&g);tick(&s,(uint64_t)UINT32_MAX-10);
+    assert(kp_session_join(KP_SESSION_TRANSFER,g,a,(uint64_t)UINT32_MAX));tick(&s,(uint64_t)UINT32_MAX);
+    kp_session_leave(KP_SESSION_TRANSFER,g,a,(uint64_t)UINT32_MAX+1);tick(&s,(uint64_t)UINT32_MAX+1);assert(!presence.allocated&&web_owned);
+    puts("LAN worker: immediate last leave/heartbeat, 30s admission, bidirectional HTTP ownership, standing STA/BLE, stale generations, failed cleanup retry, SoftAP and 64-bit time: PASS");
 }

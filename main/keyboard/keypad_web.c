@@ -1,4 +1,5 @@
 #include "keypad_web.h"
+#include "keypad_session_http.h"
 #include "keypad_web_asset.h"
 #include "keypad_socket_io.h"
 #include "keypad_store.h"
@@ -32,6 +33,7 @@ static char s_ssid[32], s_session[33];
 static const char s_password[] = "12345678";
 static kp_web_request_t s_request;
 static kp_web_presence_t s_presence;
+static uint32_t s_generation;
 #define HTTP_SOCKETS 3
 #define HTTP_IDLE_MS 2000U
 #define HTTP_SEND_STALL_MS 5000U
@@ -53,6 +55,7 @@ extern const char charset_end[] __asm__("_binary_charset_js_end");
 extern const char css_start[] __asm__("_binary_app_css_start");
 extern const char css_end[] __asm__("_binary_app_css_end");
 
+uint32_t kp_web_generation(void) { return s_generation; }
 const char *kp_web_ssid(void) { return s_ssid; }
 const char *kp_web_password(void) { return s_password; }
 static uint32_t web_now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
@@ -147,12 +150,14 @@ static void poll_work(void *arg) {
             kp_wifi_setup_get(&job);
             uint64_t time = (uint64_t)(esp_timer_get_time() / 1000);
             kp_web_presence_pause(&s_presence, job.busy, time);
+            kp_session_pause(s_generation, job.busy, time);
             // Serialized with join/ping/save handlers. A page arriving before
             // this gate cancels expiry; requests after it cannot revive a
             // session already handed to the network worker for teardown.
-            if (kp_web_presence_expired(&s_presence, time)) {
+            kp_session_view_t session;
+            kp_session_get(&session);
+            if (session.mode != KP_SESSION_CONFIG || session.generation != s_generation) {
                 atomic_store(&s_stopping, true);
-                if (s_request) s_request(false);
             }
         }
     }
@@ -172,13 +177,10 @@ static esp_err_t static_file(httpd_req_t *req) {
     int fd = httpd_req_to_sockfd(req);
     if (!begin_response(fd)) return ESP_FAIL;
     size_t path_size = strcspn(req->uri, "?");
-    if (s_lan_wifi && ((path_size == 1 && req->uri[0] == '/') ||
-                      (path_size == 9 && !strncmp(req->uri, "/transfer", 9)))) {
-        httpd_resp_set_type(req, "text/html; charset=utf-8");
-        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-        httpd_resp_set_hdr(req, "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
-        esp_err_t rc = httpd_resp_sendstr(req, "<!doctype html><meta charset=utf-8><title>Passport</title><h1>配置进行中</h1><p>文件流转将在配置结束后恢复。</p><a href=/config>打开 Passport 配置</a>");
-        end_response(fd, "busy", rc);
+    if (s_lan_wifi && ((path_size == 1 && req->uri[0] == '/') || (path_size == 9 && !strncmp(req->uri, "/transfer", 9)) ||
+                      (path_size == 7 && !strncmp(req->uri, "/config", 7) && !kp_session_document(req, KP_SESSION_CONFIG)))) {
+        esp_err_t rc = kp_session_bootstrap(req);
+        end_response(fd, "bootstrap", rc);
         return rc;
     }
     const char *start = index_start, *end = index_end, *type = "text/html; charset=utf-8";
@@ -244,23 +246,39 @@ static esp_err_t presence_body(httpd_req_t *req) {
     bool join = cJSON_IsString(action) && !strcmp(action->valuestring, "join");
     bool ping = cJSON_IsString(action) && !strcmp(action->valuestring, "ping");
     bool leave = cJSON_IsString(action) && !strcmp(action->valuestring, "leave");
-    bool valid = end == body + used && cJSON_IsObject(json) && cJSON_GetArraySize(json) == (join ? 1 : 2) &&
+    cJSON *generation = cJSON_GetObjectItemCaseSensitive(json, "generation");
+    cJSON *lease = cJSON_GetObjectItemCaseSensitive(json, "lease");
+    bool valid = end == body + used && cJSON_IsObject(json) && cJSON_GetArraySize(json) == (join ? 3 : 2) &&
         (join || ((ping || leave) && cJSON_IsNumber(value) && value->valuedouble >= 1 &&
                   value->valuedouble <= UINT32_MAX && value->valuedouble == (uint32_t)value->valuedouble));
     uint32_t id = valid && !join ? (uint32_t)value->valuedouble : 0;
+    if (join) {
+        valid = valid && cJSON_IsNumber(generation) && generation->valuedouble == s_generation && cJSON_IsNumber(lease) &&
+            lease->valuedouble >= 1 && lease->valuedouble <= UINT32_MAX && lease->valuedouble == (uint32_t)lease->valuedouble;
+        if (valid) id = (uint32_t)lease->valuedouble;
+    }
     cJSON_Delete(json);
     if (!valid) return fail(req, "400 Bad Request", "在线请求无效");
     uint64_t now = (uint64_t)(esp_timer_get_time() / 1000);
     if (join) {
-        id = kp_web_presence_join(&s_presence, now);
-        if (!id) return fail(req, "503 Service Unavailable", "最多四个配置页面，请关闭其他页面后重试");
-    } else if (ping && !kp_web_presence_ping(&s_presence, id, now)) {
+        if (!kp_session_join(KP_SESSION_CONFIG, s_generation, id, now)) return fail(req, "409 Conflict", "页面连接已失效，请重新连接");
+        if (!kp_web_presence_join_id(&s_presence, id, now)) {
+            kp_session_leave(KP_SESSION_CONFIG, s_generation, id, now);
+            return fail(req, "503 Service Unavailable", "最多四个配置页面，请关闭其他页面后重试");
+        }
+    } else if (ping && (!kp_session_ping(KP_SESSION_CONFIG, s_generation, id, now) || !kp_web_presence_ping(&s_presence, id, now))) {
         return fail(req, "409 Conflict", "页面在线记录已失效，请重新加入");
-    } else if (leave) kp_web_presence_leave(&s_presence, id, now);
+    } else if (leave) {
+        kp_web_presence_leave(&s_presence, id, now);
+        kp_session_leave(KP_SESSION_CONFIG, s_generation, id, now);
+    }
     char response[40];
     snprintf(response, sizeof(response), "{\"id\":%lu}", (unsigned long)id);
     esp_err_t rc = httpd_resp_sendstr(req, response);
-    if (join && rc != ESP_OK) kp_web_presence_leave(&s_presence, id, (uint64_t)(esp_timer_get_time() / 1000));
+    if (join && rc != ESP_OK) {
+        kp_web_presence_leave(&s_presence, id, now);
+        kp_session_leave(KP_SESSION_CONFIG, s_generation, id, now);
+    }
     return rc;
 }
 static esp_err_t api_body(httpd_req_t *req) {
@@ -274,6 +292,11 @@ static esp_err_t api_body(httpd_req_t *req) {
         return fail(req, "403 Forbidden", "请使用设备显示的地址打开配置页");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_set_type(req, "application/json");
+    if (!strcmp(req->uri, "/api/session") || !strcmp(req->uri, "/api/session/open") || !strcmp(req->uri, "/api/session/resume")) {
+        if (!s_lan_wifi) return fail(req, "409 Conflict", "本机热点不支持局域网切换");
+        return kp_session_http(req, expected);
+    }
+    if (s_lan_wifi && !kp_session_current(KP_SESSION_CONFIG, s_generation)) return fail(req, "403 Forbidden", "配置会话已结束，请重新连接");
     if (req->method == HTTP_GET) {
         if (!strcmp(req->uri, "/api/settings")) {
             if (!authorized(req)) return fail(req, "403 Forbidden", "设置会话已失效，请刷新页面");
@@ -396,19 +419,26 @@ static esp_err_t api_body(httpd_req_t *req) {
     if (req->content_len) return fail(req, "400 Bad Request", "此操作不接受请求体");
     bool forget = !strcmp(req->uri, "/api/forget");
     esp_err_t rc = httpd_resp_sendstr(req, "{\"ok\":true}");
-    if (rc == ESP_OK && s_request) s_request(forget);
+    if (rc == ESP_OK) {
+        if (s_lan_wifi) kp_session_end(KP_SESSION_CONFIG);
+        if (s_request) s_request(forget);
+    }
     return rc;
 }
 static esp_err_t api(httpd_req_t *req) {
     int fd = httpd_req_to_sockfd(req);
     if (!begin_response(fd)) return ESP_FAIL;
     bool hold = s_lan_wifi && authorized(req) && strcmp(req->uri, "/api/presence");
-    if (hold) kp_web_presence_pause(&s_presence, true, (uint64_t)(esp_timer_get_time() / 1000));
+    if (hold) {
+        kp_web_presence_pause(&s_presence, true, (uint64_t)(esp_timer_get_time() / 1000));
+        kp_session_pause(s_generation, true, (uint64_t)(esp_timer_get_time() / 1000));
+    }
     esp_err_t rc = api_body(req);
     end_response(fd, "api", rc);
     if (hold) {
         kp_wifi_job_t job; kp_wifi_setup_get(&job);
         kp_web_presence_pause(&s_presence, job.busy, (uint64_t)(esp_timer_get_time() / 1000));
+        kp_session_pause(s_generation, job.busy, (uint64_t)(esp_timer_get_time() / 1000));
     }
     return rc;
 }
@@ -450,6 +480,9 @@ static esp_err_t start(kp_web_request_t callback, const char *ip) {
     esp_err_t rc = kp_web_stop();
     if (rc != ESP_OK) return rc;
     s_lan_wifi = ip != NULL;
+    kp_session_view_t session;
+    kp_session_get(&session);
+    s_generation = session.generation;
     kp_web_update_ip(ip ? ip : "192.168.4.1");
     uint8_t mac[6]; esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     snprintf(s_ssid, sizeof(s_ssid), "Passport-Keys-%02X%02X", mac[4], mac[5]);
@@ -487,7 +520,7 @@ static esp_err_t start(kp_web_request_t callback, const char *ip) {
     atomic_store(&s_stopping, false);
     kp_web_presence_init(&s_presence, (uint64_t)(esp_timer_get_time() / 1000));
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
-    http.max_open_sockets = HTTP_SOCKETS; http.max_uri_handlers = 21;
+    http.max_open_sockets = HTTP_SOCKETS; http.max_uri_handlers = 24;
     http.backlog_conn = 1;
     // Configuration has no persistent WebSocket peers to protect. Reclaim
     // keep-alives when full rather than retaining the transfer service's six
@@ -503,6 +536,9 @@ static esp_err_t start(kp_web_request_t callback, const char *ip) {
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_RTCRAM));
     const httpd_uri_t routes[] = {
+        {.uri="/api/session",.method=HTTP_GET,.handler=api},
+        {.uri="/api/session/open",.method=HTTP_POST,.handler=api},
+        {.uri="/api/session/resume",.method=HTTP_POST,.handler=api},
         {.uri="/", .method=HTTP_GET, .handler=static_file},
         {.uri="/config", .method=HTTP_GET, .handler=static_file},
         {.uri="/transfer", .method=HTTP_GET, .handler=static_file},

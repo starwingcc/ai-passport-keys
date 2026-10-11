@@ -22,16 +22,21 @@ void kp_web_presence_poll(kp_web_presence_t *s, uint64_t now) {
     if (s->online && !online) s->zero_since_ms = lag == UINT64_MAX ? time : time - lag;
     s->online = online;
 }
-uint32_t kp_web_presence_join(kp_web_presence_t *s, uint64_t now) {
+uint32_t kp_web_presence_join_id(kp_web_presence_t *s, uint32_t id, uint64_t now) {
     kp_web_presence_poll(s, now);
+    if (!id) return 0;
+    for (unsigned i = 0; i < KP_WEB_PAGES; ++i) if (s->pages[i].id == id) return 0;
     for (unsigned i = 0; i < KP_WEB_PAGES; ++i) if (!s->pages[i].id) {
-        if (!++s->next_id) ++s->next_id;
-        s->pages[i].id = s->next_id;
+        s->pages[i].id = id;
         s->pages[i].last_ms = clock_ms(s, now);
         ++s->online;
-        return s->next_id;
+        return id;
     }
     return 0;
+}
+uint32_t kp_web_presence_join(kp_web_presence_t *s, uint64_t now) {
+    if (!++s->next_id) ++s->next_id;
+    return kp_web_presence_join_id(s, s->next_id, now);
 }
 bool kp_web_presence_ping(kp_web_presence_t *s, uint32_t id, uint64_t now) {
     kp_web_presence_poll(s, now);
@@ -57,5 +62,5 @@ void kp_web_presence_pause(kp_web_presence_t *s, bool pause, uint64_t now) {
 }
 bool kp_web_presence_expired(kp_web_presence_t *s, uint64_t now) {
     kp_web_presence_poll(s, now);
-    return !s->paused && !s->online && clock_ms(s, now) - s->zero_since_ms >= KP_WEB_QUIET_MS;
+    return !s->paused && !s->online;
 }

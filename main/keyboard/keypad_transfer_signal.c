@@ -105,7 +105,7 @@ bool kp_transfer_signal_message(kp_transfer_signal_t *s, int fd, const char *dat
     const char *end; cJSON *msg = cJSON_ParseWithLengthOpts(data, size, &end, false);
     if (!msg || end != data + size || !string(get(msg,"type"), 1, 10)) { cJSON_Delete(msg); return false; }
     const char *type = get(msg,"type")->valuestring; bool ok = false;
-    if (!strcmp(type,"hello") && fields(msg,"|type||name||rtc|") && string(get(msg,"name"),1,48) &&
+    if (!strcmp(type,"hello") && fields(msg,"|type||name||rtc||generation||lease|") && string(get(msg,"name"),1,48) &&
         (!get(msg,"rtc") || cJSON_IsBool(get(msg,"rtc")))) {
         snprintf(p->name,sizeof(p->name),"%s",get(msg,"name")->valuestring);
         p->rtc = !get(msg,"rtc") || cJSON_IsTrue(get(msg,"rtc")); p->joined = true; publish(s);

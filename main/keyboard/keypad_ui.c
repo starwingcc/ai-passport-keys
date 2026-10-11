@@ -176,7 +176,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     snprintf(previous_message, sizeof(previous_message), "%s", message);
     snprintf(previous_ssid, sizeof(previous_ssid), "%s", ssid);
     snprintf(previous_password, sizeof(previous_password), "%s", password);
-    const char *titles[] = {"开始控制", "Passport", "设置", "通过本机热点", "清除配对", "情景列表", "屏幕", "屏幕", "操作系统", "文件流转", "Passport配置", "配对设备", "设备", "新增设备"};
+    const char *titles[] = {"开始控制", "Passport", "设置", "通过本机热点", "清除配对", "情景列表", "屏幕", "屏幕", "操作系统", "文件流转", "系统配置", "配对设备", "设备", "新增设备"};
     bool command = m->page == KP_CONSOLE && m->feedback.visible && !pairing_notice;
     hidden(s_title, false);
     lv_obj_set_pos(s_title, 18, 20); lv_obj_set_width(s_title, 151);
@@ -194,7 +194,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
                       "等待电脑连接");
     for (unsigned i = 0; i < 4; ++i) {
         lv_obj_t *value = s_screen_values[i];
-        bool settings_value = m->page == KP_SETTINGS && i < 2;
+        bool settings_value = m->page == KP_SETTINGS && i < 3;
         bool column = m->page == KP_SCREEN || settings_value;
         lv_obj_t *parent = column ? lv_screen_active() : s_panels[0];
         if (lv_obj_get_parent(value) != parent) lv_obj_set_parent(value, parent);
@@ -323,7 +323,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
                 choices[i], t->enabled == (i == 1) ? " *" : "");
         hidden(s_body, false); lv_obj_set_pos(s_body, 20, 186); lv_obj_set_size(s_body, 200, 68);
         lv_label_set_text(s_footer, "上下选择，OK 确认");
-        lv_label_set_text(s_message, t->state == KP_TRANSFER_WAITING ? "无人在线一分钟后待机" :
+        lv_label_set_text(s_message, t->state == KP_TRANSFER_WAITING ? "等待网页连接" :
             t->enabled ? "返回后仍保持开启" : "网页访问可自动开启");
         if ((t->state == KP_TRANSFER_READY || t->state == KP_TRANSFER_LISTENING || t->state == KP_TRANSFER_WAITING) && t->ip[0]) {
             char url[40]; snprintf(url, sizeof(url), "http://%s/", t->ip);
@@ -536,7 +536,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
             const char *menu[] = {"开始控制", "情景列表", "设置"};
             const char *settings[KP_SETTINGS_COUNT] = {
                 [KP_SETTING_SCREEN] = "屏幕", [KP_SETTING_DEVICES] = "配对设备",
-                [KP_SETTING_TRANSFER] = "文件流转", [KP_SETTING_PASSPORT] = "Passport配置",
+                [KP_SETTING_TRANSFER] = "文件流转", [KP_SETTING_PASSPORT] = "系统配置",
                 [KP_SETTING_FORGET] = "清除蓝牙配对",
             };
             const char *lan[] = {"通过本机热点", "通过 WiFi"};
@@ -547,14 +547,27 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
             for (unsigned i = first; i < count && i < first + 4; ++i) {
                 lv_obj_t *row = menu_row(i - first, i == m->selected);
                 lv_label_set_text_fmt(row, "%s %s", i == m->selected ? ">" : " ", entries[i]);
-                if (m->page == KP_SETTINGS && (i == KP_SETTING_DEVICES || i == KP_SETTING_TRANSFER)) {
-                    lv_obj_set_width(row, 113);
-                    lv_obj_t *value = s_screen_values[i == KP_SETTING_DEVICES ? 0 : 1]; hidden(value, false);
-                    lv_obj_set_pos(value, 137, MENU_TOP + (i - first) * MENU_PITCH); lv_obj_set_size(value, 83, MENU_HEIGHT);
+                if (m->page == KP_SETTINGS && (i == KP_SETTING_DEVICES || i == KP_SETTING_TRANSFER || i == KP_SETTING_PASSPORT)) {
+                    bool network = i != KP_SETTING_DEVICES;
+                    lv_obj_set_width(row, network ? 132 : 113);
+                    lv_obj_t *value = s_screen_values[i == KP_SETTING_DEVICES ? 0 : i == KP_SETTING_TRANSFER ? 1 : 2];
+                    hidden(value, false);
+                    lv_obj_set_pos(value, network ? 156 : 137, MENU_TOP + (i - first) * MENU_PITCH);
+                    lv_obj_set_size(value, network ? 64 : 83, MENU_HEIGHT);
                     lv_obj_set_style_text_color(value, lv_color_hex(m->selected == i ? ACCENT : INK), 0);
-                    if (i == KP_SETTING_TRANSFER) lv_label_set_text(value, m->transfer.enabled ? "已开启" :
-                        m->transfer.state == KP_TRANSFER_LISTENING ? "监听待机" : "已关闭");
-                    else lv_label_set_text_fmt(value, "%u 台", kp_devices_count(&m->devices));
+                    if (network) {
+                        unsigned online = i == KP_SETTING_TRANSFER ? m->transfer.peers : m->lan.online;
+                        bool available = m->lan.listening || (m->transfer.ip[0] &&
+                            (m->transfer.state == KP_TRANSFER_LISTENING || m->transfer.state == KP_TRANSFER_READY ||
+                             m->transfer.state == KP_TRANSFER_WAITING));
+                        const char *state = available ? (online ? "已连接" : "监听中") :
+                            m->transfer.state == KP_TRANSFER_FAILED || m->lan.state == KP_AP_FAILED ? "连接失败" :
+                            m->transfer.state == KP_TRANSFER_STOPPING || m->lan.state == KP_AP_STOPPING ? "恢复中" :
+                            m->transfer.state == KP_TRANSFER_CONNECTING || m->transfer.state == KP_TRANSFER_RECONNECTING ||
+                            m->lan.state == KP_AP_STARTING ? "连接中" : "未联网";
+                        if (i == KP_SETTING_PASSPORT && m->lan.state == KP_AP_ACTIVE && !m->lan.wifi) state = "热点中";
+                        lv_label_set_text(value, state);
+                    } else lv_label_set_text_fmt(value, "%u 台", kp_devices_count(&m->devices));
                 }
             }
             if (m->page == KP_FORGET) {

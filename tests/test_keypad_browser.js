@@ -65,7 +65,7 @@ async function main(){
       return route.fulfill({json:wifi});
     }
     if(url.pathname==='/api/config')return route.fulfill({json:{config:device,session:'test-session',connection,system:deviceSystem}});
-    const files={'/':'index.html','/app.js':'app.js','/charset.js':'charset.js','/app.css':'app.css'};
+    const files={'/':'index.html','/config':'index.html','/app.js':'app.js','/charset.js':'charset.js','/app.css':'app.css'};
     const file=files[url.pathname];if(!file)return route.fulfill({status:404});
     return route.fulfill({body:fs.readFileSync(path.join(__dirname,'../main/web',file)),contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',headers:{'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'"}});
   });
@@ -215,7 +215,7 @@ async function main(){
   await page.waitForFunction(()=>document.getElementById('status').textContent.includes('完整配置已保存'));
   const savedStatus=await page.locator('#status').textContent();
   assert(savedStatus.includes('工牌和按键情景已更新')&&savedStatus.includes('Wi-Fi 网络将在退出配置后切换'));
-  assert.equal(exitPosts,0);assert.equal(page.url(),'http://passport.test/');
+  assert.equal(exitPosts,0);assert.equal(page.url(),'http://passport.test/config');
   assert.deepEqual(savePaths.slice(beforeInvalid),['/api/settings']);
   assert.equal(home.badge,'ALL');assert.equal(wifi.ssid,'unified-network');assert.equal(device.profiles[0].name,'统一保存');
   const beforeNoop=savePaths.length;await page.locator('#save').click();

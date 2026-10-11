@@ -5,6 +5,7 @@ idf_component_register(
          "keyboard/keypad_web.c" "keyboard/keypad_web_presence.c" "keyboard/keypad_ui.c"
          "keyboard/keypad_home.c" "keyboard/keypad_home_ui.c"
          "keyboard/keypad_wifi.c" "keyboard/keypad_network.c"
+         "keyboard/keypad_session.c" "keyboard/keypad_session_http.c"
          "keyboard/keypad_network_service.c" "keyboard/keypad_transfer_lifecycle.c"
          "keyboard/keypad_transfer_signal.c"
          "keyboard/keypad_transfer_web.c" "keyboard/keypad_socket_io.c"

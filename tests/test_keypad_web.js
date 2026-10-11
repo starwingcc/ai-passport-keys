@@ -9,7 +9,7 @@ const {capture,keys,validate}=K;
   const page=fs.readFileSync(path.join(__dirname,'../main/web/config-wait.html'),'utf8');
   const script=page.split('<script>')[1].split('</script>')[0];
   const hash=crypto.createHash('sha256').update(script).digest('base64');
-  assert(fs.readFileSync(path.join(__dirname,'../main/keyboard/keypad_transfer_web.c'),'utf8').includes('sha256-'+hash));
+  assert(fs.readFileSync(path.join(__dirname,'../main/keyboard/keypad_session_http.c'),'utf8').includes('sha256-'+hash));
 }
 // Editor/import tests use a stable fixture independent of first-use defaults.
 function editorFixture(){

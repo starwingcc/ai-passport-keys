@@ -1,4 +1,5 @@
 #include "keypad_network_service.h"
+#include "keypad_session.h"
 #include "keypad_network.h"
 #include "keypad_transfer_web.h"
 #include "keypad_web.h"
@@ -16,8 +17,6 @@
 
 static atomic_uint s_transfer_request, s_ap_request;
 static atomic_bool s_forget, s_config_exit;
-static bool s_wake_pending;
-static uint64_t s_wake_at;
 static kp_network_view_t s_view;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t s_task;
@@ -32,13 +31,24 @@ typedef struct {
     unsigned pending_config;
     bool config_started, config_web_started, config_testing;
     bool config_ble_paused;
-    uint32_t config_at;
+    uint32_t config_at, config_generation;
+    kp_wifi_config_t original_wifi;
     uint32_t last_poll;
 } service_t;
 
 static void publish(const kp_network_view_t *view) {
+    kp_session_view_t session;
+    kp_session_get(&session);
+    bool ready = session.mode == KP_SESSION_CONFIG ?
+        view->lan.wifi && view->lan.state == KP_AP_ACTIVE && kp_web_generation() == session.generation :
+        session.mode == KP_SESSION_TRANSFER ? kp_transfer_web_ready() : kp_transfer_web_listening();
+    ready = ready && view->transfer.state != KP_TRANSFER_STOPPING && view->lan.state != KP_AP_STOPPING;
+    kp_session_ready(session.mode, session.generation, ready);
     portENTER_CRITICAL(&s_lock);
     s_view = *view;
+    s_view.lan.listening = ready;
+    s_view.lan.online = session.mode == KP_SESSION_CONFIG ? session.online : 0;
+    s_view.transfer.peers = session.mode == KP_SESSION_TRANSFER ? session.online : 0;
     portEXIT_CRITICAL(&s_lock);
 }
 void kp_network_service_get(kp_network_view_t *view) {
@@ -49,17 +59,6 @@ void kp_network_service_get(kp_network_view_t *view) {
 void kp_network_service_transfer(bool enable) { atomic_store(&s_transfer_request, enable ? 1 : 2); }
 void kp_network_service_ap(bool enable) { atomic_store(&s_ap_request, enable ? 1 : 2); }
 void kp_network_service_config(bool enable, bool wifi) { atomic_store(&s_ap_request, enable ? (wifi ? 3 : 1) : 2); }
-static void web_wake(uint64_t now) {
-    portENTER_CRITICAL(&s_lock);
-    if (!s_wake_pending) { s_wake_at = now; s_wake_pending = true; }
-    portEXIT_CRITICAL(&s_lock);
-}
-static void config_wake(uint64_t now) {
-    (void)now;
-    unsigned empty = 0;
-    // Browser visits must never overwrite a queued manual stop or AP request.
-    atomic_compare_exchange_strong(&s_ap_request, &empty, 4);
-}
 static void web_request(bool forget) {
     if (forget) atomic_store(&s_forget, true);
     atomic_store(&s_config_exit, true);
@@ -87,8 +86,27 @@ static void step(service_t *s, uint64_t monotonic_ms) {
     v->lan.configured = saved.ssid[0] != 0;
     if (v->lan.state == KP_AP_OFF) snprintf(v->lan.ssid, sizeof(v->lan.ssid), "%s", saved.ssid);
     memset(&saved, 0, sizeof(saved));
+    kp_session_poll(monotonic_ms);
     unsigned request = atomic_exchange(&s_transfer_request, 0);
     unsigned ap = atomic_exchange(&s_ap_request, 0);
+    if (request == 1) kp_session_prepare(KP_SESSION_TRANSFER, monotonic_ms);
+    if (request == 2) kp_session_end(KP_SESSION_TRANSFER);
+    if (ap == 3) kp_session_prepare(KP_SESSION_CONFIG, monotonic_ms);
+    if (ap == 1) { kp_session_end(KP_SESSION_TRANSFER); kp_session_end(KP_SESSION_CONFIG); }
+    if (ap == 2 && v->lan.wifi) kp_session_end(KP_SESSION_CONFIG);
+    kp_session_view_t session;
+    kp_session_get(&session);
+    if (!ap) {
+        if (s->ap_desired && v->lan.wifi && (session.mode != KP_SESSION_CONFIG ||
+            (s->config_web_started && s->config_generation != session.generation))) {
+            ap = 2;
+            if (session.mode == KP_SESSION_CONFIG) s->pending_config = 4;
+        } else if (!s->ap_desired && v->lan.state == KP_AP_OFF && session.mode == KP_SESSION_CONFIG) ap = 4;
+    }
+    if (!request && v->lan.state == KP_AP_OFF) {
+        if (session.mode == KP_SESSION_TRANSFER) request = 1;
+        else if (s->lifecycle.phase != KP_TRANSFER_LISTEN) request = 2;
+    }
     unsigned reopen = 0;
     if (atomic_exchange(&s_config_exit, false)) {
         // HTTP has already gated this session. Complete its stop even if a
@@ -96,11 +114,6 @@ static void step(service_t *s, uint64_t monotonic_ms) {
         if (ap && ap != 2) reopen = ap;
         ap = 2;
     }
-    uint64_t wake_at;
-    bool wake;
-    portENTER_CRITICAL(&s_lock);
-    wake = s_wake_pending; wake_at = s_wake_at; s_wake_pending = false;
-    portEXIT_CRITICAL(&s_lock);
     if (ap) {
         if (ap == 2) { s->ap_desired = false; s->pending_config = reopen; }
         else if (ap != 4 || !s->ap_desired) {
@@ -112,16 +125,16 @@ static void step(service_t *s, uint64_t monotonic_ms) {
                 v->lan.wifi = ap >= 3;
                 v->lan.automatic = ap == 4;
                 // Let the small bootstrap response reach the browser before
-                // stopping HTTP/STA. Its embedded script retries link loss.
+                // stopping HTTP. Its embedded script retries the handoff.
                 s->config_handoff_at = ap == 4 ? monotonic_ms + 300U : monotonic_ms;
             }
         }
     }
     if (!s->ap_desired && v->lan.state == KP_AP_OFF && v->transfer.state != KP_TRANSFER_STOPPING) {
         if (request == 2) s->stop_requested = true;
-        else if (request == 1 || wake) {
+        else if (request == 1) {
             if (!v->lan.configured) v->transfer.state = KP_TRANSFER_NO_WIFI;
-            else kp_transfer_lifecycle_enable(&s->lifecycle, wake ? wake_at : monotonic_ms);
+            else kp_transfer_lifecycle_enable(&s->lifecycle, monotonic_ms);
         }
     }
     s->desired = s->lifecycle.phase != KP_TRANSFER_LISTEN;
@@ -134,7 +147,7 @@ static void step(service_t *s, uint64_t monotonic_ms) {
         publish(v);
         if (s->stop_retry && monotonic_ms - s->stop_retry_at < 1000U) return;
         esp_err_t rc = kp_transfer_web_stop();
-        if (rc == ESP_OK) rc = kp_network_suspend();
+        if (rc == ESP_OK && !v->lan.wifi) rc = kp_network_suspend();
         if (rc != ESP_OK) { s->stop_retry = true; s->stop_retry_at = monotonic_ms; return; }
         kp_transfer_lifecycle_reset(&s->lifecycle);
         s->desired = s->stop_requested = s->stop_retry = s->start_retry = false;
@@ -145,8 +158,9 @@ static void step(service_t *s, uint64_t monotonic_ms) {
         v->lan.state = KP_AP_STARTING;
         v->transfer.state = KP_TRANSFER_OFF;
         publish(v);
-        esp_err_t rc = kp_network_suspend();
+        esp_err_t rc = v->lan.wifi ? ESP_OK : kp_network_suspend();
         if (rc == ESP_OK && v->lan.wifi) {
+            kp_store_wifi_get(&s->original_wifi);
             if (!v->lan.configured) v->lan.state = KP_AP_NO_WIFI;
             else {
                 kp_network_keep_online(true);
@@ -201,6 +215,7 @@ static void step(service_t *s, uint64_t monotonic_ms) {
                 if (kp_web_start_wifi(ip, web_request) != ESP_OK) v->lan.state = KP_AP_FAILED;
                 else {
                     s->config_web_started = true;
+                    s->config_generation = kp_web_generation();
                     v->lan.state = KP_AP_ACTIVE;
                     snprintf(v->lan.ip, sizeof(v->lan.ip), "%s", ip);
                 }
@@ -220,13 +235,16 @@ static void step(service_t *s, uint64_t monotonic_ms) {
         publish(v);
         esp_err_t rc = kp_web_stop();
         if (rc == ESP_OK && v->lan.wifi) {
-            kp_network_keep_online(false);
-            rc = kp_network_suspend();
+            kp_wifi_config_t current;
+            kp_store_wifi_get(&current);
+            if (memcmp(&current, &s->original_wifi, sizeof(current))) rc = kp_network_suspend();
+            memset(&current, 0, sizeof(current));
         }
         if (rc == ESP_OK) rc = resume_config_ble(s);
         if (rc == ESP_OK) {
             kp_network_resume();
             s->config_started = s->config_web_started = s->config_testing = false;
+            memset(&s->original_wifi, 0, sizeof(s->original_wifi));
             v->lan.state = KP_AP_OFF;
             v->ssid[0] = v->password[0] = 0;
             v->forget_requested = atomic_exchange(&s_forget, false);
@@ -247,7 +265,7 @@ static void step(service_t *s, uint64_t monotonic_ms) {
         (v->lan.state == KP_AP_FAILED || v->lan.state == KP_AP_NO_WIFI))
         kp_network_service_ap(false);
     if (v->lan.state == KP_AP_ACTIVE) {
-        if ((uint32_t)(now - s->last_poll) >= 1000U) {
+        if ((uint32_t)(now - s->last_poll) >= 50U) {
             kp_web_poll(now);
             s->last_poll = now;
         }
@@ -278,8 +296,11 @@ static void step(service_t *s, uint64_t monotonic_ms) {
         kp_transfer_presence_t presence;
         kp_transfer_web_presence(&presence);
         kp_transfer_lifecycle_observe(&s->lifecycle, &presence);
-        bool expired = kp_transfer_lifecycle_expired(&s->lifecycle, monotonic_ms);
-        if (s->stop_requested || expired || s->stop_retry) {
+        kp_session_get(&session);
+        bool expired = session.mode != KP_SESSION_TRANSFER;
+        // Retire the old transport generation before allocating a new session.
+        if (session.mode == KP_SESSION_TRANSFER && !kp_transfer_web_ready() && presence.online) s->stop_requested = true;
+        if (s->stop_requested || (expired && (presence.allocated || s->lifecycle.phase != KP_TRANSFER_LISTEN)) || s->stop_retry) {
             if (s->stop_retry && monotonic_ms - s->stop_retry_at < 1000U) { publish(v); return; }
             esp_err_t rc = kp_transfer_web_deactivate(s->stop_requested);
             if (rc == ESP_ERR_INVALID_STATE && !s->stop_requested) {
@@ -301,12 +322,12 @@ static void step(service_t *s, uint64_t monotonic_ms) {
         if (connected && (!s->start_retry || monotonic_ms - s->start_retry_at >= 1000U)) {
             esp_err_t rc = ESP_OK;
             if (!kp_transfer_web_listening()) {
-                rc = kp_transfer_web_listen_start(ip, web_wake, config_wake);
+                rc = kp_transfer_web_listen_start(ip);
                 if (rc == ESP_ERR_INVALID_STATE) {
                     // Includes partially registered HTTP startup and failed
                     // httpd_stop: reuse only a completely initialized instance.
                     rc = kp_transfer_web_stop();
-                    if (rc == ESP_OK) rc = kp_transfer_web_listen_start(ip, web_wake, config_wake);
+                    if (rc == ESP_OK) rc = kp_transfer_web_listen_start(ip);
                 }
             }
             if (rc == ESP_OK) s->link_down = false;
@@ -345,5 +366,6 @@ static void worker(void *arg) {
 }
 esp_err_t kp_network_service_start(void) {
     if (s_task) return ESP_OK;
+    kp_session_reset();
     return xTaskCreate(worker, "keypad_network", 4096, NULL, 3, &s_task) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }

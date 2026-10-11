@@ -15,3 +15,6 @@ void kp_web_poll(uint32_t now);
 esp_err_t kp_web_stop(void);
 const char *kp_web_ssid(void);
 const char *kp_web_password(void);
+
+// Worker reads the generation owned by the current configuration HTTP service.
+uint32_t kp_web_generation(void);

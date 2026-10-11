@@ -35,10 +35,10 @@ static void menu_layout(unsigned expected){
     lv_obj_t *screen=lv_screen_active();unsigned rows=0;
     for(unsigned i=0;i<lv_obj_get_child_count(screen);i++){
         lv_obj_t *o=lv_obj_get_child(screen,i);
-        if(lv_obj_check_type(o,&lv_label_class)&&!lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)&&lv_obj_get_x(o)==20&&
+        if(lv_obj_check_type(o,&lv_label_class)&&!lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)&&lv_obj_get_x(o)==20&&lv_obj_get_height(o)==32&&
            lv_obj_get_style_text_font(o,LV_PART_MAIN)==&passport_font_20_menu){
             assert(lv_obj_get_x(o)==20&&lv_obj_get_y(o)==86+(int)rows*42);
-            assert((lv_obj_get_width(o)==200||lv_obj_get_width(o)==113)&&lv_obj_get_height(o)==32);
+            assert((lv_obj_get_width(o)==200||lv_obj_get_width(o)==113||lv_obj_get_width(o)==132)&&lv_obj_get_height(o)==32);
             assert(lv_obj_get_style_text_line_space(o,LV_PART_MAIN)==0);
             assert(lv_label_get_long_mode(o)==LV_LABEL_LONG_DOT);
             ++rows;
@@ -201,9 +201,9 @@ int main(int argc,char **argv){
                 assert(lv_obj_get_height(o)<=2*passport_font_28.line_height);voice_title=true;
             }
         }
-    }assert(voice_title);m.feedback.visible=false;
+    }assert(voice_title);m.feedback.visible=false;m.lan=(kp_lan_view_t){0};
     // All five settings entries and their status columns follow the new order.
-    const char *settings[]={"屏幕","配对设备","文件流转","Passport配置","清除蓝牙配对"};
+    const char *settings[]={"屏幕","配对设备","文件流转","系统配置","清除蓝牙配对"};
     for(unsigned selected=0;selected<KP_SETTINGS_COUNT;selected++){
         m.page=KP_SETTINGS;m.selected=selected;
         kp_ui_update(&m,ble,100,"","","",&home,epoch);lv_refr_now(d);screen_layout(&m);menu_layout(4);
@@ -212,20 +212,44 @@ int main(int argc,char **argv){
             lv_obj_t *o=lv_obj_get_child(lv_screen_active(),i);
             if(lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)||!lv_obj_check_type(o,&lv_label_class))continue;
             if(lv_obj_get_x(o)==137){
-                bool devices=!strcmp(lv_label_get_text(o),"0 台");
-                assert(devices||!strcmp(lv_label_get_text(o),"已关闭"));
-                unsigned item=devices?KP_SETTING_DEVICES:KP_SETTING_TRANSFER;
+                assert(!strcmp(lv_label_get_text(o),"0 台"));
+                unsigned item=KP_SETTING_DEVICES;
                 assert(lv_obj_get_y(o)==86+(int)(item-first)*42);
                 assert(lv_obj_get_width(o)==83&&lv_obj_get_style_text_font(o,0)==&passport_font_16);
                 ++values;
             }
-            if(lv_obj_get_x(o)!=20||
-                lv_obj_get_style_text_font(o,0)!=&passport_font_20_menu)continue;
-            assert(!strcmp(lv_label_get_text(o)+2,settings[first+row]));++row;
+            if(lv_obj_get_x(o)==156){
+                assert(!strcmp(lv_label_get_text(o),"未联网"));
+                assert(lv_obj_get_width(o)==64&&lv_obj_get_style_text_font(o,0)==&passport_font_16);
+                assert(lv_obj_get_style_text_align(o,0)==LV_TEXT_ALIGN_RIGHT);++values;
+            }
+            if(lv_obj_get_x(o)!=20)continue;
+            unsigned item=first+row;
+            assert(lv_obj_get_style_text_font(o,0)==&passport_font_20_menu);
+            assert(!strcmp(lv_label_get_text(o)+2,settings[item]));
+            lv_point_t size;lv_text_get_size(&size,lv_label_get_text(o),lv_obj_get_style_text_font(o,0),0,0,LV_COORD_MAX,LV_TEXT_FLAG_NONE);
+            assert(size.x<=lv_obj_get_width(o));++row;
         }
-        assert(row==4&&values==2);
+        assert(row==4&&values==3);
         char name[40];snprintf(name,sizeof(name),"settings_order_%u",selected);save(d,argv[1],name);
     }
+    // Updating only the session counts refreshes both right-aligned statuses.
+    for(unsigned state=0;state<3;state++){
+        m.page=KP_SETTINGS;m.selected=KP_SETTING_PASSPORT;
+        m.lan=(kp_lan_view_t){.listening=true,.wifi=true,.online=state==2};
+        m.transfer=(kp_transfer_view_t){.state=KP_TRANSFER_LISTENING,.peers=state==1};
+        kp_ui_update(&m,ble,100,"","","",&home,epoch);lv_refr_now(d);screen_layout(&m);menu_layout(4);
+        unsigned statuses=0;
+        for(unsigned i=0;i<lv_obj_get_child_count(lv_screen_active());i++){
+            lv_obj_t *o=lv_obj_get_child(lv_screen_active(),i);
+            if(lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)||!lv_obj_check_type(o,&lv_label_class)||lv_obj_get_x(o)!=156)continue;
+            bool transfer=lv_obj_get_y(o)==86+(KP_SETTING_TRANSFER-kp_settings_first(m.selected))*42;
+            assert(!strcmp(lv_label_get_text(o),(transfer?state==1:state==2)?"已连接":"监听中"));
+            ++statuses;
+        }assert(statuses==2);
+        char name[40];snprintf(name,sizeof(name),"settings_sessions_%u",state);save(d,argv[1],name);
+    }
+    m.lan=(kp_lan_view_t){0};m.transfer=(kp_transfer_view_t){0};
     m.selected=0;
     const kp_page_t lan_pages[]={KP_LAN,KP_HOTSPOT,KP_HOTSPOT,KP_HOTSPOT,KP_HOTSPOT,KP_HOTSPOT};
     const char *lan_names[]={"lan_methods","local_hotspot_active","wifi_active","wifi_unconfigured","wifi_failed","local_hotspot_starting"};

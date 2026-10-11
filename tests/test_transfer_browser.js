@@ -7,7 +7,14 @@ const {chromium}=require('playwright');
 const {wsServer:WebSocketServer}=require(path.join(path.dirname(require.resolve('playwright-core')),'lib/utilsBundle.js'));
 async function main(){
   const ip=process.env.KP_TRANSFER_TEST_IP||Object.values(os.networkInterfaces()).flat().find(x=>x.family==='IPv4'&&!x.internal)?.address||'127.0.0.1';
-  const server=http.createServer((req,res)=>{const name=req.url==='/'||req.url==='/transfer'?'transfer.html':req.url.slice(1);if(!['transfer.html','transfer.css','transfer.js','transfer-protocol.js'].includes(name)){res.writeHead(404);return res.end();}res.setHeader('Content-Type',name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(path.join(__dirname,'../main/web',name)));});
+  let nextLease=1;
+  const server=http.createServer(async(req,res)=>{const pathname=new URL(req.url,'http://localhost').pathname;
+    if(pathname==='/api/session'||pathname==='/api/session/open'||pathname==='/api/session/resume'){
+      const parts=[];for await(const part of req)parts.push(part);
+      const request=parts.length?JSON.parse(Buffer.concat(parts)):{};
+      res.setHeader('Content-Type','application/json');return res.end(JSON.stringify(pathname==='/api/session'?{mode:'transfer',generation:1,ready:true}:{generation:request.generation??1,lease:++nextLease}));
+    }
+    const name=pathname==='/'||pathname==='/transfer'?'transfer.html':pathname.slice(1);if(!['transfer.html','transfer.css','transfer.js','transfer-protocol.js'].includes(name)){res.writeHead(404);return res.end();}res.setHeader('Content-Type',name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(path.join(__dirname,'../main/web',name)));});
   const sessions=new Map();let id=0,rejectedSessions=0;
   const wss=new WebSocketServer({server,path:'/transfer/ws',maxPayload:4096,verifyClient:(_info,done)=>{const allowed=sessions.size<4;if(!allowed)++rejectedSessions;done(allowed,503,'Four browser sessions maximum');}});
   const send=(s,m)=>{if(s.readyState===1)s.send(JSON.stringify(m));};
