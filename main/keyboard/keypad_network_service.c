@@ -15,7 +15,7 @@
 #include <string.h>
 
 static atomic_uint s_transfer_request, s_ap_request;
-static atomic_bool s_forget;
+static atomic_bool s_forget, s_config_exit;
 static bool s_wake_pending;
 static uint64_t s_wake_at;
 static kp_network_view_t s_view;
@@ -28,6 +28,8 @@ typedef struct {
     bool stop_requested, start_retry, stop_retry, link_down, disconnect_pending;
     kp_transfer_lifecycle_t lifecycle;
     uint64_t start_retry_at, stop_retry_at, background_poll_at;
+    uint64_t config_handoff_at;
+    unsigned pending_config;
     bool config_started, config_web_started, config_testing;
     bool config_ble_paused;
     uint32_t config_at;
@@ -52,9 +54,15 @@ static void web_wake(uint64_t now) {
     if (!s_wake_pending) { s_wake_at = now; s_wake_pending = true; }
     portEXIT_CRITICAL(&s_lock);
 }
+static void config_wake(uint64_t now) {
+    (void)now;
+    unsigned empty = 0;
+    // Browser visits must never overwrite a queued manual stop or AP request.
+    atomic_compare_exchange_strong(&s_ap_request, &empty, 4);
+}
 static void web_request(bool forget) {
     if (forget) atomic_store(&s_forget, true);
-    kp_network_service_ap(false);
+    atomic_store(&s_config_exit, true);
 }
 static void memory_log(const char *phase) {
     ESP_LOGI("transfer", "%s free=%u largest=%u min=%u stack=%u dma=%u dma_largest=%u", phase,
@@ -81,14 +89,33 @@ static void step(service_t *s, uint64_t monotonic_ms) {
     memset(&saved, 0, sizeof(saved));
     unsigned request = atomic_exchange(&s_transfer_request, 0);
     unsigned ap = atomic_exchange(&s_ap_request, 0);
+    unsigned reopen = 0;
+    if (atomic_exchange(&s_config_exit, false)) {
+        // HTTP has already gated this session. Complete its stop even if a
+        // simultaneous manual start arrived, then honor that new request.
+        if (ap && ap != 2) reopen = ap;
+        ap = 2;
+    }
     uint64_t wake_at;
     bool wake;
     portENTER_CRITICAL(&s_lock);
     wake = s_wake_pending; wake_at = s_wake_at; s_wake_pending = false;
     portEXIT_CRITICAL(&s_lock);
     if (ap) {
-        s->ap_desired = ap != 2;
-        if (s->ap_desired && v->lan.state == KP_AP_OFF) v->lan.wifi = ap == 3;
+        if (ap == 2) { s->ap_desired = false; s->pending_config = reopen; }
+        else if (ap != 4 || !s->ap_desired) {
+            if (v->lan.state != KP_AP_OFF && v->lan.wifi != (ap >= 3)) {
+                s->pending_config = ap;
+                s->ap_desired = false;
+            } else {
+                s->ap_desired = true;
+                v->lan.wifi = ap >= 3;
+                v->lan.automatic = ap == 4;
+                // Let the small bootstrap response reach the browser before
+                // stopping HTTP/STA. Its embedded script retries link loss.
+                s->config_handoff_at = ap == 4 ? monotonic_ms + 300U : monotonic_ms;
+            }
+        }
     }
     if (!s->ap_desired && v->lan.state == KP_AP_OFF && v->transfer.state != KP_TRANSFER_STOPPING) {
         if (request == 2) s->stop_requested = true;
@@ -101,6 +128,7 @@ static void step(service_t *s, uint64_t monotonic_ms) {
     // Both listener and catalogs relinquish HTTP before configuration obtains
     // port 80 or the radio. A failed teardown retains the entire handoff lease.
     if (s->ap_desired && v->lan.state == KP_AP_OFF) {
+        if (monotonic_ms < s->config_handoff_at) { publish(v); return; }
         v->transfer.state = KP_TRANSFER_STOPPING;
         v->transfer.ip[0] = 0; v->transfer.peers = 0;
         publish(v);
@@ -202,6 +230,11 @@ static void step(service_t *s, uint64_t monotonic_ms) {
             v->lan.state = KP_AP_OFF;
             v->ssid[0] = v->password[0] = 0;
             v->forget_requested = atomic_exchange(&s_forget, false);
+            if (s->pending_config) {
+                unsigned empty = 0;
+                atomic_compare_exchange_strong(&s_ap_request, &empty, s->pending_config);
+                s->pending_config = 0;
+            }
             publish(v);
             memory_log("AP stop");
         } else {
@@ -210,6 +243,9 @@ static void step(service_t *s, uint64_t monotonic_ms) {
             return;
         }
     }
+    if (s->ap_desired && v->lan.automatic &&
+        (v->lan.state == KP_AP_FAILED || v->lan.state == KP_AP_NO_WIFI))
+        kp_network_service_ap(false);
     if (v->lan.state == KP_AP_ACTIVE) {
         if ((uint32_t)(now - s->last_poll) >= 1000U) {
             kp_web_poll(now);
@@ -265,12 +301,12 @@ static void step(service_t *s, uint64_t monotonic_ms) {
         if (connected && (!s->start_retry || monotonic_ms - s->start_retry_at >= 1000U)) {
             esp_err_t rc = ESP_OK;
             if (!kp_transfer_web_listening()) {
-                rc = kp_transfer_web_listen_start(ip, web_wake);
+                rc = kp_transfer_web_listen_start(ip, web_wake, config_wake);
                 if (rc == ESP_ERR_INVALID_STATE) {
                     // Includes partially registered HTTP startup and failed
                     // httpd_stop: reuse only a completely initialized instance.
                     rc = kp_transfer_web_stop();
-                    if (rc == ESP_OK) rc = kp_transfer_web_listen_start(ip, web_wake);
+                    if (rc == ESP_OK) rc = kp_transfer_web_listen_start(ip, web_wake, config_wake);
                 }
             }
             if (rc == ESP_OK) s->link_down = false;

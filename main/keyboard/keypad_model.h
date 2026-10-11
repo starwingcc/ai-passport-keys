@@ -130,6 +130,9 @@ void kp_tick(kp_model_t *model, uint32_t now);
 void kp_cancel(kp_model_t *model);
 // Cancel HID actions while retaining local navigation and an ongoing OK hold.
 void kp_link_changed(kp_model_t *model, uint32_t now);
+// Called on the model's owning task after replacing its configuration, before
+// advancing the macro runner. Release old input and retain navigation/sleep.
+void kp_config_loaded(kp_model_t *model, uint32_t now);
 void kp_set_busy(kp_model_t *model, bool busy);
 void kp_hotspot_exit(kp_model_t *model);
 void kp_screen_saved(kp_model_t *model, bool success);

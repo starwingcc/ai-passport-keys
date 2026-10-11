@@ -126,9 +126,9 @@ static void resync_input(void) {
     sync_physical_input();
     kp_cancel(&s_model);
 }
-static void sync_link_input(uint32_t now) {
+static void sync_link_input(uint32_t now, bool config_loaded) {
     // Keep queued local navigation, including OK press/release edges. Only
-    // discard computer shortcuts that arrived before the connection changed.
+    // discard computer shortcuts that arrived before settings/the link changed.
     input_t input;
     while (xQueueReceive(s_queue, &input, 0) == pdTRUE) {
         if ((uint32_t)(now_ms() - input.at) > 250) { resync_input(); break; }
@@ -142,7 +142,8 @@ static void sync_link_input(uint32_t now) {
         s_model.screen.down_mask = (s_model.screen.down_mask & 4U) | physical;
         if (!s_model.screen.down_mask) s_model.screen.waking = false;
     }
-    kp_link_changed(&s_model, now);
+    if (config_loaded) kp_config_loaded(&s_model, now);
+    else kp_link_changed(&s_model, now);
 }
 static void memory_log(const char *phase) {
     ESP_LOGI("keypad", "%s free=%u largest=%u min=%u stack=%u", phase,
@@ -185,13 +186,18 @@ void app_main(void) {
     kp_ap_state_t previous_ap = KP_AP_OFF;
     memory_log("startup");
     uint32_t last_ui = 0, last_battery = 0, generation = 0;
+    uint32_t settings_revision = 0;
     int battery = -1;
     for (;;) {
         uint32_t now = now_ms();
+        // Store synchronization only copies data. HID release and model/UI
+        // changes run here, outside the store mutex and before macro execution.
+        if (kp_store_runtime_sync(&settings_revision, &s_model.config, &home) & KP_STORE_CONFIG_CHANGED)
+            sync_link_input(now, true);
         kp_ble_status_t ble = kp_ble_status();
         if (ble.generation != generation) {
             bool interrupted = s_runner.running;
-            generation = ble.generation; sync_link_input(now);
+            generation = ble.generation; sync_link_input(now, false);
             if (interrupted) message("连接状态变化，指令已停止");
         }
         if (atomic_exchange(&s_overflow, false)) { resync_input(); message("输入已恢复，请重新按键"); }
@@ -251,13 +257,12 @@ void app_main(void) {
         }
         if (s_select_profile) {
             s_select_profile = false; resync_input();
-            uint8_t previous = s_model.config.active_profile;
-            s_model.config.active_profile = s_target_profile;
-            if (kp_store_save(&s_model.config) == ESP_OK) {
+            if (kp_store_profile_select(s_target_profile) == ESP_OK) {
+                s_model.config.active_profile = s_target_profile;
                 ++s_model.config_revision; s_model.page = KP_CONSOLE; s_model.selected = 0;
                 message("情景已切换");
             } else {
-                s_model.config.active_profile = previous; message("保存失败，仍使用原情景");
+                message("保存失败，仍使用原情景");
             }
             resync_input();
         }
@@ -268,17 +273,21 @@ void app_main(void) {
         if (network.lan.state == KP_AP_OFF && s_model.page == KP_HOTSPOT) s_model.lan.wifi = chosen_wifi;
         if (network.lan.state != previous_ap) {
             if (network.lan.state == KP_AP_OFF && previous_ap != KP_AP_OFF) {
-                s_ap_active = false; kp_store_get(&s_model.config); ++s_model.config_revision;
-                kp_store_home_get(&home); message("配置已关闭");
-                if (s_model.page == KP_HOTSPOT) { s_model.page = KP_LAN; s_model.selected = network.lan.wifi ? 1 : 0; }
+                s_ap_active = false;
+                if (!network.lan.automatic) message("配置已关闭");
+                if (s_model.page == KP_HOTSPOT && !network.lan.automatic) { s_model.page = KP_LAN; s_model.selected = network.lan.wifi ? 1 : 0; }
                 if (network.forget_requested) { s_model.page = KP_FORGET; s_model.selected = 0; }
-            } else if (network.lan.state == KP_AP_STARTING) { s_ap_active = false; message("正在开启配置"); }
-            else if (network.lan.state == KP_AP_ACTIVE) { s_ap_active = true; message("配置完成后长按 OK 返回"); }
-            else if (network.lan.state == KP_AP_STOPPING) { s_ap_active = false; message("正在关闭配置"); }
+            } else if (network.lan.state == KP_AP_STARTING) { s_ap_active = false; if (!network.lan.automatic) message("正在开启配置"); }
+            else if (network.lan.state == KP_AP_ACTIVE) { s_ap_active = true; if (!network.lan.automatic) message("配置完成后长按 OK 返回"); }
+            else if (network.lan.state == KP_AP_STOPPING) { s_ap_active = false; if (!network.lan.automatic) message("正在关闭配置"); }
             else if (network.lan.state == KP_AP_FAILED || network.lan.state == KP_AP_NO_WIFI) {
-                s_ap_active = false; s_model.page = KP_HOTSPOT; message("配置未开启，长按返回");
+                s_ap_active = false;
+                if (!network.lan.automatic) { s_model.page = KP_HOTSPOT; message("配置未开启，长按返回"); }
             }
-            previous_ap = network.lan.state; resync_input();
+            previous_ap = network.lan.state;
+            // Saved settings already synchronize on each main-task tick.
+            // Background entry/exit preserves keyboard input and navigation.
+            if (!network.lan.automatic) resync_input();
         }
         if (s_forget) {
             s_forget = false; resync_input();

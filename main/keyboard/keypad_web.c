@@ -5,6 +5,8 @@
 #include "keypad_config.h"
 #include "keypad_network.h"
 #include "keypad_wifi_setup_runtime.h"
+#include "keypad_web_presence.h"
+#include "cJSON.h"
 #include "esp_http_server.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -29,6 +31,7 @@ static atomic_uint s_host_ip = 0x0104a8c0U;
 static char s_ssid[32], s_session[33];
 static const char s_password[] = "12345678";
 static kp_web_request_t s_request;
+static kp_web_presence_t s_presence;
 #define HTTP_SOCKETS 3
 #define HTTP_IDLE_MS 2000U
 #define HTTP_SEND_STALL_MS 5000U
@@ -139,6 +142,19 @@ static void poll_work(void *arg) {
             c->failed = true;
             shutdown(c->fd, SHUT_RDWR);
         }
+        if (s_lan_wifi) {
+            kp_wifi_job_t job;
+            kp_wifi_setup_get(&job);
+            uint64_t time = (uint64_t)(esp_timer_get_time() / 1000);
+            kp_web_presence_pause(&s_presence, job.busy, time);
+            // Serialized with join/ping/save handlers. A page arriving before
+            // this gate cancels expiry; requests after it cannot revive a
+            // session already handed to the network worker for teardown.
+            if (kp_web_presence_expired(&s_presence, time)) {
+                atomic_store(&s_stopping, true);
+                if (s_request) s_request(false);
+            }
+        }
     }
     atomic_store(&s_poll_queued, false);
 }
@@ -155,10 +171,21 @@ static esp_err_t fail(httpd_req_t *req, const char *status, const char *message)
 static esp_err_t static_file(httpd_req_t *req) {
     int fd = httpd_req_to_sockfd(req);
     if (!begin_response(fd)) return ESP_FAIL;
+    size_t path_size = strcspn(req->uri, "?");
+    if (s_lan_wifi && ((path_size == 1 && req->uri[0] == '/') ||
+                      (path_size == 9 && !strncmp(req->uri, "/transfer", 9)))) {
+        httpd_resp_set_type(req, "text/html; charset=utf-8");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        httpd_resp_set_hdr(req, "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+        esp_err_t rc = httpd_resp_sendstr(req, "<!doctype html><meta charset=utf-8><title>Passport</title><h1>配置进行中</h1><p>文件流转将在配置结束后恢复。</p><a href=/config>打开 Passport 配置</a>");
+        end_response(fd, "busy", rc);
+        return rc;
+    }
     const char *start = index_start, *end = index_end, *type = "text/html; charset=utf-8";
     if (!strcmp(req->uri, "/app.js")) { start = js_start; end = js_end; type = "text/javascript; charset=utf-8"; }
     else if (!strcmp(req->uri, "/charset.js")) { start = charset_start; end = charset_end; type = "text/javascript; charset=utf-8"; }
     else if (!strcmp(req->uri, "/app.css")) { start = css_start; end = css_end; type = "text/css; charset=utf-8"; }
+    if (!strncmp(req->uri, "/config", 7)) httpd_resp_set_hdr(req, "X-Passport-Config", "ready");
     esp_err_t rc = kp_web_asset(req, start, end, type);
     end_response(fd, "asset", rc);
     return rc;
@@ -197,6 +224,44 @@ static bool write_config(const kp_config_t *config, void *user) {
 }
 static bool write_settings(const kp_settings_t *settings, void *user) {
     return kp_settings_encode(settings, write_body, user);
+}
+static esp_err_t presence_body(httpd_req_t *req) {
+    if (!s_lan_wifi) return fail(req, "409 Conflict", "本机热点无需在线心跳");
+    if (!req->content_len || req->content_len > 128) return fail(req, "400 Bad Request", "在线请求无效");
+    char body[129];
+    body_reader_t reader = {.request = req, .remaining = req->content_len};
+    size_t used = 0;
+    while (reader.remaining) {
+        int count = read_body(&reader, body + used, sizeof(body) - 1 - used);
+        if (count <= 0) return fail(req, "400 Bad Request", "在线请求不完整");
+        used += (size_t)count;
+    }
+    body[used] = 0;
+    const char *end;
+    cJSON *json = cJSON_ParseWithLengthOpts(body, used + 1, &end, true);
+    cJSON *action = cJSON_GetObjectItemCaseSensitive(json, "action");
+    cJSON *value = cJSON_GetObjectItemCaseSensitive(json, "id");
+    bool join = cJSON_IsString(action) && !strcmp(action->valuestring, "join");
+    bool ping = cJSON_IsString(action) && !strcmp(action->valuestring, "ping");
+    bool leave = cJSON_IsString(action) && !strcmp(action->valuestring, "leave");
+    bool valid = end == body + used && cJSON_IsObject(json) && cJSON_GetArraySize(json) == (join ? 1 : 2) &&
+        (join || ((ping || leave) && cJSON_IsNumber(value) && value->valuedouble >= 1 &&
+                  value->valuedouble <= UINT32_MAX && value->valuedouble == (uint32_t)value->valuedouble));
+    uint32_t id = valid && !join ? (uint32_t)value->valuedouble : 0;
+    cJSON_Delete(json);
+    if (!valid) return fail(req, "400 Bad Request", "在线请求无效");
+    uint64_t now = (uint64_t)(esp_timer_get_time() / 1000);
+    if (join) {
+        id = kp_web_presence_join(&s_presence, now);
+        if (!id) return fail(req, "503 Service Unavailable", "最多四个配置页面，请关闭其他页面后重试");
+    } else if (ping && !kp_web_presence_ping(&s_presence, id, now)) {
+        return fail(req, "409 Conflict", "页面在线记录已失效，请重新加入");
+    } else if (leave) kp_web_presence_leave(&s_presence, id, now);
+    char response[40];
+    snprintf(response, sizeof(response), "{\"id\":%lu}", (unsigned long)id);
+    esp_err_t rc = httpd_resp_sendstr(req, response);
+    if (join && rc != ESP_OK) kp_web_presence_leave(&s_presence, id, (uint64_t)(esp_timer_get_time() / 1000));
+    return rc;
 }
 static esp_err_t api_body(httpd_req_t *req) {
     char host[32], host_port[20], expected[16];
@@ -242,6 +307,7 @@ static esp_err_t api_body(httpd_req_t *req) {
         return rc == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : rc;
     }
     if (!authorized(req)) return fail(req, "403 Forbidden", "设置会话已失效，请刷新页面");
+    if (!strcmp(req->uri, "/api/presence")) return presence_body(req);
     size_t limit = !strcmp(req->uri, "/api/settings") ? KP_SETTINGS_JSON_BYTES : KP_JSON_BYTES;
     if (req->content_len > limit) return fail(req, "413 Payload Too Large", "配置过大");
     if (!strcmp(req->uri, "/api/wifi/scan") || !strcmp(req->uri, "/api/wifi/test")) {
@@ -336,8 +402,14 @@ static esp_err_t api_body(httpd_req_t *req) {
 static esp_err_t api(httpd_req_t *req) {
     int fd = httpd_req_to_sockfd(req);
     if (!begin_response(fd)) return ESP_FAIL;
+    bool hold = s_lan_wifi && authorized(req) && strcmp(req->uri, "/api/presence");
+    if (hold) kp_web_presence_pause(&s_presence, true, (uint64_t)(esp_timer_get_time() / 1000));
     esp_err_t rc = api_body(req);
     end_response(fd, "api", rc);
+    if (hold) {
+        kp_wifi_job_t job; kp_wifi_setup_get(&job);
+        kp_web_presence_pause(&s_presence, job.busy, (uint64_t)(esp_timer_get_time() / 1000));
+    }
     return rc;
 }
 esp_err_t kp_web_stop(void) {
@@ -413,8 +485,9 @@ static esp_err_t start(kp_web_request_t callback, const char *ip) {
     }
     memset(s_clients, 0, sizeof(s_clients));
     atomic_store(&s_stopping, false);
+    kp_web_presence_init(&s_presence, (uint64_t)(esp_timer_get_time() / 1000));
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
-    http.max_open_sockets = HTTP_SOCKETS; http.max_uri_handlers = 18;
+    http.max_open_sockets = HTTP_SOCKETS; http.max_uri_handlers = 21;
     http.backlog_conn = 1;
     // Configuration has no persistent WebSocket peers to protect. Reclaim
     // keep-alives when full rather than retaining the transfer service's six
@@ -431,6 +504,8 @@ static esp_err_t start(kp_web_request_t callback, const char *ip) {
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_RTCRAM));
     const httpd_uri_t routes[] = {
         {.uri="/", .method=HTTP_GET, .handler=static_file},
+        {.uri="/config", .method=HTTP_GET, .handler=static_file},
+        {.uri="/transfer", .method=HTTP_GET, .handler=static_file},
         {.uri="/app.js", .method=HTTP_GET, .handler=static_file},
         {.uri="/app.css", .method=HTTP_GET, .handler=static_file},
         {.uri="/charset.js", .method=HTTP_GET, .handler=static_file},
@@ -448,6 +523,7 @@ static esp_err_t start(kp_web_request_t callback, const char *ip) {
         {.uri="/api/wifi/test", .method=HTTP_POST, .handler=api},
         {.uri="/api/exit", .method=HTTP_POST, .handler=api},
         {.uri="/api/forget", .method=HTTP_POST, .handler=api},
+        {.uri="/api/presence", .method=HTTP_POST, .handler=api},
     };
     for (unsigned i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i) {
         rc = httpd_register_uri_handler(s_http, &routes[i]);

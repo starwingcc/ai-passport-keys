@@ -5,7 +5,8 @@
 #include "keypad_transfer_lifecycle.h"
 typedef void (*kp_transfer_wake_t)(uint64_t now_ms);
 // Worker-only lifecycle. A single HTTP instance survives catalog release.
-esp_err_t kp_transfer_web_listen_start(const char *ip, kp_transfer_wake_t wake);
+// Both wake callbacks run on HTTP and only enqueue a worker transition.
+esp_err_t kp_transfer_web_listen_start(const char *ip, kp_transfer_wake_t wake, kp_transfer_wake_t config_wake);
 esp_err_t kp_transfer_web_activate(uint64_t zero_since_ms);
 // force ends current browsers; otherwise the HTTP thread rechecks quiet expiry.
 esp_err_t kp_transfer_web_deactivate(bool force);

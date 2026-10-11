@@ -296,6 +296,13 @@ void kp_link_changed(kp_model_t *m, uint32_t now) {
         m->feedback = previous;
     }
 }
+void kp_config_loaded(kp_model_t *m, uint32_t now) {
+    kp_link_changed(m, now);
+    m->feedback.visible = false; // Its binding title belonged to the old record.
+    if (m->page == KP_PROFILES && m->selected >= m->config.profile_count)
+        m->selected = m->config.active_profile;
+    ++m->config_revision;
+}
 static void page(kp_model_t *m, kp_page_t target) {
     kp_cancel(m);
     m->page = target;

@@ -564,7 +564,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
             } else lv_label_set_text(s_footer, "上下选择，OK 进入");
         } else if (m->page == KP_HOTSPOT) {
             if (m->lan.state == KP_AP_ACTIVE) {
-                if (m->lan.wifi) snprintf(text, sizeof(text), "已连接 WiFi\n%s\n浏览器打开\nhttp://%s\n请连接同一局域网", m->lan.ssid, m->lan.ip);
+                if (m->lan.wifi) snprintf(text, sizeof(text), "已连接 WiFi\n%s\n浏览器打开\nhttp://%s/config\n请连接同一局域网", m->lan.ssid, m->lan.ip);
                 else snprintf(text, sizeof(text), "连接本机热点\n%s\n密码\n%s\n浏览器打开\nhttp://192.168.4.1", ssid, password);
             } else if (m->lan.state == KP_AP_NO_WIFI) snprintf(text, sizeof(text), "尚未配置 WiFi\n先通过本机热点保存网络");
             else if (m->lan.state == KP_AP_FAILED) snprintf(text, sizeof(text), "%s\n长按 OK 返回后重试", m->lan.wifi ? "WiFi 连接或服务启动失败" : "本机热点操作失败");

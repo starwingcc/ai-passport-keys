@@ -76,7 +76,7 @@ static unsigned fail_send_at;
 static bool fail_save, reading;
 static const char *status, *content_type;
 static esp_netif_t netif, station_netif;
-static httpd_uri_t routes[18];
+static httpd_uri_t routes[21];
 static unsigned route_count, wifi_started, wifi_initialized;
 static bool fail_http_start;
 static unsigned socket_calls,largest_socket_send,aborts,graceful_closes,closes,queue_calls;
@@ -211,7 +211,7 @@ esp_err_t kp_store_settings_save(const kp_settings_t *settings) {
     return ESP_OK;
 }
 esp_err_t httpd_start(httpd_handle_t *out, const httpd_config_t *c) {
-    assert(c->max_uri_handlers==18 && c->max_open_sockets==3 && c->stack_size==6144 && c->lru_purge_enable);
+    assert(c->max_uri_handlers==21 && c->max_open_sockets==3 && c->stack_size==6144 && c->lru_purge_enable);
     assert(c->backlog_conn==1&&c->send_wait_timeout==2&&c->recv_wait_timeout==2);
     assert(c->open_fn==open_session&&c->close_fn==close_session);
     if (fail_http_start) return ESP_FAIL;
@@ -223,7 +223,7 @@ esp_err_t httpd_stop(httpd_handle_t h) {
     pending_work=NULL;route_count=0;return ESP_OK;
 }
 esp_err_t httpd_register_uri_handler(httpd_handle_t h, const httpd_uri_t *route) {
-    assert(h==routes && route_count<18); routes[route_count++]=*route; return ESP_OK;
+    assert(h==routes && route_count<21); routes[route_count++]=*route; return ESP_OK;
 }
 esp_netif_t *esp_netif_create_default_wifi_ap(void) { ++netifs;return &netif; }
 esp_netif_t *esp_netif_create_default_wifi_sta(void) { if(fail_sta_netif)return NULL;++netifs;return &station_netif; }
@@ -239,16 +239,74 @@ esp_err_t esp_wifi_set_config(int mode, const wifi_config_t *c) {
     else assert(mode==WIFI_IF_STA&&!c->sta.ssid[0]&&!c->sta.password[0]);
     return ESP_OK;
 }
-uint32_t esp_random(void) { return 1; }
+uint32_t esp_random(void) { static uint32_t next; return ++next; }
 esp_err_t esp_read_mac(uint8_t *out, int mode) { assert(mode==ESP_MAC_WIFI_SOFTAP); memset(out,0,6); return ESP_OK; }
 size_t heap_caps_get_free_size(unsigned caps) { (void)caps; return 1000; }
 size_t heap_caps_get_largest_free_block(unsigned caps) { (void)caps; return 512; }
 
+static unsigned idle_exits;
+static void idle_exit(bool forget) { assert(!forget); ++idle_exits; }
+static esp_err_t page_request(const char *body, const char *token) {
+    httpd_req_t req={.uri="/api/presence",.host="192.168.1.11",.method=HTTP_POST,
+        .session=token,.body=body,.content_len=strlen(body)};
+    reset_response();
+    return api(&req);
+}
+static uint32_t join_page(void) {
+    assert(page_request("{\"action\":\"join\"}",s_session)==ESP_OK&&!strcmp(status,"200 OK"));
+    uint32_t id=0;assert(sscanf(response,"{\"id\":%u}",&id)==1&&id);return id;
+}
+static void leave_page(uint32_t id) {
+    char body[64];snprintf(body,sizeof(body),"{\"action\":\"leave\",\"id\":%u}",id);
+    assert(page_request(body,s_session)==ESP_OK&&!strcmp(status,"200 OK"));
+}
+static void configuration_presence(void) {
+    setup_job=(kp_wifi_job_t){0};clock_ms=1000000;
+    assert(kp_web_start_wifi("192.168.1.11",idle_exit)==ESP_OK);
+    assert(page_request("{\"action\":\"join\"}","wrong")==ESP_OK&&!strcmp(status,"403 Forbidden")&&!s_presence.online);
+    const char *bad[]={"{}","[]","{\"action\":\"ping\",\"id\":1.5}","{\"action\":\"join\",\"id\":1}","{\"action\":\"other\",\"id\":1}","{\"action\":\"join\"} trailing"};
+    for(unsigned i=0;i<sizeof(bad)/sizeof(*bad);++i)
+        assert(page_request(bad[i],s_session)==ESP_OK&&!strcmp(status,"400 Bad Request")&&!s_presence.online);
+    httpd_req_t req={.uri="/",.fd=10};reset_response();assert(static_file(&req)==ESP_OK&&strstr(response,"配置进行中"));
+    req.uri="/transfer";reset_response();assert(static_file(&req)==ESP_OK&&strstr(response,"配置进行中"));
+    req.uri="/config";reset_response();assert(static_file(&req)==ESP_OK&&response_size==(size_t)(index_end-index_start-1));
+    uint32_t ids[4];for(unsigned i=0;i<4;++i)ids[i]=join_page();
+    assert(page_request("{\"action\":\"join\"}",s_session)==ESP_OK&&!strcmp(status,"503 Service Unavailable")&&s_presence.online==4);
+    // Reclaiming TCP keep-alives never removes registered pages.
+    clock_ms+=2001;kp_web_poll(clock_ms);run_work();assert(s_presence.online==4&&!idle_exits);
+    for(unsigned i=0;i<4;++i)leave_page(ids[i]);
+    uint32_t zero=clock_ms;clock_ms=zero+59999;kp_web_poll(clock_ms);run_work();assert(!idle_exits);
+    // A queued timeout is rechecked after a concurrently arriving join.
+    clock_ms=zero+60000;kp_web_poll(clock_ms);uint32_t id=join_page();run_work();assert(!idle_exits&&!atomic_load(&s_stopping));
+    leave_page(id);zero=clock_ms;clock_ms=zero+60000;kp_web_poll(clock_ms);run_work();
+    assert(idle_exits==1&&atomic_load(&s_stopping));
+    assert(page_request("{\"action\":\"join\"}",s_session)==ESP_FAIL);
+    char old[33];strcpy(old,s_session);assert(kp_web_stop()==ESP_OK);
+    assert(kp_web_start_wifi("192.168.1.11",idle_exit)==ESP_OK&&strcmp(old,s_session));
+    assert(page_request("{\"action\":\"join\"}",old)==ESP_OK&&!strcmp(status,"403 Forbidden"));
+    // HTTP save time and asynchronous radio jobs pause the initial no-join grace.
+    zero=clock_ms;clock_ms=zero+59000;save_delay=3000;
+    req=(httpd_req_t){.uri="/api/settings",.host="192.168.1.11",.method=HTTP_POST,.session=s_session,.body=input,.content_len=strlen(input)};
+    reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK"));save_delay=0;
+    kp_web_poll(clock_ms);run_work();assert(idle_exits==1);
+    setup_job.busy=true;kp_web_poll(clock_ms);run_work();clock_ms+=200000;kp_web_poll(clock_ms);run_work();assert(idle_exits==1);
+    setup_job.busy=false;kp_web_poll(clock_ms);run_work();clock_ms+=999;kp_web_poll(clock_ms);run_work();assert(idle_exits==1);
+    ++clock_ms;kp_web_poll(clock_ms);run_work();assert(idle_exits==2&&atomic_load(&s_stopping));
+    assert(kp_web_stop()==ESP_OK);
+    // Failed join responses roll back presence, and sudden loss expires at
+    // exactly lease + grace, independently from 2-second socket cleanup.
+    assert(kp_web_start_wifi("192.168.1.11",idle_exit)==ESP_OK);
+    reset_response();fail_send_at=1;req=(httpd_req_t){.uri="/api/presence",.host="192.168.1.11",.method=HTTP_POST,.session=s_session,.body="{\"action\":\"join\"}",.content_len=17};
+    assert(api(&req)==ESP_FAIL&&!s_presence.online);
+    (void)join_page();zero=clock_ms;clock_ms=zero+179999;kp_web_poll(clock_ms);run_work();assert(idle_exits==2);
+    ++clock_ms;kp_web_poll(clock_ms);run_work();assert(idle_exits==3);assert(kp_web_stop()==ESP_OK);
+    assert(kp_web_start(idle_exit)==ESP_OK);clock_ms+=1000000;kp_web_poll(clock_ms);run_work();assert(idle_exits==3&&!atomic_load(&s_stopping));assert(kp_web_stop()==ESP_OK);
+}
 int main(void) {
     kp_wifi_defaults(&committed_wifi);
     kp_home_defaults(&committed_home);
     kp_defaults(&committed);
-    assert(kp_web_start(NULL)==ESP_OK && route_count==18);
+    assert(kp_web_start(NULL)==ESP_OK && route_count==21);
     const struct { const char *uri,*start,*end; } files[]={
         {"/",index_start,index_end},{"/app.css",css_start,css_end},
         {"/app.js",js_start,js_end},{"/charset.js",charset_start,charset_end}
@@ -395,7 +453,7 @@ int main(void) {
     assert(open_session(s_http,13)!=ESP_OK&&!client(13));
     unsigned aborted=aborts;
     for(unsigned refresh=0;refresh<2;++refresh)for(unsigned i=0;i<4;++i){
-        httpd_req_t asset={.uri=files[i].uri,.fd=10+(int)(i%3)};reset_response();
+        httpd_req_t asset={.uri=i ? files[i].uri : "/config",.fd=10+(int)(i%3)};reset_response();
         assert(static_file(&asset)==ESP_OK&&finished==1&&socket_calls>1&&largest_socket_send<=1440);
         assert(response_size==(size_t)(files[i].end-files[i].start-1)&&!memcmp(response,files[i].start,response_size));
         assert(!client(asset.fd)->failed&&client(asset.fd)->io.waits>0&&aborts==aborted);
@@ -438,5 +496,6 @@ int main(void) {
     assert(kp_web_stop()==ESP_OK&&!wifi_initialized&&!wifi_started&&!netifs&&!setup_active);
     queued=queue_calls;kp_web_poll(clock_ms);assert(queue_calls==queued&&!pending_work);
     fail_http_start=true;assert(kp_web_start_wifi("192.168.1.50",NULL)!=ESP_OK&&!wifi_initialized&&!wifi_started&&!netifs&&!setup_active);fail_http_start=false;
-    puts("Keypad HTTP: real assets/transport, bounded connection pool and refresh, partial writes/backpressure, idle preconnect expiry, bounded send abort/reuse, slow-save acknowledgement and retained failed-stop ownership: PASS");
+    configuration_presence();
+    puts("Keypad HTTP: real transport/assets, config/busy routes, authorized four-page presence, raced join, exact lease/grace, save/radio pauses, token invalidation, SoftAP lifetime and failed-stop ownership: PASS");
 }

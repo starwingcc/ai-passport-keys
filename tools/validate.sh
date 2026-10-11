@@ -48,7 +48,7 @@ run_static_checks() {
         tests/third_party/cjson/cJSON.c -o "${test_dir}/test_keypad_config"
     "${test_dir}/test_keypad_config"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/keypad_store_stubs -Imain/keyboard \
-        tests/test_keypad_store.c main/keyboard/keypad_model.c main/keyboard/keypad_devices.c main/keyboard/keypad_screen.c main/keyboard/keypad_text.c main/keyboard/keypad_home.c main/keyboard/keypad_wifi.c main/keyboard/keypad_wifi_setup.c -o "${test_dir}/test_keypad_store"
+        tests/test_keypad_store.c main/keyboard/keypad_runner.c main/keyboard/keypad_model.c main/keyboard/keypad_devices.c main/keyboard/keypad_screen.c main/keyboard/keypad_text.c main/keyboard/keypad_home.c main/keyboard/keypad_wifi.c main/keyboard/keypad_wifi_setup.c -o "${test_dir}/test_keypad_store"
     "${test_dir}/test_keypad_store"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/keypad_ble_stubs -Imain/keyboard \
         tests/test_keypad_ble.c main/keyboard/keypad_model.c main/keyboard/keypad_devices.c main/keyboard/keypad_screen.c main/keyboard/keypad_text.c main/keyboard/keypad_pairing.c -o "${test_dir}/test_keypad_ble"
@@ -56,10 +56,13 @@ run_static_checks() {
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain/keyboard \
         tests/test_keypad_pairing.c main/keyboard/keypad_pairing.c -o "${test_dir}/test_keypad_pairing"
     "${test_dir}/test_keypad_pairing"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/keypad_web_stubs -Itests/keypad_store_stubs -Imain/keyboard \
-        tests/test_keypad_http.c main/keyboard/keypad_config.c main/keyboard/keypad_model.c main/keyboard/keypad_devices.c main/keyboard/keypad_screen.c main/keyboard/keypad_text.c main/keyboard/keypad_home.c main/keyboard/keypad_wifi.c main/keyboard/keypad_wifi_setup.c \
-        -o "${test_dir}/test_keypad_http"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/keypad_web_stubs -Itests/keypad_store_stubs -Itests/third_party/cjson -Imain/keyboard \
+        tests/test_keypad_http.c main/keyboard/keypad_web_presence.c main/keyboard/keypad_config.c main/keyboard/keypad_model.c main/keyboard/keypad_devices.c main/keyboard/keypad_screen.c main/keyboard/keypad_text.c main/keyboard/keypad_home.c main/keyboard/keypad_wifi.c main/keyboard/keypad_wifi_setup.c \
+        tests/third_party/cjson/cJSON.c -lm -o "${test_dir}/test_keypad_http"
     "${test_dir}/test_keypad_http"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain/keyboard \
+        tests/test_web_presence.c main/keyboard/keypad_web_presence.c -o "${test_dir}/test_web_presence"
+    "${test_dir}/test_web_presence"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain/keyboard \
         tests/test_keypad_home.c main/keyboard/keypad_home.c main/keyboard/keypad_wifi.c main/keyboard/keypad_wifi_setup.c main/keyboard/keypad_config.c main/keyboard/keypad_model.c main/keyboard/keypad_devices.c main/keyboard/keypad_screen.c main/keyboard/keypad_text.c \
         -o "${test_dir}/test_keypad_home"

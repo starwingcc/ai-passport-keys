@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include "keypad_runner.h"
 #include "../main/keyboard/keypad_store.c"
 static kp_settings_t stored_settings, staged_settings;static size_t settings_size, staged_settings_size;
 static kp_screen_config_t stored_screen, staged_screen; static size_t screen_size, staged_screen_size;
@@ -9,7 +10,7 @@ static kp_devices_t stored_devices, staged_devices; static size_t devices_size, 
 static bool fail_open,fail_set,fail_commit;
 static int locked,opened,commits;
 SemaphoreHandle_t xSemaphoreCreateMutex(void){return &locked;}
-int xSemaphoreTake(SemaphoreHandle_t h,int t){(void)t;assert(h==&locked&&!locked);locked=1;return 1;}
+int xSemaphoreTake(SemaphoreHandle_t h,int t){assert(h==&locked);if(locked){assert(t==0);return 0;}locked=1;return 1;}
 void xSemaphoreGive(SemaphoreHandle_t h){assert(h==&locked&&locked);locked=0;}
 esp_err_t nvs_open(const char *ns,int mode,nvs_handle_t *h){assert(!strcmp(ns,"passport_keys")&&mode==NVS_READWRITE&&!opened);if(fail_open)return ESP_FAIL;opened=1;staged_settings_size=staged_screen_size=staged_system_size=staged_devices_size=0;*h=1;return ESP_OK;}
 esp_err_t nvs_get_blob(nvs_handle_t h,const char *key,void *out,size_t *size){
@@ -48,6 +49,81 @@ static bool failed_reader(const kp_config_t *config, void *user){
 }
 static bool copy_settings(const kp_settings_t *settings, void *user){
     assert(locked && settings==&s_settings);*(kp_settings_t *)user=*settings;return true;
+}
+static void cancel_runner(void *user, kp_effect_t event, const kp_action_t *action) {
+    (void)action;
+    if (event == KP_CANCEL) { assert(!locked); kp_runner_cancel(user); }
+}
+static void test_live_settings(void) {
+    kp_settings_t next, saved;
+    kp_settings_defaults(&next);
+    kp_step_t step={.action={.type=KP_KEYBOARD,.keys={4}}};
+    assert(kp_binding_set(&next.config,0,0,"A",&step,1));
+    assert(kp_store_settings_save(&next)==ESP_OK);
+    kp_runner_t runner={0}; kp_model_t model;
+    kp_init(&model,&next.config,cancel_runner,&runner);
+    kp_home_config_t home=next.home;
+    uint32_t revision=0;
+    assert(!kp_store_runtime_sync(&revision,&model.config,&home));
+    int writes=commits;
+    assert(!kp_store_runtime_sync(&revision,&model.config,&home)&&commits==writes);
+    assert(kp_runner_start(&runner,&model.config,kp_binding(&model.config,0),true,KP_SYSTEM_MACOS));
+    model.executing=true;
+    kp_action_t action;assert(kp_runner_request(&runner,100,&action));
+    kp_runner_result(&runner,true,100);
+    // Home-only saves update the badge without interrupting the held shortcut.
+    strcpy(next.home.name,"Live home");assert(kp_store_home_save(&next.home)==ESP_OK);
+    assert(kp_store_runtime_sync(&revision,&model.config,&home)==KP_STORE_HOME_CHANGED);
+    assert(!strcmp(home.name,"Live home")&&runner.running&&model.executing);
+    // A failed complete save never publishes a revision or changes runtime data.
+    step.action.keys[0]=5;assert(kp_binding_set(&next.config,0,0,"B",&step,1));
+    strcpy(next.home.name,"Live both");uint32_t observed=revision;
+    for(unsigned fault=0;fault<3;fault++) {
+        fail_open=fault==0;fail_set=fault==1;fail_commit=fault==2;
+        assert(kp_store_settings_save(&next)==ESP_FAIL);
+        assert(!kp_store_runtime_sync(&revision,&model.config,&home)&&revision==observed);
+        assert(runner.running&&model.executing&&!strcmp(home.name,"Live home"));
+    }
+    fail_open=fail_set=fail_commit=false;
+    assert(kp_store_settings_save(&next)==ESP_OK);
+    // An HTTP reader holding the mutex cannot block the main task. Retry copies
+    // the complete committed pair without another 6 KiB allocation or NVS write.
+    locked=1;
+    assert(!kp_store_runtime_sync(&revision,&model.config,&home)&&revision==observed);
+    assert(!strcmp(home.name,"Live home"));locked=0;writes=commits;
+    assert(kp_store_runtime_sync(&revision,&model.config,&home)==(KP_STORE_CONFIG_CHANGED|KP_STORE_HOME_CHANGED));
+    kp_config_loaded(&model,200);
+    assert(!runner.running&&!model.executing&&commits==writes);
+    assert(!strcmp(home.name,"Live both")&&!memcmp(&model.config,&next.config,sizeof(model.config)));
+    assert(!kp_runner_request(&runner,300,&action));
+    // Several saves before a main tick apply the newest coherent record.
+    strcpy(next.home.name,"Intermediate");assert(kp_store_settings_save(&next)==ESP_OK);
+    strcpy(next.home.name,"Newest");step.action.keys[0]=6;
+    assert(kp_binding_set(&next.config,0,0,"C",&step,1));
+    assert(kp_profile_add(&next.config,"Second"));
+    assert(kp_store_settings_save(&next)==ESP_OK);
+    assert(kp_store_runtime_sync(&revision,&model.config,&home)==(KP_STORE_CONFIG_CHANGED|KP_STORE_HOME_CHANGED));
+    assert(!strcmp(home.name,"Newest")&&!memcmp(&model.config,&next.config,sizeof(model.config)));
+    // A local profile choice preserves a newer web record, rather than saving
+    // the main task's stale copy over freshly committed mappings/home/Wi-Fi.
+    strcpy(next.home.badge,"Newest badge");step.action.keys[0]=7;
+    assert(kp_binding_set(&next.config,0,0,"D",&step,1));
+    assert(kp_store_settings_save(&next)==ESP_OK);
+    assert(kp_store_profile_select(1)==ESP_OK);next.config.active_profile=1;
+    assert(kp_store_settings_read(copy_settings,&saved)&&!memcmp(&saved,&next,sizeof(saved)));
+    assert(kp_store_runtime_sync(&revision,&model.config,&home)==(KP_STORE_CONFIG_CHANGED|KP_STORE_HOME_CHANGED));
+    assert(model.config.active_profile==1&&!strcmp(home.badge,"Newest badge"));
+    observed=revision;writes=commits;
+    assert(kp_store_profile_select(2)==ESP_ERR_INVALID_ARG);
+    assert(kp_store_profile_select(UINT32_MAX)==ESP_ERR_INVALID_ARG);
+    assert(!kp_store_runtime_sync(&revision,&model.config,&home)&&revision==observed&&commits==writes);
+    // Wi-Fi changes and redundant saves do not cancel input or recopy the model.
+    strcpy(next.wifi.ssid,"pending-network");strcpy(next.wifi.password,"test-pass");
+    assert(kp_store_wifi_save(&next.wifi)==ESP_OK);
+    assert(!kp_store_runtime_sync(&revision,&model.config,&home)&&revision!=observed);
+    assert(kp_store_settings_save(&next)==ESP_OK);
+    assert(!kp_store_runtime_sync(&revision,&model.config,&home));
+    puts("Live settings: atomic revisions, failed/busy saves, held macro release, newest record and profile selection: PASS");
 }
 int main(void){
     kp_devices_t d, old, got; uint8_t peers[2][7]={{0,1,2,3,4,5,6},{1,6,5,4,3,2,1}};
@@ -232,6 +308,7 @@ int main(void){
     next_all.config.used=sizeof(next_all.config.data);
     assert(kp_store_settings_save(&next_all)==ESP_OK&&settings_size==offsetof(kp_settings_t,config)+KP_CONFIG_BYTES);
     assert(kp_store_init()==ESP_OK&&kp_store_settings_read(copy_settings,&actual_all)&&!memcmp(&actual_all,&next_all,sizeof(next_all)));
+    test_live_settings();
     puts("Complete NVS record, current format, malformed records, atomic saves and full-capacity restart: PASS");
     puts("System/screen NVS isolation, system targets and Command migration, failed saves and clock invalidation: PASS");
     puts("Home/Wi-Fi complete-record persistence, cold boot, save failures and clearing: PASS");

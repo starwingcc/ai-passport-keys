@@ -2,7 +2,7 @@ idf_component_register(
     SRCS "main.c"
          "keyboard/keypad_model.c" "keyboard/keypad_text.c" "keyboard/keypad_runner.c" "keyboard/keypad_config.c"
          "keyboard/keypad_store.c" "keyboard/keypad_ble.c" "keyboard/keypad_pairing.c" "keyboard/keypad_devices.c" "keyboard/keypad_devices_runtime.c" "keyboard/keypad_screen.c"
-         "keyboard/keypad_web.c" "keyboard/keypad_ui.c"
+         "keyboard/keypad_web.c" "keyboard/keypad_web_presence.c" "keyboard/keypad_ui.c"
          "keyboard/keypad_home.c" "keyboard/keypad_home_ui.c"
          "keyboard/keypad_wifi.c" "keyboard/keypad_network.c"
          "keyboard/keypad_network_service.c" "keyboard/keypad_transfer_lifecycle.c"
@@ -15,6 +15,6 @@ idf_component_register(
     INCLUDE_DIRS "." "keyboard"
     REQUIRES bsp bt esp_hid esp_event esp_netif esp_timer esp_wifi nvs_flash
              esp_http_server json esp_hw_support lwip
-    EMBED_TXTFILES "web/index.html" "web/app.js" "web/app.css" "web/charset.js"
+    EMBED_TXTFILES "web/index.html" "web/app.js" "web/app.css" "web/charset.js" "web/config-wait.html"
                    "web/transfer.html" "web/transfer.js" "web/transfer.css" "web/transfer-protocol.js"
 )

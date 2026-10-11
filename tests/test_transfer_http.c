@@ -35,10 +35,12 @@ static unsigned route_fault,stop_fault;static bool defer,timeout,queue_fault,abo
 static struct { void (*fn)(void *);void *arg; } pending[16];static unsigned pending_count;
 static uint64_t clock_ms;static const char *payload;static bool final=true;static int frame_type=HTTPD_WS_TYPE_TEXT;
 static char response[80],last[KP_TRANSFER_MESSAGE+1];
-static httpd_uri_t registered[6];static int handle_value,sem_value;
+static httpd_uri_t registered[7];static int handle_value,sem_value;
 static int send_fault,shutdown_fd;
 static unsigned aborts,diagnostics,wakes;static bool io_fault,server_owned;
 static uint64_t wake_at;
+static unsigned config_wakes;
+static void config_wake(uint64_t now){(void)now;++config_wakes;}
 static void wake(uint64_t now){++wakes;wake_at=now;}
 static void run_next(void){assert(pending_count);void (*fn)(void *)=pending[0].fn;void *arg=pending[0].arg;memmove(pending,pending+1,--pending_count*sizeof(*pending));fn(arg);}
 size_t heap_caps_get_free_size(unsigned caps){(void)caps;return 20000;}
@@ -49,7 +51,7 @@ int kp_socket_io_send(kp_socket_io_t *io,int fd,const char *data,size_t size){as
 bool kp_socket_io_abort(int fd){++aborts;if(abort_fault)return false;fake_shutdown(fd,SHUT_RDWR);return true;}
 esp_err_t httpd_sess_set_send_override(httpd_handle_t h,int fd,httpd_send_func_t fn){assert(h==&handle_value&&fd>0&&fn==send_full);return ESP_OK;}
 #define ASSET(name) const char name##_start[]="asset";const char name##_end[]="";
-ASSET(transfer_html) ASSET(transfer_js) ASSET(transfer_css) ASSET(transfer_protocol)
+ASSET(transfer_html) ASSET(transfer_js) ASSET(transfer_css) ASSET(transfer_protocol) ASSET(config_wait)
 int64_t esp_timer_get_time(void){return (int64_t)clock_ms*1000;}
 int fake_close(int fd){(void)fd;return 0;}
 int fake_shutdown(int fd,int how){assert(fd>0&&how==SHUT_RDWR);++shutdowns;shutdown_fd=fd;return 0;}
@@ -59,7 +61,7 @@ int xSemaphoreGive(SemaphoreHandle_t s){assert(s==&sem_value);++sem_value;return
 int xSemaphoreTake(SemaphoreHandle_t s,TickType_t ms){assert(s==&sem_value&&(ms==6000||ms==0));if(timeout&&ms)return 0;while(ms&&pending_count&&!sem_value)run_next();if(!sem_value)return 0;--sem_value;return pdTRUE;}
 void vSemaphoreDelete(SemaphoreHandle_t s){assert(s==&sem_value&&sem_count&&!pending_count);--sem_count;sem_value=0;}
 void vTaskDelay(TickType_t ms){assert(ms==300);}
-esp_err_t httpd_start(httpd_handle_t *out,const httpd_config_t *c){assert(!server_owned&&!s_signal&&!signal_allocation);assert(c->max_open_sockets==6&&c->max_uri_handlers==6&&!c->lru_purge_enable&&c->close_fn==close_session&&c->open_fn==open_session&&c->send_wait_timeout==2&&c->backlog_conn==1);if(start_fault)return ESP_FAIL;*out=&handle_value;routes=0;server_owned=true;++http_starts;return ESP_OK;}
+esp_err_t httpd_start(httpd_handle_t *out,const httpd_config_t *c){assert(!server_owned&&!s_signal&&!signal_allocation);assert(c->max_open_sockets==6&&c->max_uri_handlers==7&&!c->lru_purge_enable&&c->close_fn==close_session&&c->open_fn==open_session&&c->send_wait_timeout==2&&c->backlog_conn==1);if(start_fault)return ESP_FAIL;*out=&handle_value;routes=0;server_owned=true;++http_starts;return ESP_OK;}
 esp_err_t httpd_stop(httpd_handle_t h){
     assert(h==&handle_value&&server_owned);++stop_calls;if(stop_fault)return ESP_FAIL;
     while(pending_count)run_next();
@@ -69,7 +71,9 @@ esp_err_t httpd_stop(httpd_handle_t h){
 esp_err_t httpd_register_uri_handler(httpd_handle_t h,const httpd_uri_t *uri){assert(h==&handle_value&&!strstr(uri->uri,"api"));if(route_fault&&routes==route_fault)return ESP_FAIL;registered[routes++]=*uri;return ESP_OK;}
 esp_err_t httpd_resp_set_status(httpd_req_t *r,const char *s){(void)r;snprintf(response,sizeof(response),"%s",s);return ESP_OK;}
 esp_err_t httpd_resp_sendstr(httpd_req_t *r,const char *s){(void)r;(void)s;return ESP_OK;}
-esp_err_t httpd_resp_set_hdr(httpd_req_t *r,const char *k,const char *v){(void)r;assert(!strcmp(k,"Location")&&!strcmp(v,"/transfer"));return ESP_OK;}
+esp_err_t httpd_resp_send(httpd_req_t *r,const char *s,ssize_t n){(void)r;assert(s&&n>=0);return ESP_OK;}
+esp_err_t httpd_resp_set_type(httpd_req_t *r,const char *s){(void)r;assert(!strcmp(s,"text/html; charset=utf-8"));return ESP_OK;}
+esp_err_t httpd_resp_set_hdr(httpd_req_t *r,const char *k,const char *v){(void)r;assert(k&&v);if(!strcmp(k,"Location"))assert(!strcmp(v,"/transfer"));return ESP_OK;}
 esp_err_t kp_web_asset(httpd_req_t *r,const char *a,const char *b,const char *type){(void)r;assert(a&&b&&type);return ESP_OK;}
 esp_err_t httpd_req_get_hdr_value_str(httpd_req_t *r,const char *key,char *out,size_t n){const char *value=!strcmp(key,"Host")?r->host:r->origin;if(!value||strlen(value)>=n)return ESP_FAIL;strcpy(out,value);return ESP_OK;}
 int httpd_req_to_sockfd(httpd_req_t *r){return r->fd;}
@@ -81,9 +85,9 @@ static httpd_req_t request(int fd){return (httpd_req_t){.host="192.168.1.11",.or
 static void join(int fd){httpd_req_t r=request(fd);assert(open_session(s_http,fd)==ESP_OK);assert(pre_handshake(&r)==ESP_OK&&websocket(&r)==ESP_OK);r.method=HTTP_POST;payload="{\"type\":\"hello\",\"name\":\"browser\"}";assert(websocket(&r)==ESP_OK);}
 static kp_transfer_presence_t presence(void){kp_transfer_presence_t p;kp_transfer_web_presence(&p);return p;}
 int main(void){
-    sem_fault=true;assert(kp_transfer_web_listen_start("192.168.1.11",wake)==ESP_ERR_NO_MEM);sem_fault=false;
-    start_fault=true;assert(kp_transfer_web_listen_start("192.168.1.11",wake)==ESP_FAIL&&!sem_count&&!s_signal);start_fault=false;
-    assert(kp_transfer_web_listen_start("192.168.1.11",wake)==ESP_OK&&routes==6&&registered[5].is_websocket);
+    sem_fault=true;assert(kp_transfer_web_listen_start("192.168.1.11",wake,config_wake)==ESP_ERR_NO_MEM);sem_fault=false;
+    start_fault=true;assert(kp_transfer_web_listen_start("192.168.1.11",wake,config_wake)==ESP_FAIL&&!sem_count&&!s_signal);start_fault=false;
+    assert(kp_transfer_web_listen_start("192.168.1.11",wake,config_wake)==ESP_OK&&routes==7&&registered[6].is_websocket);
     assert(kp_transfer_web_listening()&&!kp_transfer_web_ready()&&!signal_allocation);
     // Webpage assets may span TCP retries with modem power saving. Keep the
     // existing configuration HTTP policy; short signaling frames stay bounded.
@@ -95,6 +99,9 @@ int main(void){
     r.uri="/transfer?reload=1";clock_ms=1;assert(asset(&r)==ESP_OK&&wakes==2&&wake_at==1);
     for(unsigned i=2;i<5;++i){r.uri=registered[i].uri;assert(asset(&r)==ESP_OK&&wakes==2);}
     r.uri="/unknown";assert(asset(&r)==ESP_OK&&wakes==2&&!strcmp(response,"404 Not Found"));
+    r.uri="/config";assert(asset(&r)==ESP_OK&&config_wakes==1&&wakes==2&&!presence().allocated);
+    r.uri="/config?retry=1";assert(asset(&r)==ESP_OK&&config_wakes==2&&wakes==2);
+    r.host="invalid.test";assert(asset(&r)==ESP_OK&&config_wakes==2&&!strcmp(response,"403 Forbidden"));r.host="192.168.1.11";
     r.host="192.168.4.1";r.uri="/transfer";assert(asset(&r)==ESP_OK&&wakes==2&&!strcmp(response,"403 Forbidden"));r.host="192.168.1.11";
     assert(pre_handshake(&r)==ESP_FAIL&&!strcmp(response,"503 Service Unavailable")&&wakes==2);
     alloc_fault=true;assert(kp_transfer_web_activate(0)==ESP_ERR_NO_MEM&&kp_transfer_web_listening()&&!s_signal);alloc_fault=false;
@@ -134,7 +141,7 @@ int main(void){
     // Old poll/close callbacks must not operate on the next generation.
     clock_ms=900000;assert(kp_transfer_web_activate(clock_ms)==ESP_OK);join(10);uint32_t old=s_generation;
     clock_ms=900001;assert(kp_transfer_web_disconnect()==ESP_OK&&!kp_transfer_web_listening()&&s_signal&&presence().online==0&&presence().zero_since_ms==900001);
-    assert(kp_transfer_web_listen_start("192.168.1.11",wake)==ESP_OK&&kp_transfer_web_activate(presence().zero_since_ms)==ESP_OK);
+    assert(kp_transfer_web_listen_start("192.168.1.11",wake,config_wake)==ESP_OK&&kp_transfer_web_activate(presence().zero_since_ms)==ESP_OK);
     r=request(10);r.method=HTTP_POST;payload="{\"type\":\"hello\",\"name\":\"stale\"}";assert(websocket(&r)==ESP_FAIL);
     poll_work((void *)(uintptr_t)old);close_session(s_http,10);join(10);assert(presence().online==1);
     // Failed sends retire their socket without queued session pointers; fd reuse is clean.
@@ -156,8 +163,8 @@ int main(void){
     assert(kp_transfer_web_stop()==ESP_FAIL&&kp_transfer_web_running()&&sem_count==1);stop_fault=0;
     assert(kp_transfer_web_stop()==ESP_OK&&!sem_count&&!pending_count&&!server_owned);defer=false;
     // Partial listener registration cannot leak or contend with configuration.
-    route_fault=2;assert(kp_transfer_web_listen_start("192.168.1.11",wake)==ESP_FAIL&&!kp_transfer_web_running());
-    stop_fault=1;assert(kp_transfer_web_listen_start("192.168.1.11",wake)==ESP_FAIL&&kp_transfer_web_running()&&!kp_transfer_web_listening());
+    route_fault=2;assert(kp_transfer_web_listen_start("192.168.1.11",wake,config_wake)==ESP_FAIL&&!kp_transfer_web_running());
+    stop_fault=1;assert(kp_transfer_web_listen_start("192.168.1.11",wake,config_wake)==ESP_FAIL&&kp_transfer_web_running()&&!kp_transfer_web_listening());
     stop_fault=0;assert(kp_transfer_web_stop()==ESP_OK);route_fault=0;
     assert(signal_allocs==signal_frees&&!s_prepared&&!s_retired&&!signal_allocation&&!sem_count);
     puts("Transfer HTTP: single listener, valid-page wake, lazy catalogs, 120s + 60s timing, raced join, four slots, retained stop ownership, generation safety, reusable sockets and 100 balanced cycles: PASS");

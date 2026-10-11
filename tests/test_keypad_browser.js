@@ -15,10 +15,15 @@ async function main(){
   let scanNetworks=[{ssid:'nearby-test-network',rssi:-35,secured:true},{ssid:'open-test-network',rssi:-55,secured:false},{ssid:'<b>literal-name</b>',rssi:-65,secured:true}];
   let wifi={ssid:"",has_password:false,state:5,clock_valid:false},wifiPassword="",wifiPosts=0,wifiBody,failWifi=false,settingsPosts=0;
   let home=K.homeDefaults(),homePosts=0,failHome=false;
-  const savePaths=[],separateWrites=[];
+  const savePaths=[],separateWrites=[];let exitPosts=0;
   K.addProfile(device,'浏览',0);const original=clone(device);
   await page.route('http://passport.test/**',async route=>{
     const request=route.request(),url=new URL(request.url());
+    if(url.pathname==='/api/exit'){++exitPosts;return route.fulfill({json:{ok:true}});}
+    if(url.pathname==='/api/presence'){
+      assert.equal(request.headers()['x-session'],'test-session');
+      return route.fulfill({json:{id:request.postDataJSON().id||1}});
+    }
     if(request.method()==='POST'&&url.pathname==='/api/settings')savePaths.push(url.pathname);
     if(request.method()==='POST'&&['/api/config','/api/home','/api/wifi','/api/time'].includes(url.pathname)){
       separateWrites.push(url.pathname);
@@ -208,6 +213,9 @@ async function main(){
   assert.equal(savePaths.length,beforeInvalid);assert.equal(home.badge,'');assert.equal(wifi.ssid,'');
   await page.locator('#profile-name').fill('统一保存');await page.locator('#save').click();
   await page.waitForFunction(()=>document.getElementById('status').textContent.includes('完整配置已保存'));
+  const savedStatus=await page.locator('#status').textContent();
+  assert(savedStatus.includes('工牌和按键情景已更新')&&savedStatus.includes('Wi-Fi 网络将在退出配置后切换'));
+  assert.equal(exitPosts,0);assert.equal(page.url(),'http://passport.test/');
   assert.deepEqual(savePaths.slice(beforeInvalid),['/api/settings']);
   assert.equal(home.badge,'ALL');assert.equal(wifi.ssid,'unified-network');assert.equal(device.profiles[0].name,'统一保存');
   const beforeNoop=savePaths.length;await page.locator('#save').click();

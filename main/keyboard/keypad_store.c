@@ -7,6 +7,7 @@
 
 static SemaphoreHandle_t s_lock;
 static kp_settings_t s_settings;
+static uint32_t s_settings_revision;
 static kp_screen_config_t s_screen;
 static kp_system_t s_system;
 static kp_devices_t s_devices;
@@ -19,7 +20,7 @@ static esp_err_t persist(nvs_handle_t nvs, const kp_settings_t *settings) {
 esp_err_t kp_store_init(void) {
     s_lock = xSemaphoreCreateMutex();
     if (!s_lock) return ESP_ERR_NO_MEM;
-    kp_settings_defaults(&s_settings); s_clock = (kp_clock_t){0};
+    kp_settings_defaults(&s_settings); s_settings_revision = 1; s_clock = (kp_clock_t){0};
     kp_screen_defaults(&s_screen);
     s_system = KP_SYSTEM_MACOS;
     kp_devices_defaults(&s_devices);
@@ -69,17 +70,34 @@ bool kp_store_settings_read(kp_store_settings_reader_t reader, void *user) {
     bool result = reader(&s_settings, user);
     xSemaphoreGive(s_lock); return result;
 }
+unsigned kp_store_runtime_sync(uint32_t *revision, kp_config_t *config, kp_home_config_t *home) {
+    if (xSemaphoreTake(s_lock, 0) != pdTRUE) return 0;
+    unsigned changes = 0;
+    if (*revision != s_settings_revision) {
+        size_t size = kp_config_size(&s_settings.config);
+        if (kp_config_size(config) != size || memcmp(config, &s_settings.config, size)) {
+            *config = s_settings.config;
+            changes |= KP_STORE_CONFIG_CHANGED;
+        }
+        if (memcmp(home, &s_settings.home, sizeof(*home))) {
+            *home = s_settings.home;
+            changes |= KP_STORE_HOME_CHANGED;
+        }
+        *revision = s_settings_revision;
+    }
+    xSemaphoreGive(s_lock); return changes;
+}
 esp_err_t kp_store_settings_save(const kp_settings_t *settings) {
     if (!kp_settings_valid(settings, false)) return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     nvs_handle_t nvs;
     esp_err_t rc = nvs_open("passport_keys", NVS_READWRITE, &nvs);
     if (rc == ESP_OK) { rc = persist(nvs, settings); nvs_close(nvs); }
-    if (rc == ESP_OK) s_settings = *settings;
+    if (rc == ESP_OK) { s_settings = *settings; ++s_settings_revision; }
     xSemaphoreGive(s_lock); return rc;
 }
 // Partial setting updates persist the complete record in one commit.
-static esp_err_t save_part(const kp_config_t *config, const kp_home_config_t *home, const kp_wifi_config_t *wifi) {
+static esp_err_t save_part(const kp_config_t *config, const kp_home_config_t *home, const kp_wifi_config_t *wifi, int profile) {
     kp_settings_t *next = malloc(sizeof(*next));
     if (!next) return ESP_ERR_NO_MEM;
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -87,26 +105,35 @@ static esp_err_t save_part(const kp_config_t *config, const kp_home_config_t *ho
     if (config) next->config = *config;
     if (home) next->home = *home;
     if (wifi) next->wifi = *wifi;
+    if (profile >= 0) {
+        if ((unsigned)profile >= next->config.profile_count) {
+            xSemaphoreGive(s_lock); free(next); return ESP_ERR_INVALID_ARG;
+        }
+        next->config.active_profile = (unsigned)profile;
+    }
     nvs_handle_t nvs;
     esp_err_t rc = nvs_open("passport_keys", NVS_READWRITE, &nvs);
     if (rc == ESP_OK) { rc = persist(nvs, next); nvs_close(nvs); }
-    if (rc == ESP_OK) s_settings = *next;
+    if (rc == ESP_OK) { s_settings = *next; ++s_settings_revision; }
     xSemaphoreGive(s_lock); free(next); return rc;
 }
 esp_err_t kp_store_save(const kp_config_t *config) {
-    return kp_config_valid(config) ? save_part(config, NULL, NULL) : ESP_ERR_INVALID_ARG;
+    return kp_config_valid(config) ? save_part(config, NULL, NULL, -1) : ESP_ERR_INVALID_ARG;
+}
+esp_err_t kp_store_profile_select(unsigned profile) {
+    return profile < KP_MAX_PROFILES ? save_part(NULL, NULL, NULL, (int)profile) : ESP_ERR_INVALID_ARG;
 }
 void kp_store_home_get(kp_home_config_t *out) {
     xSemaphoreTake(s_lock, portMAX_DELAY); *out = s_settings.home; xSemaphoreGive(s_lock);
 }
 esp_err_t kp_store_home_save(const kp_home_config_t *home) {
-    return kp_home_valid(home, false) ? save_part(NULL, home, NULL) : ESP_ERR_INVALID_ARG;
+    return kp_home_valid(home, false) ? save_part(NULL, home, NULL, -1) : ESP_ERR_INVALID_ARG;
 }
 void kp_store_wifi_get(kp_wifi_config_t *out) {
     xSemaphoreTake(s_lock, portMAX_DELAY); *out = s_settings.wifi; xSemaphoreGive(s_lock);
 }
 esp_err_t kp_store_wifi_save(const kp_wifi_config_t *wifi) {
-    return kp_wifi_valid(wifi) ? save_part(NULL, NULL, wifi) : ESP_ERR_INVALID_ARG;
+    return kp_wifi_valid(wifi) ? save_part(NULL, NULL, wifi, -1) : ESP_ERR_INVALID_ARG;
 }
 void kp_store_screen_get(kp_screen_config_t *out) {
     xSemaphoreTake(s_lock, portMAX_DELAY); *out = s_screen; xSemaphoreGive(s_lock);

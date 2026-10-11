@@ -353,6 +353,25 @@ int main(void) {
     kp_binding_label(&c,display_binding,KP_SYSTEM_WINDOWS,label,sizeof(label));assert(!strcmp(label,"播放暂停"));
     kp_binding_label(&c,display_binding,KP_SYSTEM_MACOS,label,sizeof(label));assert(!strcmp(label,"Shift+Command+Z → 播放暂停"));
     kp_binding_label(&c,display_binding,KP_SYSTEM_MACOS,label,1);assert(!*label);
+    // A live configuration refresh cancels old HID input, retains local screen
+    // and navigation state, and repairs the cursor if its profile was deleted.
+    gesture_config(&c);kp_init(&m,&c,effect,NULL);memset(count,0,sizeof(count));
+    m.page=KP_CONSOLE;m.executing=true;m.feedback.visible=true;
+    m.down_mask=5;m.key[0]=(kp_key_t){.down=true,.pressed_at=100};
+    m.key[2]=(kp_key_t){.down=true,.pressed_at=100,.pending=true,.clicks=1};
+    m.screen.state=KP_SCREEN_OFF;m.screen.level=0;m.screen.last_activity=100;
+    kp_screen_t before_screen=m.screen;unsigned before_revision=m.config_revision;
+    kp_config_loaded(&m,200);
+    assert(count[KP_CANCEL]==1&&!m.executing&&!m.feedback.visible);
+    assert(m.page==KP_CONSOLE&&m.key[0].ignored&&m.key[0].down);
+    assert(m.key[2].down&&m.key[2].pressed_at==100&&!m.key[2].pending&&!m.key[2].clicks);
+    assert(!memcmp(&m.screen,&before_screen,sizeof(before_screen))&&m.config_revision==before_revision+1);
+    m.page=KP_PROFILES;m.selected=7;m.down_mask=1;
+    m.key[0]=(kp_key_t){.down=true,.pressed_at=300};kp_key_t navigation=m.key[0];
+    kp_config_loaded(&m,400);
+    assert(m.page==KP_PROFILES&&m.selected==c.active_profile);
+    assert(!memcmp(&m.key[0],&navigation,sizeof(navigation))&&!memcmp(&m.screen,&before_screen,sizeof(before_screen)));
+    puts("Live configuration preserves page, sleep and navigation while releasing old input and deleted-profile cursors: PASS");
     puts("System preview/save/back, filtered device labels and fixed HID modifiers: PASS");
     puts("Keypad gestures, navigation, screen drafts, wake consumption and feedback: PASS");
 }

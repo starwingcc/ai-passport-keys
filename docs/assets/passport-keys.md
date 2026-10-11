@@ -80,19 +80,33 @@ Clear Bluetooth pairing**.
 
 ## Web configuration
 
-1. Open **Settings → Passport configuration**, select **Device hotspot** or **WiFi**
-   to start configuration directly. The hotspot pauses Bluetooth; WiFi keeps it connected.
-   Both modes end file transfer.
-2. For **Device hotspot**, join the displayed network and open `http://192.168.4.1`.
-   For **WiFi**, a saved working network is required; use a browser in the same LAN
-   and open the device's displayed IP. If connection fails, hold OK to return and
-   retry. Configure Wi-Fi through the hotspot when no network is saved.
+1. With a working Wi-Fi network saved, open `http://192.168.1.11/config` in the same
+   LAN to start configuration automatically. The device keeps its current screen,
+   screen-off state and Bluetooth keyboard operation; configuration ends file transfer.
+   **Settings → Passport configuration → WiFi** remains a manual entry.
+2. For initial setup, select **Settings → Passport configuration → Device hotspot**,
+   join the displayed network and open `http://192.168.4.1`. The hotspot pauses
+   Bluetooth and still requires a manual exit.
 3. Edit the home badge, Wi-Fi network, scenarios and keyboard/media steps; empty
    steps disable an action. **Set as current** selects the active scenario.
    Select a physical key and click/hold gesture, then use **Record** or **Manual
-   selection** to edit a keyboard step. Click **Save all settings** to apply all
-   edits, then hold OK on the device or click **Exit configuration**. A failed
-   save leaves the saved settings unchanged; keep the page open and retry.
+   selection** to edit a keyboard step. **Save all settings** applies the badge
+   and shortcuts immediately, preserving the current page and screen-off state.
+   Changed shortcut settings stop the old macro and release held keys; badge-only
+   changes keep it running. Saved Wi-Fi changes take effect on exit to keep the
+   page connected. **Exit configuration** ends the session; after manual entry,
+   holding OK on the device also exits.
+   A failed save leaves saved settings unchanged; keep the page open and retry.
+
+An online WiFi configuration page keeps configuration active even without edits.
+After all pages go offline for one minute, configuration exits and Wi-Fi/file
+transfer listening resumes using the saved Wi-Fi settings.
+A sudden network loss first waits for the 120-second heartbeat lease, then the
+one-minute grace. Without a successful page join, configuration lasts one minute.
+Scanning, network testing/restoration and saving pause the exit timer. During
+configuration, `/` and `/transfer` display a configuration-in-progress notice.
+Unsaved edits are never submitted automatically; export them before reopening
+`/config` if the session is lost.
 
 Each keyboard or media action targets **All**, **Windows** or **Mac**. The device
 runs All and matching actions using the saved pairing system, skipping other

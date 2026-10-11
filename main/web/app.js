@@ -214,6 +214,7 @@
   let pendingImport=null;
   let config,session='',selected=0,gesture=0,editing=0,dirty=false,busy=false,recording=null,lanWifi=false;
   let previewSystem;
+  let presenceId=0,presenceTimer,presenceEnded=false,presenceBusy=false;
   let home,homeDirty=false,wifi,wifiDirty=false,wifiNetworks=[],wifiRevision=0,wifiSavedPassword='',wifiKeepAllowed=true;
   const $=id=>document.getElementById(id);
   function status(text,error=false){$('status').textContent=text;$('status').className=error?'error':'';}
@@ -368,6 +369,36 @@
   $('delete-profile').addEventListener('click',()=>{if(!confirm('删除情景“'+config.profiles[editing].name+'”？保存后生效。'))return;cancelRecording(false);removeProfile(config,editing);editing=Math.min(editing,config.profiles.length-1);changed();render();});
   $('activate-profile').addEventListener('click',()=>{config.active_profile=editing;changed();render();status('已设为当前情景，保存后生效。');});
   async function request(path,body){const response=await fetch(path,{method:'POST',headers:{'X-Session':session,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(8000)});if(!response.ok)throw Error(await response.text());return response.json();}
+  async function presenceTick(){
+    if(!lanWifi||presenceEnded||presenceBusy)return;
+    presenceBusy=true;
+    try{
+      const r=await fetch('/api/presence',{method:'POST',headers:{'X-Session':session,'Content-Type':'application/json'},body:JSON.stringify(presenceId?{action:'ping',id:presenceId}:{action:'join'}),signal:AbortSignal.timeout(3000)});
+      if(r.status===409&&presenceId){presenceId=0;return;}
+      if(r.status===403||r.status===404){
+        presenceStop();status('配置会话已结束。未保存的修改仍保留在此页面，请先导出，再打开 /config 重新连接。',true);return;
+      }
+      if(!r.ok)throw Error(await r.text());
+      const info=await r.json();if(!Number.isInteger(info.id)||info.id<=0)throw Error('在线响应无效');
+      if(presenceEnded){presenceLeave(info.id);return;}
+      presenceId=info.id;
+    }catch(e){
+      // Network tests interrupt HTTP. Retain the editor and unsaved draft;
+      // the next heartbeat retries without reloading settings.
+      if(!presenceId&&!presenceEnded)status('等待配置页面加入：'+e.message,true);
+    }finally{presenceBusy=false;}
+  }
+  function presenceStop(){presenceEnded=true;clearInterval(presenceTimer);presenceTimer=undefined;}
+  function presenceLeave(id=presenceId){
+    if(lanWifi&&id)fetch('/api/presence',{method:'POST',headers:{'X-Session':session,'Content-Type':'application/json'},body:JSON.stringify({action:'leave',id}),keepalive:true}).catch(()=>{});
+  }
+  function presenceStart(){
+    if(!lanWifi)return;
+    presenceEnded=false;presenceTick();presenceTimer=setInterval(presenceTick,10000);
+  }
+  window.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')presenceTick();});
+  window.addEventListener('pagehide',()=>{presenceStop();presenceLeave();presenceId=0;});
+  window.addEventListener('pageshow',e=>{if(e.persisted&&session)presenceStart();});
   async function operation(fn){if(busy||!config)return;cancelRecording(false);busy=true;render();try{await fn();}catch(e){status('操作未完成：'+e.message,true);}finally{busy=false;render();}}
   function wifiRender(password=''){
     $('wifi-ssid').value=wifi.ssid;$('wifi-password').value=password;
@@ -548,18 +579,19 @@
     wifi={...wifi,ssid:settings.wifi.ssid,has_password:!!settings.wifi.password};
     dirty=homeDirty=wifiDirty=false;$('home-saved').textContent='工牌已保存';wifiRender(password);dirtyStatus();
     $('wifi-status').textContent=settings.wifi.ssid?'网络已保存，退出配置后开始自动校时。':'自动校时网络已清除。';
-    status('完整配置已保存到 Passport。退出配置后生效。');
+    status('完整配置已保存。工牌和按键情景已更新；按键配置变化会停止旧宏并释放按键。Wi-Fi 网络将在退出配置后切换。');
   }));
   $('defaults').addEventListener('click',()=>{
     if(!config||busy||!confirm('恢复默认会重置编辑区的工牌、Wi-Fi 与全部按键情景。保存后生效，是否继续？'))return;
     cancelRecording(false);const settings=settingsDefaults();config=settings.config;home=settings.home;editing=0;
     homeRender();homeChanged();$('wifi-ssid').value='';$('wifi-password').value='';wifiKeepAllowed=false;wifiChanged();changed();render();
   });
-  $('exit').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存的修改，仍要退出配置？'))return;operation(async()=>{await request('/api/exit');status('配置正在关闭。设备返回Passport配置；长按 OK 返回设置，再长按进入首页，再选择“开始控制”。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='会话已结束';});});
-  $('forget').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存修改，清除配对将结束网页会话，仍要继续？'))return;if(!confirm('设备将退出配置并显示确认页，请在设备上确认清除配对。'))return;operation(async()=>{await request('/api/forget');status('请在 Passport 确认清除配对。配置正在关闭。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='请在设备确认';});});
+  $('exit').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存的修改，仍要退出配置？'))return;operation(async()=>{await request('/api/exit');presenceStop();status(lanWifi?'配置正在关闭，已保存 Wi-Fi 网络将在退出后使用。文件流转将恢复监听，再次打开 /config 可自动配置。':'配置正在关闭。设备返回 Passport 配置，长按 OK 返回。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='会话已结束';});});
+  $('forget').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存修改，清除配对将结束网页会话，仍要继续？'))return;if(!confirm('设备将退出配置并显示确认页，请在设备上确认清除配对。'))return;operation(async()=>{await request('/api/forget');presenceStop();status('请在 Passport 确认清除配对。配置正在关闭。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='请在设备确认';});});
   window.addEventListener('beforeunload',e=>{if(dirty||homeDirty||wifiDirty){e.preventDefault();e.returnValue='';}});
   fetch('/api/config',{signal:AbortSignal.timeout(8000)}).then(async r=>{
     if(!r.ok)throw Error('读取设置会话失败');const info=await r.json();session=info.session;lanWifi=info.connection==='wifi';
+    presenceStart();
     if(info.system!==0&&info.system!==1)throw Error('读取设备系统失败');previewSystem=info.system===1?1:2;
     const response=await fetch('/api/settings',{headers:{'X-Session':session},signal:AbortSignal.timeout(8000)});
     if(!response.ok)throw Error('读取完整配置失败');const settings=await response.json();validateSettings(settings,true);

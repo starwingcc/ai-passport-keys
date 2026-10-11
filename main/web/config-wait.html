@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Passport 配置</title><body><h1>正在开启 Passport 配置…</h1>
+<p>请保持页面打开。配置开启后会自动进入；当前文件流转会话将结束。</p>
+<script>
+(async function wait() {
+  try {
+    const r = await fetch('/config', {cache: 'no-store', signal: AbortSignal.timeout(3000)});
+    if (r.ok && r.headers.get('X-Passport-Config') === 'ready') {
+      location.replace('/config'); return;
+    }
+  } catch (_) {}
+  setTimeout(wait, 750);
+})();
+</script></body></html>
