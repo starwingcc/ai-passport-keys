@@ -161,8 +161,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
     if (!s_title || !bsp_lvgl_lock(1000)) return;
     previous_transfer = m->transfer;
     previous_lan = m->lan;
-    if (s_transfer_qr && (m->page != KP_TRANSFER || (m->transfer.state != KP_TRANSFER_READY &&
-        m->transfer.state != KP_TRANSFER_LISTENING && m->transfer.state != KP_TRANSFER_WAITING))) {
+    if (s_transfer_qr && (m->page != KP_TRANSFER || (m->transfer.state != KP_TRANSFER_READY && m->transfer.state != KP_TRANSFER_WAITING))) {
         lv_obj_delete(s_transfer_qr); s_transfer_qr = NULL; s_qr_url[0] = 0;
     }
     cached = true; revision = m->config_revision; previous_profile = m->config.active_profile;
@@ -315,7 +314,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         const kp_transfer_view_t *t = &m->transfer;
         const char *states[] = {"已关闭", "未配置 Wi-Fi", "已开启 · 正在连接 Wi-Fi", "已开启 · Wi-Fi 已连接",
                                 "已开启 · Wi-Fi 正在重连", "连接或服务失败", "正在关闭",
-                                "监听待机 · Wi-Fi 已连接", "已开启 · 等待结束"};
+                                "已开启 · 等待网页连接"};
         lv_label_set_text(s_state, states[t->state]);
         const char *choices[] = {"关闭", "开启"};
         for (unsigned i = 0; i < 2; ++i)
@@ -324,8 +323,8 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         hidden(s_body, false); lv_obj_set_pos(s_body, 20, 186); lv_obj_set_size(s_body, 200, 68);
         lv_label_set_text(s_footer, "上下选择，OK 确认");
         lv_label_set_text(s_message, t->state == KP_TRANSFER_WAITING ? "等待网页连接" :
-            t->enabled ? "返回后仍保持开启" : "网页访问可自动开启");
-        if ((t->state == KP_TRANSFER_READY || t->state == KP_TRANSFER_LISTENING || t->state == KP_TRANSFER_WAITING) && t->ip[0]) {
+            t->enabled ? "返回后仍保持开启" : "请手动开启");
+        if ((t->state == KP_TRANSFER_READY || t->state == KP_TRANSFER_WAITING) && t->ip[0]) {
             char url[40]; snprintf(url, sizeof(url), "http://%s/", t->ip);
             if (!s_transfer_qr) {
                 s_transfer_qr = lv_qrcode_create(lv_screen_active());
@@ -358,7 +357,7 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
         else if (t->state == KP_TRANSFER_CONNECTING) lv_label_set_text(s_body, "正在连接已保存的 Wi-Fi\n连接成功后显示访问地址");
         else if (t->state == KP_TRANSFER_RECONNECTING) lv_label_set_text(s_body, "连接已断开，正在重连\n重连后更新访问地址");
         else if (t->state == KP_TRANSFER_STOPPING) {lv_label_set_text(s_body, "正在结束共享会话\n蓝牙键盘可继续使用");lv_label_set_text(s_message, "请稍候");}
-        else lv_label_set_text(s_body, "Wi-Fi 保持连接\n网页访问可自动开启\n蓝牙键盘可继续使用");
+        else lv_label_set_text(s_body, "选择开启后显示访问地址\n蓝牙键盘可继续使用");
     } else if (m->page == KP_DEVICES) {
         lv_label_set_text_fmt(s_state, "%u 台设备", kp_devices_count(&m->devices));
         for (unsigned i = 0; i < KP_DEVICE_COUNT; ++i) {
@@ -557,15 +556,16 @@ void kp_ui_update(const kp_model_t *m, kp_ble_status_t ble, int battery,
                     lv_obj_set_style_text_color(value, lv_color_hex(m->selected == i ? ACCENT : INK), 0);
                     if (network) {
                         unsigned online = i == KP_SETTING_TRANSFER ? m->transfer.peers : m->lan.online;
-                        bool available = m->lan.listening || (m->transfer.ip[0] &&
-                            (m->transfer.state == KP_TRANSFER_LISTENING || m->transfer.state == KP_TRANSFER_READY ||
-                             m->transfer.state == KP_TRANSFER_WAITING));
-                        const char *state = available ? (online ? "已连接" : "监听中") :
-                            m->transfer.state == KP_TRANSFER_FAILED || m->lan.state == KP_AP_FAILED ? "连接失败" :
-                            m->transfer.state == KP_TRANSFER_STOPPING || m->lan.state == KP_AP_STOPPING ? "恢复中" :
-                            m->transfer.state == KP_TRANSFER_CONNECTING || m->transfer.state == KP_TRANSFER_RECONNECTING ||
-                            m->lan.state == KP_AP_STARTING ? "连接中" : "未联网";
-                        if (i == KP_SETTING_PASSPORT && m->lan.state == KP_AP_ACTIVE && !m->lan.wifi) state = "热点中";
+                        bool transfer = i == KP_SETTING_TRANSFER;
+                        bool available = transfer ? m->transfer.state == KP_TRANSFER_READY || m->transfer.state == KP_TRANSFER_WAITING :
+                            m->lan.state == KP_AP_ACTIVE;
+                        bool failed = transfer ? m->transfer.state == KP_TRANSFER_FAILED : m->lan.state == KP_AP_FAILED;
+                        bool stopping = transfer ? m->transfer.state == KP_TRANSFER_STOPPING : m->lan.state == KP_AP_STOPPING;
+                        bool connecting = transfer ? m->transfer.state == KP_TRANSFER_CONNECTING || m->transfer.state == KP_TRANSFER_RECONNECTING :
+                            m->lan.state == KP_AP_STARTING;
+                        const char *state = available ? (online ? "已连接" : "已开启") :
+                            failed ? "连接失败" : stopping ? "恢复中" : connecting ? "连接中" : "已关闭";
+                        if (!transfer && m->lan.state == KP_AP_ACTIVE && !m->lan.wifi) state = "热点中";
                         lv_label_set_text(value, state);
                     } else lv_label_set_text_fmt(value, "%u 台", kp_devices_count(&m->devices));
                 }

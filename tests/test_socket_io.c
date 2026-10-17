@@ -15,6 +15,16 @@ static uint32_t clock_ms;
 static unsigned calls, mode, abort_stage;
 static char received[8192];
 static size_t received_size;
+static size_t dma_free, dma_largest;
+static uint32_t recover_at;
+size_t heap_caps_get_free_size(unsigned caps) {
+    assert(caps==MALLOC_CAP_DMA);
+    return recover_at&&clock_ms>=recover_at?20000:dma_free;
+}
+size_t heap_caps_get_largest_free_block(unsigned caps) {
+    assert(caps==MALLOC_CAP_DMA);
+    return recover_at&&clock_ms>=recover_at?8000:dma_largest;
+}
 int64_t esp_timer_get_time(void) { return (int64_t)clock_ms*1000; }
 ssize_t test_send(int fd,const void *data,size_t size,int flags) {
     assert(fd==41&&flags==MSG_DONTWAIT&&size<=1440);
@@ -45,7 +55,10 @@ int test_setsockopt(int fd,int level,int option,const void *value,socklen_t size
     abort_stage=1;return 0;
 }
 int test_shutdown(int fd,int how) { assert(fd==41&&how==SHUT_RDWR&&abort_stage==1);abort_stage=2;return 0; }
-static void reset(unsigned scenario) { mode=scenario;calls=0;received_size=0;clock_ms=0; }
+static void reset(unsigned scenario) {
+    mode=scenario;calls=0;received_size=0;clock_ms=0;
+    dma_free=20000;dma_largest=8000;recover_at=0;
+}
 int main(void) {
     char payload[4096];for(size_t i=0;i<sizeof(payload);++i)payload[i]=(char)i;
     kp_socket_io_t io;
@@ -81,8 +94,22 @@ int main(void) {
     reset(6);kp_socket_io_begin(&io,5000,30000);
     assert(kp_socket_io_send(&io,41,payload,sizeof(payload))==sizeof(payload));
     assert(clock_ms>2000&&io.waits>0&&!memcmp(received,payload,sizeof(payload)));
+    // A writable TCP socket must not consume the DMA blocks needed to make
+    // progress on Wi-Fi. Both total headroom and fragmentation matter.
+    reset(0);dma_free=8191;kp_socket_io_begin(&io,2000,2000);
+    assert(kp_socket_io_send(&io,41,payload,1)<0&&io.error==ETIMEDOUT);
+    assert(!calls&&clock_ms==2000&&io.waits==40&&io.blocked_error==ENOMEM);
+    reset(0);dma_largest=4095;kp_socket_io_begin(&io,2000,2000);
+    assert(kp_socket_io_send(&io,41,payload,1)<0&&!calls&&clock_ms==2000);
+    // Recovery resumes the same transaction without losing or duplicating data.
+    reset(0);dma_free=2708;dma_largest=1236;recover_at=150;
+    kp_socket_io_begin(&io,2000,2000);
+    assert(kp_socket_io_send(&io,41,payload,sizeof(payload))==sizeof(payload));
+    assert(clock_ms>=150&&io.waits>=3&&!memcmp(received,payload,sizeof(payload)));
+    reset(0);dma_free=8192;dma_largest=4096;kp_socket_io_begin(&io,2000,2000);
+    assert(kp_socket_io_send(&io,41,payload,1)==1&&calls==1&&!io.waits);
     reset(0);clock_ms=UINT32_MAX-5;kp_socket_io_begin(&io,2000,2000);clock_ms=10;
     assert(kp_socket_io_send(&io,41,payload,1)==1); // uptime wrap is not expiry
     assert(kp_socket_io_abort(41)&&abort_stage==2);
-    puts("Socket IO: partial writes, backpressure, total deadline, EOF/reset, memory pressure, clock wrap and abort-before-shutdown: PASS");
+    puts("Socket IO: partial writes, backpressure, total deadline, EOF/reset, DMA headroom/fragmentation/recovery, clock wrap and abort-before-shutdown: PASS");
 }

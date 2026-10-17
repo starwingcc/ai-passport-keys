@@ -151,9 +151,9 @@ static void poll_work(void *arg) {
             uint64_t time = (uint64_t)(esp_timer_get_time() / 1000);
             kp_web_presence_pause(&s_presence, job.busy, time);
             kp_session_pause(s_generation, job.busy, time);
-            // Serialized with join/ping/save handlers. A page arriving before
-            // this gate cancels expiry; requests after it cannot revive a
-            // session already handed to the network worker for teardown.
+            // Pages expire independently of the manually enabled function.
+            kp_web_presence_poll(&s_presence, time);
+            // Only an explicit exit or device transition ends this generation.
             kp_session_view_t session;
             kp_session_get(&session);
             if (session.mode != KP_SESSION_CONFIG || session.generation != s_generation) {
@@ -177,10 +177,16 @@ static esp_err_t static_file(httpd_req_t *req) {
     int fd = httpd_req_to_sockfd(req);
     if (!begin_response(fd)) return ESP_FAIL;
     size_t path_size = strcspn(req->uri, "?");
-    if (s_lan_wifi && ((path_size == 1 && req->uri[0] == '/') || (path_size == 9 && !strncmp(req->uri, "/transfer", 9)) ||
-                      (path_size == 7 && !strncmp(req->uri, "/config", 7) && !kp_session_document(req, KP_SESSION_CONFIG)))) {
-        esp_err_t rc = kp_session_bootstrap(req);
-        end_response(fd, "bootstrap", rc);
+    if (s_lan_wifi && path_size == 1 && req->uri[0] == '/') {
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "/config");
+        esp_err_t rc = httpd_resp_sendstr(req, "");
+        end_response(fd, "redirect", rc);
+        return rc;
+    }
+    if (s_lan_wifi && path_size == 9 && !strncmp(req->uri, "/transfer", 9)) {
+        esp_err_t rc = fail(req, "409 Conflict", "请先在设备上退出配置，再开启文件流转");
+        end_response(fd, "inactive", rc);
         return rc;
     }
     const char *start = index_start, *end = index_end, *type = "text/html; charset=utf-8";
@@ -293,7 +299,7 @@ static esp_err_t api_body(httpd_req_t *req) {
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_set_type(req, "application/json");
     if (!strcmp(req->uri, "/api/session") || !strcmp(req->uri, "/api/session/open") || !strcmp(req->uri, "/api/session/resume")) {
-        if (!s_lan_wifi) return fail(req, "409 Conflict", "本机热点不支持局域网切换");
+        if (!s_lan_wifi) return fail(req, "409 Conflict", "本机热点无需申请局域网页面");
         return kp_session_http(req, expected);
     }
     if (s_lan_wifi && !kp_session_current(KP_SESSION_CONFIG, s_generation)) return fail(req, "403 Forbidden", "配置会话已结束，请重新连接");
@@ -518,7 +524,7 @@ static esp_err_t start(kp_web_request_t callback, const char *ip) {
     }
     memset(s_clients, 0, sizeof(s_clients));
     atomic_store(&s_stopping, false);
-    kp_web_presence_init(&s_presence, (uint64_t)(esp_timer_get_time() / 1000));
+    kp_web_presence_init(&s_presence);
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
     http.max_open_sockets = HTTP_SOCKETS; http.max_uri_handlers = 24;
     http.backlog_conn = 1;

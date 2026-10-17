@@ -12,6 +12,7 @@
 #include <time.h>
 #include <stdio.h>
 
+#define BOOT_HOLD_MS UINT64_C(120000)
 #define ATTEMPT_MS 60000U
 #define RETRY_MS 300000U
 #define REFRESH_MS 21600000U
@@ -23,7 +24,9 @@ static bool s_initialized, s_started, s_sntp, s_suspended, s_scheduled;
 static uint32_t s_attempt_at, s_next_at, s_connect_at;
 static unsigned s_connects;
 static bool s_keep_online, s_had_ip, s_setup_paused;
-static bool s_candidate_address;
+static bool s_candidate_address, s_cleanup_pending;
+static bool s_boot_complete, s_connect_requested, s_release_pending;
+static bool held(void) { return s_keep_online || !s_boot_complete; }
 static atomic_bool s_got_ip, s_reconnect, s_synced;
 static atomic_int s_status;
 
@@ -45,6 +48,7 @@ static void time_synced(struct timeval *tv) {
         atomic_store(&s_synced, true);
 }
 static esp_err_t stop(void) {
+    s_cleanup_pending = true;
     // Stop the TCP/IP callback before destroying its interface. A failed Wi-Fi
     // teardown retains ownership and is retried, never handing it to the AP.
     if (s_sntp) { esp_netif_sntp_deinit(); s_sntp = false; }
@@ -70,13 +74,14 @@ static esp_err_t stop(void) {
     }
     if (s_netif) { esp_netif_destroy_default_wifi(s_netif); s_netif = NULL; }
     atomic_store(&s_got_ip, false); atomic_store(&s_reconnect, false); atomic_store(&s_synced, false);
-    s_setup_paused = s_candidate_address = false;
+    s_setup_paused = s_candidate_address = s_cleanup_pending = false;
     return ESP_OK;
 }
 void kp_network_keep_online(bool keep) {
     if (s_keep_online == keep) return;
-    s_keep_online = keep; s_scheduled = false;
-    if (keep && !s_started) atomic_store(&s_status, KP_NET_DISABLED);
+    s_keep_online = keep;
+    s_release_pending = !keep;
+    if (keep && !s_started) s_connect_requested = true;
 }
 bool kp_network_ip(char out[16]) {
     out[0] = 0;
@@ -93,7 +98,10 @@ esp_err_t kp_network_suspend(void) {
     if (rc == ESP_OK) atomic_store(&s_status, KP_NET_PAUSED);
     return rc;
 }
-void kp_network_resume(void) { s_suspended = false; s_scheduled = false; }
+void kp_network_resume(void) {
+    s_suspended = false;
+    if (held() && !s_started) s_connect_requested = true;
+}
 void kp_network_setup_pause(bool pause, uint32_t now) {
     s_setup_paused = pause;
     if (s_sntp) { esp_netif_sntp_deinit(); s_sntp = false; }
@@ -171,22 +179,38 @@ static esp_err_t start(const kp_wifi_config_t *wifi, uint32_t now) {
 static void finish(uint32_t now, bool success) {
     atomic_store(&s_status, success ? KP_NET_SYNCED : KP_NET_FAILED);
     s_next_at = now + (success ? REFRESH_MS : RETRY_MS); s_scheduled = true;
-    if (s_keep_online && atomic_load(&s_got_ip)) {
+    if (held() && atomic_load(&s_got_ip)) {
         if (s_sntp) { esp_netif_sntp_deinit(); s_sntp = false; }
         return;
     }
     esp_err_t rc = stop();
-    if (s_keep_online) s_next_at = now + 15000U;
+    if (held()) s_next_at = now + 15000U;
     if (rc != ESP_OK) ESP_LOGW("keypad_time", "Network cleanup pending: %s", esp_err_to_name(rc));
 }
-void kp_network_tick(uint32_t now) {
+void kp_network_tick(uint64_t monotonic_ms) {
+    uint32_t now = (uint32_t)monotonic_ms;
+    bool boot_expired = !s_boot_complete && monotonic_ms >= BOOT_HOLD_MS;
+    s_boot_complete |= boot_expired;
     if (s_suspended || s_setup_paused) return;
+    // The worker has already applied manual requests before entering here.
+    // Expiring startup/foreground ownership cannot cancel a manual radio lease.
+    bool release = (boot_expired || s_release_pending) && !held();
+    s_release_pending = false;
+    if (release) {
+        kp_network_status_t status = kp_network_status();
+        if (status == KP_NET_CONNECTING || status == KP_NET_SYNCING) finish(now, false);
+        else (void)stop();
+        s_connect_requested = false;
+        return;
+    }
+    if (s_cleanup_pending && stop() != ESP_OK) return;
     kp_network_status_t status = kp_network_status();
-    if (status != KP_NET_CONNECTING && status != KP_NET_SYNCING && !(s_keep_online && s_started)) {
+    if (status != KP_NET_CONNECTING && status != KP_NET_SYNCING && !(held() && s_started)) {
         if (stop() != ESP_OK) return;
-        if (s_scheduled && (int32_t)(now - s_next_at) < 0) return;
+        if (s_scheduled && (int32_t)(now - s_next_at) < 0 && !s_connect_requested) return;
         kp_wifi_config_t wifi; kp_store_wifi_get(&wifi);
         if (!wifi.ssid[0]) { atomic_store(&s_status, KP_NET_DISABLED); return; }
+        s_connect_requested = false;
         esp_err_t rc = start(&wifi, now);
         if (rc != ESP_OK) {
             ESP_LOGW("keypad_time", "STA startup failed: %s", esp_err_to_name(rc));
@@ -202,15 +226,18 @@ void kp_network_tick(uint32_t now) {
             ESP_LOGI("keypad_time", "Network time synchronized"); finish(now, true); return;
         }
     }
-    if (s_keep_online && s_had_ip && !atomic_load(&s_got_ip)) {
+    if (held() && s_had_ip && !atomic_load(&s_got_ip)) {
         s_had_ip = false; s_attempt_at = now; s_connects = 0; s_scheduled = false;
     }
-    if ((!s_keep_online || !atomic_load(&s_got_ip)) && (uint32_t)(now - s_attempt_at) >= ATTEMPT_MS) { finish(now, false); return; }
+    if ((!held() || !atomic_load(&s_got_ip)) && (uint32_t)(now - s_attempt_at) >= ATTEMPT_MS) { finish(now, false); return; }
     if (atomic_load(&s_got_ip)) {
         s_had_ip = true;
-        if (s_keep_online && s_scheduled && (int32_t)(now - s_next_at) < 0) return;
-        if (s_keep_online && !s_scheduled && (uint32_t)(now - s_attempt_at) >= ATTEMPT_MS) { finish(now, false); return; }
+        if (held() && s_scheduled && (int32_t)(now - s_next_at) < 0) return;
+        if (held() && !s_scheduled && (uint32_t)(now - s_attempt_at) >= ATTEMPT_MS) { finish(now, false); return; }
         if (!s_sntp) {
+            // A due periodic refresh gets its own bounded attempt even while
+            // a manual function keeps the radio associated.
+            if (s_scheduled) { s_attempt_at = now; s_scheduled = false; }
             esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(3,
                 ESP_SNTP_SERVER_LIST("ntp.aliyun.com", "time.cloudflare.com", "pool.ntp.org"));
             config.sync_cb = time_synced; config.wait_for_sync = false;

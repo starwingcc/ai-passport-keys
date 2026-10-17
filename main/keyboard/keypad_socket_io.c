@@ -1,11 +1,20 @@
 #include "keypad_socket_io.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include <errno.h>
 #include <limits.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+
+// TCP retains unacknowledged payloads while Wi-Fi needs separate packet
+// buffers to send them and receive ACKs. Filling the last DMA-capable blocks
+// can therefore stall every connection, including ARP and ICMP. RTC heap is
+// not a substitute for these buffers. Budget two full frames in one block
+// and another pair plus protocol/allocation overhead across the DMA heap.
+#define DMA_FREE_RESERVE 8192U
+#define DMA_BLOCK_RESERVE 4096U
 
 void kp_socket_io_begin(kp_socket_io_t *io, uint32_t stall_ms, uint32_t total_ms) {
     uint32_t now = now_ms();
@@ -29,6 +38,18 @@ int kp_socket_io_send(kp_socket_io_t *io, int fd, const char *data, size_t size)
     size_t offset = 0;
     while (offset < size) {
         if (!remaining_ms(io)) { io->error = ETIMEDOUT; return -1; }
+        if (heap_caps_get_free_size(MALLOC_CAP_DMA) < DMA_FREE_RESERVE ||
+            heap_caps_get_largest_free_block(MALLOC_CAP_DMA) < DMA_BLOCK_RESERVE) {
+            io->blocked_error = ENOMEM;
+            ++io->waits;
+            uint32_t remaining = remaining_ms(io);
+            if (remaining > 50) remaining = 50;
+            struct timeval pause = {.tv_usec = remaining * 1000};
+            // Socket writability says nothing about Wi-Fi's shared heap.
+            // Yield without enqueueing more payload, within the same deadline.
+            select(0, NULL, NULL, NULL, &pause);
+            continue;
+        }
         // Limit each copy into lwIP to one configured MSS. A short write is
         // progress, not a complete WebSocket frame (IDF 5.5.3 assumes the latter).
         size_t count = size - offset;

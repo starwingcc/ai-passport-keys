@@ -31,11 +31,21 @@ static void publish(kp_transfer_signal_t *s) {
 void kp_transfer_signal_init(kp_transfer_signal_t *s, kp_transfer_send_t send, void *user) {
     memset(s, 0, sizeof(*s)); s->next_id = 1; s->send = send; s->user = user;
 }
+static void clear_peer(kp_transfer_peer_t *p) {
+    free(p->catalog);
+    memset(p, 0, sizeof(*p));
+}
+void kp_transfer_signal_clear(kp_transfer_signal_t *s) {
+    if (s) for (unsigned i = 0; i < KP_TRANSFER_PEERS; ++i) clear_peer(&s->peers[i]);
+}
+void kp_transfer_signal_discard(kp_transfer_signal_t *s, int fd) {
+    kp_transfer_peer_t *p = peer(s, fd);
+    if (p) clear_peer(p);
+}
 bool kp_transfer_signal_open(kp_transfer_signal_t *s, int fd, uint64_t now) {
     if (peer(s, fd) || !s->next_id || s->next_id > INT32_MAX) return false;
     for (unsigned i = 0; i < KP_TRANSFER_PEERS; ++i) if (!s->peers[i].id) {
         kp_transfer_peer_t *p = &s->peers[i]; *p = (kp_transfer_peer_t){.fd = fd, .id = s->next_id++, .last_ms = now, .rtc = true};
-        strcpy(p->catalog, "[]");
         char welcome[80]; int n = snprintf(welcome, sizeof(welcome), "{\"type\":\"welcome\",\"id\":%lu}", (unsigned long)p->id);
         if (!s->send(s->user, fd, welcome, n)) { memset(p, 0, sizeof(*p)); return false; }
         return true;
@@ -44,7 +54,7 @@ bool kp_transfer_signal_open(kp_transfer_signal_t *s, int fd, uint64_t now) {
 }
 void kp_transfer_signal_close(kp_transfer_signal_t *s, int fd) {
     kp_transfer_peer_t *p = peer(s, fd); if (!p) return;
-    memset(p, 0, sizeof(*p)); publish(s);
+    clear_peer(p); publish(s);
 }
 static bool fields(const cJSON *object, const char *allowed) {
     if (!cJSON_IsObject(object)) return false;
@@ -77,7 +87,10 @@ static bool catalog_send(kp_transfer_signal_t *s, const kp_transfer_peer_t *p, i
     cJSON *msg = cJSON_CreateObject();
     if (!msg) return false;
     cJSON_AddStringToObject(msg, "type", "files"); cJSON_AddNumberToObject(msg, "from", p->id);
-    cJSON_AddItemToObject(msg, "files", cJSON_Parse(p->catalog));
+    cJSON *files = p->catalog ? cJSON_Parse(p->catalog) : cJSON_CreateArray();
+    if (!files || !cJSON_AddItemToObject(msg, "files", files)) {
+        cJSON_Delete(files); cJSON_Delete(msg); return false;
+    }
     bool ok = send_json(s, fd, msg); cJSON_Delete(msg); return ok;
 }
 // Bound parser stack and allocation count before cJSON sees untrusted frames.
@@ -116,7 +129,11 @@ bool kp_transfer_signal_message(kp_transfer_signal_t *s, int fd, const char *dat
     } else if (p->joined && !strcmp(type,"files") && fields(msg,"|type||files|") && valid_files(get(msg,"files"))) {
         char *list=cJSON_PrintUnformatted(get(msg,"files"));
         if (list && strlen(list)<=KP_TRANSFER_CATALOG) {
-            strcpy(p->catalog,list); ok=true;
+            // Transfer ownership only after successful bounded serialization.
+            // Failed updates preserve the previous catalog; [] needs no heap.
+            free(p->catalog); p->catalog = NULL;
+            if (strcmp(list,"[]")) { p->catalog=list; list=NULL; }
+            ok=true;
             for(unsigned i=0;i<KP_TRANSFER_PEERS;++i) if(s->peers[i].id && s->peers[i].joined && &s->peers[i]!=p) catalog_send(s,p,s->peers[i].fd);
         }
         free(list);

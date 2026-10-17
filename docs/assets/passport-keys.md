@@ -41,15 +41,14 @@ Clear Bluetooth pairing**.
 - **Screen**: adjust brightness and idle dim/off timers; zero disables a timer.
   UP/DOWN adjusts, short OK saves, hold OK cancels. After screen-off, the first
   button press only wakes the screen; release before operating.
-- **File transfer**: saved Wi-Fi stays connected. Opening `http://192.168.1.11`
-  or `/transfer` from the same LAN automatically starts sharing while keeping
-  the current screen, screen-off state and Bluetooth keyboard intact.
-  UP/DOWN selects Disable (top) or Enable (bottom); short OK applies, `>` marks
-  the cursor and `*` the running state. Disable ends current sessions and returns
-  to listening; the next webpage visit can start sharing again. Hold OK returns.
-  Configure Wi-Fi through the hotspot first if needed. The transfer and system
-  configuration rows show **Listening** or **Connected** on the right. Opening
-  either LAN entry switches from the other function; both keep Wi-Fi connected.
+- **File transfer**: enable it on the device, then open `http://192.168.1.11`
+  or `/transfer` from the same LAN. UP/DOWN selects Disable (top) or Enable
+  (bottom); short OK applies, `>` marks the cursor and `*` the running state.
+  Hold OK returns while sharing and Bluetooth remain available; select Disable
+  to stop the service. Configure Wi-Fi through the hotspot first if needed.
+  Transfer and configuration rows show Disabled, Connecting, Enabled or Connected.
+  Webpages cannot enable or switch functions; exiting configuration does not
+  automatically enable file transfer.
 - **Paired devices**: retain A and B, with a separate macOS/Windows setting
   for each. Select an empty slot and press OK to add a host; hold OK cancels.
   Full slots are never overwritten automatically. Device actions contain
@@ -81,10 +80,10 @@ Clear Bluetooth pairing**.
 
 ## Web configuration
 
-1. With a working Wi-Fi network saved, open `http://192.168.1.11/config` in the same
-   LAN to start configuration automatically. The device keeps its current screen,
-   screen-off state and Bluetooth keyboard operation; configuration ends file transfer.
-   **Settings → System configuration → WiFi** remains a manual entry.
+1. With a working Wi-Fi network saved, select **Settings → System configuration →
+   WiFi** on the device, then open `http://192.168.1.11/config` in the same LAN.
+   The root address also opens configuration. Bluetooth stays connected;
+   starting configuration ends file transfer.
 2. For initial setup, select **Settings → System configuration → Device hotspot**,
    join the displayed network and open `http://192.168.4.1`. The hotspot pauses
    Bluetooth and still requires a manual exit.
@@ -95,19 +94,27 @@ Clear Bluetooth pairing**.
    and shortcuts immediately, preserving the current page and screen-off state.
    Changed shortcut settings stop the old macro and release held keys; badge-only
    changes keep it running. Saved Wi-Fi changes take effect on exit to keep the
-   page connected. **Exit configuration** ends the session; after manual entry,
-   holding OK on the device also exits.
+   page connected. **Exit configuration** or holding OK on the device ends the session.
    A failed save leaves saved settings unchanged; keep the page open and retry.
 
-An online WiFi configuration page keeps configuration active even without edits.
-Closing the last joined page immediately restores listening; closing one of several
-pages leaves the others connected. Sudden network loss uses a 120-second heartbeat
-timeout. Loading and joining a new page have a separate 30-second startup lease.
-Scanning, network testing/restoration and saving finish safely before handoff.
-Opening `/` or `/transfer` switches to file transfer and ends all configuration
-sessions. The old editor stops reconnecting and retains its unsaved draft;
-**Reconnect** switches back without automatically saving. Device hotspot
-configuration retains its manual lifetime and does not participate in LAN switching.
+Configuration and transfer open directly in their working pages; connection status
+and retries stay on the same page.
+
+Configuration stays enabled until explicitly exited. Closing all pages or losing
+heartbeats only cleans up page connections. Page admission expires after 30 seconds;
+joined pages use a 120-second heartbeat timeout. Neither timer stops the function.
+Scanning, network testing/restoration and saving finish safely before exit.
+Opening `/transfer` does not switch functions. Old editors retain unsaved drafts;
+after enabling configuration on the device again, **Reconnect** restores editing
+without automatically saving. Device hotspot configuration also requires explicit exit.
+
+At boot, saved Wi-Fi is used for time synchronization and retained until two minutes
+of uptime, without starting a web service. Manually enabling transfer or configuration
+keeps Wi-Fi available: time-sync success, failure and the two-minute deadline cannot
+stop a connection in use. After explicit exit, Wi-Fi stays until the original boot
+deadline if it has not elapsed; otherwise it stops after cleanup. The deadline is
+not restarted. Existing periodic time sync and failure retries remain available
+and likewise cannot interrupt a manually enabled function.
 
 Each keyboard or media action targets **All**, **Windows** or **Mac**. The device
 runs All and matching actions using the saved pairing system, skipping other
@@ -143,8 +150,8 @@ per-device systems and Bluetooth pairing settings remain outside this configurat
 
 ## Local browser transfer
 
-On the configured LAN, open `http://192.168.1.11` or
-`http://192.168.1.11/transfer`; manual enabling on Passport is optional. Name each
+Select Enable under **Settings → File transfer**, then open
+`http://192.168.1.11` or `http://192.168.1.11/transfer` on the same LAN. Name each
 browser, select one recipient or all online devices, then send text or share
 files for recipients to receive. **Enter** sends text; **Shift+Enter** adds a
 newline. Text records show recipients and their confirmations; click **Copy** to
@@ -156,14 +163,13 @@ The firmware uses `192.168.1.11`, mask `255.255.255.0`, gateway and DNS
 it in the router before use. Another subnet may be incompatible; the firmware
 does not silently fall back to another address.
 
-A browser is online only after joining and until its session expires. Closing the
-last joined browser immediately releases the sessions and catalogs and restores
-listening; other joined browsers keep sharing active. Loading and joining have a
-30-second startup lease. Sudden network loss can take the 120-second heartbeat
-timeout. Wi-Fi and the HTTP entry stay available while listening. Modem power
-saving operates throughout; standby does not enter whole-device deep sleep.
-Opening `/config` ends all transfer sessions and switches to configuration. Old
-pages stop automatically reconnecting; **Reconnect** explicitly switches back.
+A browser is online only after joining and until its session expires. Closing a
+page cleans up that page's connection and shared files, while file transfer stays
+enabled on the device and new pages can join. Page admission expires after 30 seconds;
+sudden network loss uses a 120-second heartbeat timeout. Disabling transfer on the
+device stops the complete HTTP service. **Reconnect** can only join an already
+enabled function. Opening `/config` does not switch modes; use the device menu to
+enter configuration. Wi-Fi continues to use modem power saving.
 
 Keep pages open and phones in the foreground. Refreshing or closing a page ends
 its transfers, removes its shared files and discards unsaved received files.

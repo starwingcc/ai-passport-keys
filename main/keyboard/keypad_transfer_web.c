@@ -21,7 +21,7 @@ static httpd_handle_t s_http;
 // Catalogs belong to the running transfer service, not to configuration mode.
 static kp_transfer_signal_t *s_signal;
 static char s_ip[16];
-static atomic_bool s_poll_queued, s_stopping, s_active, s_draining, s_link_up;
+static atomic_bool s_poll_queued, s_stopping, s_active, s_draining;
 static SemaphoreHandle_t s_control_done;
 static atomic_uint s_control_state;
 static kp_transfer_presence_t s_presence;
@@ -32,7 +32,8 @@ static unsigned s_release_phase;
 static bool s_release_grace;
 static bool s_ready;
 #define HTTP_SOCKETS 6
-#define HTTP_IDLE_MS 2000U
+// Allow an initial TCP retransmission before retiring a silent keep-alive.
+#define HTTP_IDLE_MS 5000U
 #define TRANSFER_SEND_MS 2000U
 // Same bounded response policy as the configuration webpage. Unlike a small
 // signaling frame, a Flash asset can span TCP retransmission/modem wake cycles.
@@ -56,35 +57,17 @@ void kp_transfer_web_presence(kp_transfer_presence_t *out) {
     *out = s_presence;
     portEXIT_CRITICAL(&s_presence_lock);
 }
-// HTTP thread only. Preserve the actual last expiration time, rather than
-// adding the polling delay to the 120-second heartbeat interval.
-static void presence_publish_at(bool explicit_close) {
-    uint64_t now = now_ms();
-    kp_transfer_presence_t next;
-    kp_transfer_web_presence(&next);
-    unsigned online = s_signal ? kp_transfer_signal_online(s_signal, now) : 0;
-    if (next.online && !online) {
-        uint64_t lag = UINT64_MAX;
-        if (!explicit_close && s_signal) for (unsigned i = 0; i < KP_TRANSFER_PEERS; ++i) {
-            kp_transfer_peer_t *p = &s_signal->peers[i];
-            if (p->id && p->joined && now - p->last_ms >= KP_TRANSFER_IDLE_MS) {
-                uint64_t elapsed = now - p->last_ms - KP_TRANSFER_IDLE_MS;
-                if (elapsed < lag) lag = elapsed;
-            }
-        }
-        next.zero_since_ms = lag == UINT64_MAX ? now : now - lag;
-    }
-    next.online = online;
-    kp_session_view_t session;
-    kp_session_get(&session);
-    next.joining = session.mode == KP_SESSION_TRANSFER && session.generation == s_session_generation ? session.joining : 0;
-    next.allocated = s_signal != NULL;
-    next.generation = s_generation;
+// HTTP thread publishes the fields consumed by the network worker.
+static void presence_publish(void) {
+    kp_transfer_presence_t next = {
+        .online = s_signal ? kp_transfer_signal_online(s_signal, now_ms()) : 0,
+        .allocated = s_signal != NULL,
+        .generation = s_generation,
+    };
     portENTER_CRITICAL(&s_presence_lock);
     s_presence = next;
     portEXIT_CRITICAL(&s_presence_lock);
 }
-static void presence_publish(void) { presence_publish_at(false); }
 static client_t *client(int fd) {
     for(unsigned i=0;i<HTTP_SOCKETS;++i)if(s_clients[i].used&&s_clients[i].fd==fd)return &s_clients[i];
     return NULL;
@@ -117,6 +100,7 @@ static void end_send(int fd, const char *kind, esp_err_t result) {
         kp_transfer_diag_request();
     }
     c->sending=false;
+    c->opened=(uint32_t)now_ms();
     if(result!=ESP_OK)abort_session(fd);
 }
 static int send_full(httpd_handle_t http, int fd, const char *data, size_t size, int flags) {
@@ -156,9 +140,9 @@ static void close_session(httpd_handle_t http, int fd) {
     for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)if(s_signal->peers[i].id&&s_signal->peers[i].fd==fd)
         ESP_LOGI("transfer","Browser session closed id=%u stopping=%d",(unsigned)s_signal->peers[i].id,atomic_load(&s_stopping));
     if(!atomic_load(&s_active)) {
-        for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)if(s_signal->peers[i].id&&s_signal->peers[i].fd==fd)memset(&s_signal->peers[i],0,sizeof(s_signal->peers[i]));
+        kp_transfer_signal_discard(s_signal,fd);
     } else kp_transfer_signal_close(s_signal,fd);
-    presence_publish_at(true);
+    presence_publish();
 }
 static esp_err_t fail(httpd_req_t *r, const char *status, const char *text) {httpd_resp_set_status(r,status);return httpd_resp_sendstr(r,text);}
 static bool valid_host(httpd_req_t *r, bool origin) {
@@ -174,14 +158,14 @@ static bool valid_host(httpd_req_t *r, bool origin) {
 }
 static esp_err_t pre_handshake(httpd_req_t *r) {
     if(atomic_load(&s_stopping)||!valid_host(r,true)){fail(r,"403 Forbidden","Use the address on Passport");return ESP_FAIL;}
-    if(!atomic_load(&s_active)||!atomic_load(&s_link_up)||!s_signal||!kp_session_current(KP_SESSION_TRANSFER,s_session_generation)){fail(r,"503 Service Unavailable","Transfer is starting; retry shortly");return ESP_FAIL;}
+    if(!atomic_load(&s_active)||!s_signal||!kp_session_current(KP_SESSION_TRANSFER,s_session_generation)){fail(r,"503 Service Unavailable","Transfer is starting; retry shortly");return ESP_FAIL;}
     unsigned reserved=0;
     for(unsigned i=0;i<KP_TRANSFER_PEERS;++i)reserved+=s_signal->peers[i].id!=0;
     if(reserved>=KP_TRANSFER_PEERS){fail(r,"503 Service Unavailable","Four browser sessions maximum");return ESP_FAIL;}
     return ESP_OK;
 }
 static esp_err_t websocket(httpd_req_t *r) {
-    if(atomic_load(&s_stopping)||!atomic_load(&s_active)||!atomic_load(&s_link_up)||!s_signal)return ESP_FAIL;
+    if(atomic_load(&s_stopping)||!atomic_load(&s_active)||!s_signal)return ESP_FAIL;
     int fd=httpd_req_to_sockfd(r);
     client_t *c=client(fd);
     if(!c)return ESP_FAIL;
@@ -223,12 +207,11 @@ static esp_err_t websocket(httpd_req_t *r) {
 }
 static esp_err_t asset_body(httpd_req_t *r) {
     if(atomic_load(&s_stopping)||!valid_host(r,false))return fail(r,"403 Forbidden","Use the address on Passport");
-    if(!atomic_load(&s_link_up)||atomic_load(&s_draining))return fail(r,"503 Service Unavailable","Retry shortly");
+    if(atomic_load(&s_draining))return fail(r,"503 Service Unavailable","Retry shortly");
     size_t path_size=strcspn(r->uri,"?");
     bool root=path_size==1&&!strncmp(r->uri,"/",1);
     bool page=path_size==9&&!strncmp(r->uri,"/transfer",9);
-    if(path_size==7&&!strncmp(r->uri,"/config",7)) return kp_session_bootstrap(r);
-    if(page&&!kp_session_document(r,KP_SESSION_TRANSFER)) return kp_session_bootstrap(r);
+    if(path_size==7&&!strncmp(r->uri,"/config",7)) return fail(r,"409 Conflict","Enable system configuration on Passport first");
     if(root){httpd_resp_set_status(r,"302 Found");httpd_resp_set_hdr(r,"Location","/transfer");return httpd_resp_sendstr(r,"");}
     if(path_size==12&&!strncmp(r->uri,"/transfer.js",12))return kp_web_asset(r,transfer_js_start,transfer_js_end,"text/javascript; charset=utf-8");
     if(path_size==21&&!strncmp(r->uri,"/transfer-protocol.js",21))return kp_web_asset(r,transfer_protocol_start,transfer_protocol_end,"text/javascript; charset=utf-8");
@@ -244,7 +227,6 @@ static esp_err_t asset(httpd_req_t *r) {
     begin_asset_send(fd);
     esp_err_t rc=asset_body(r);
     end_send(fd,"asset",rc);
-    for(unsigned i=0;i<HTTP_SOCKETS;++i)if(s_clients[i].used&&s_clients[i].fd==fd)s_clients[i].opened=(uint32_t)now_ms();
     return rc;
 }
 static esp_err_t session_api(httpd_req_t *r) {
@@ -261,15 +243,16 @@ static void poll_work(void *arg) {
         ESP_LOGW("transfer","Browser heartbeat expired fd=%d",fd);
         abort_session(fd);kp_transfer_signal_close(s_signal,fd);
     }
-    // SO_RCVTIMEO cannot expire a preconnect waiting in select(). When all
-    // slots are occupied, reclaim the oldest idle HTTP socket only. Global
-    // LRU eviction would also evict live WebSockets during a refresh burst.
-    unsigned occupied=0;int idle=-1;uint32_t age=HTTP_IDLE_MS-1;
+    // SO_RCVTIMEO cannot expire a preconnect/keep-alive waiting in select().
+    // Reclaim idle HTTP even below capacity: otherwise unacknowledged replies
+    // can retain packet buffers indefinitely and starve Wi-Fi. This runs on
+    // HTTPD after the response finishes; live WebSockets are never evicted.
     for(unsigned i=0;i<HTTP_SOCKETS;++i)if(s_clients[i].used){
-        ++occupied;uint32_t elapsed=(uint32_t)now_ms()-s_clients[i].opened;
-        if(elapsed>age&&httpd_ws_get_fd_info(s_http,s_clients[i].fd)==HTTPD_WS_CLIENT_HTTP){idle=(int)i;age=elapsed;}
+        client_t *c=&s_clients[i];
+        uint32_t elapsed=(uint32_t)now_ms()-c->opened;
+        if(!c->sending&&elapsed>=HTTP_IDLE_MS&&httpd_ws_get_fd_info(s_http,c->fd)==HTTPD_WS_CLIENT_HTTP)
+            abort_session(c->fd);
     }
-    if(occupied==HTTP_SOCKETS&&idle>=0)abort_session(s_clients[idle].fd);
     presence_publish();atomic_store(&s_poll_queued,false);
 }
 void kp_transfer_web_poll(uint64_t now) {
@@ -282,11 +265,9 @@ void kp_transfer_web_poll(uint64_t now) {
 // Commands contain no borrowed caller pointers. A timed-out command stays owned
 // until its completion is consumed; its semaphore and prepared/retired catalogs
 // survive every failed stop. Only the network worker submits these commands.
-typedef enum { CONTROL_ACTIVATE, CONTROL_GATE, CONTROL_RELEASE, CONTROL_DISCONNECT } control_kind_t;
+typedef enum { CONTROL_ACTIVATE, CONTROL_GATE, CONTROL_RELEASE } control_kind_t;
 static struct {
     control_kind_t kind;
-    bool force;
-    uint64_t zero_since_ms;
     esp_err_t result;
 } s_control;
 static bool abort_browsers(void) {
@@ -300,7 +281,7 @@ static void control_work(void *arg) {
     esp_err_t rc = ESP_OK;
     presence_publish();
     if (s_control.kind == CONTROL_ACTIVATE) {
-        if (atomic_load(&s_stopping) || atomic_load(&s_draining) || !atomic_load(&s_link_up)) rc = ESP_ERR_INVALID_STATE;
+        if (atomic_load(&s_stopping) || atomic_load(&s_draining)) rc = ESP_ERR_INVALID_STATE;
         else {
             if (!s_signal) {
                 s_signal = s_prepared; s_prepared = NULL;
@@ -308,7 +289,7 @@ static void control_work(void *arg) {
                 else {
                     ++s_generation; if (!s_generation) ++s_generation;
                     portENTER_CRITICAL(&s_presence_lock);
-                    s_presence = (kp_transfer_presence_t){.allocated=true, .generation=s_generation, .zero_since_ms=s_control.zero_since_ms};
+                    s_presence = (kp_transfer_presence_t){.allocated=true, .generation=s_generation};
                     portEXIT_CRITICAL(&s_presence_lock);
                 }
             }
@@ -320,32 +301,16 @@ static void control_work(void *arg) {
             }
         }
     } else if (s_control.kind == CONTROL_GATE) {
-        kp_transfer_presence_t p; kp_transfer_web_presence(&p);
-        kp_session_view_t session;
-        kp_session_get(&session);
-        if (!s_control.force && p.allocated && session.mode == KP_SESSION_TRANSFER &&
-            session.generation == s_session_generation && (session.online || session.joining)) rc = ESP_ERR_INVALID_STATE;
-        else {
-            atomic_store(&s_active, false); atomic_store(&s_draining, true);
-            if (s_control.force && s_signal) kp_transfer_signal_end(s_signal);
-        }
+        atomic_store(&s_active, false); atomic_store(&s_draining, true);
+        if (s_signal) kp_transfer_signal_end(s_signal);
     } else if (s_control.kind == CONTROL_RELEASE) {
         if (!abort_browsers()) rc = ESP_FAIL;
         else {
             s_retired = s_signal; s_signal = NULL;
             atomic_store(&s_active, false); atomic_store(&s_draining, false);
         }
-    } else {
-        // IP loss retires transport identities, without restarting the no-peer
-        // grace interval or allocating a second catalog on reconnect.
-        atomic_store(&s_active, false);
-        if (!abort_browsers()) rc = ESP_FAIL;
-        else if (s_signal) {
-            kp_transfer_signal_init(s_signal, send_message, NULL);
-            ++s_generation; if (!s_generation) ++s_generation;
-        }
     }
-    presence_publish_at(s_control.kind == CONTROL_DISCONNECT && rc == ESP_OK);
+    presence_publish();
     s_control.result = rc;
     atomic_store(&s_control_state, 2);
     xSemaphoreGive(s_control_done);
@@ -354,9 +319,10 @@ static void control_cleanup(control_kind_t kind, esp_err_t rc) {
     if (kind == CONTROL_ACTIVATE && s_prepared) { free(s_prepared); s_prepared = NULL; }
     if (kind == CONTROL_GATE) {
         s_release_phase = rc == ESP_OK ? 2 : 0;
-        s_release_grace = rc == ESP_OK && s_control.force;
+        s_release_grace = rc == ESP_OK;
     }
     if (kind == CONTROL_RELEASE && rc == ESP_OK) {
+        kp_transfer_signal_clear(s_retired);
         free(s_retired); s_retired = NULL; s_release_phase = 0;
     }
 }
@@ -369,7 +335,7 @@ static esp_err_t control_finish(void) {
     atomic_store(&s_control_state, 0);
     return rc;
 }
-static esp_err_t control(control_kind_t kind, bool force, uint64_t zero_since) {
+static esp_err_t control(control_kind_t kind) {
     if (atomic_load(&s_control_state)) {
         control_kind_t previous = s_control.kind;
         esp_err_t rc = control_finish();
@@ -383,61 +349,47 @@ static esp_err_t control(control_kind_t kind, bool force, uint64_t zero_since) {
             kp_transfer_signal_init(s_prepared, send_message, NULL);
         }
     }
-    s_control.kind = kind; s_control.force = force; s_control.zero_since_ms = zero_since;
+    s_control.kind = kind;
     atomic_store(&s_control_state, 1);
     if (httpd_queue_work(s_http, control_work, NULL) != ESP_OK) {
         atomic_store(&s_control_state, 0); control_cleanup(kind, ESP_FAIL); return ESP_FAIL;
     }
     return control_finish();
 }
-esp_err_t kp_transfer_web_activate(uint64_t zero_since) {
-    if (!s_http || atomic_load(&s_stopping) || s_release_phase) return ESP_ERR_INVALID_STATE;
-    if (atomic_load(&s_active) && !atomic_load(&s_control_state)) {
-        if (kp_session_current(KP_SESSION_TRANSFER, s_session_generation)) return ESP_OK;
-        esp_err_t rc = kp_transfer_web_deactivate(true);
-        if (rc != ESP_OK) return rc;
-    }
-    return control(CONTROL_ACTIVATE, false, zero_since);
-}
-esp_err_t kp_transfer_web_deactivate(bool force) {
-    if (!s_http) return ESP_OK;
+static esp_err_t release_resources(void) {
     if (s_release_phase != 2) {
         s_release_phase = 1;
-        esp_err_t rc = control(CONTROL_GATE, force, 0);
+        esp_err_t rc = control(CONTROL_GATE);
         if (rc != ESP_OK) return rc;
     }
     if (s_release_grace) { s_release_grace = false; vTaskDelay(pdMS_TO_TICKS(300)); }
-    return control(CONTROL_RELEASE, force, 0);
-}
-esp_err_t kp_transfer_web_disconnect(void) {
-    atomic_store(&s_link_up, false);
-    return s_http ? control(CONTROL_DISCONNECT, false, 0) : ESP_OK;
+    return control(CONTROL_RELEASE);
 }
 esp_err_t kp_transfer_web_stop(void) {
     if (!s_http) return ESP_OK;
     atomic_store(&s_stopping, true); s_ready = false;
-    esp_err_t rc = kp_transfer_web_deactivate(true);
+    esp_err_t rc = release_resources();
     if (rc != ESP_OK) return rc;
     rc = httpd_stop(s_http);
     if (rc != ESP_OK) return rc;
     // HTTPD joined its task and closed all sockets. Nothing queued can refer
     // to this instance or its semaphore after ownership is released.
     s_http = NULL;
-    atomic_store(&s_poll_queued, false); atomic_store(&s_link_up, false);
+    atomic_store(&s_poll_queued, false);
     vSemaphoreDelete(s_control_done); s_control_done = NULL;
     return ESP_OK;
 }
-esp_err_t kp_transfer_web_listen_start(const char *ip) {
+static esp_err_t http_start(const char *ip) {
     if (!ip || !*ip || strlen(ip) >= sizeof(s_ip)) return ESP_ERR_INVALID_ARG;
     if (s_http) {
         if (!s_ready || atomic_load(&s_stopping) || strcmp(ip, s_ip)) return ESP_ERR_INVALID_STATE;
-        atomic_store(&s_link_up, true); return ESP_OK;
+        return ESP_OK;
     }
     s_ready = false; s_release_phase = 0; s_release_grace = false;
     atomic_store(&s_control_state, 0);
     snprintf(s_ip, sizeof(s_ip), "%s", ip);
     atomic_store(&s_stopping, false); atomic_store(&s_poll_queued, false);
-    atomic_store(&s_active, false); atomic_store(&s_draining, false); atomic_store(&s_link_up, true);
+    atomic_store(&s_active, false); atomic_store(&s_draining, false);
     portENTER_CRITICAL(&s_presence_lock); s_presence = (kp_transfer_presence_t){0}; portEXIT_CRITICAL(&s_presence_lock);
     memset(s_clients, 0, sizeof(s_clients));
     s_control_done = xSemaphoreCreateBinary();
@@ -461,10 +413,28 @@ esp_err_t kp_transfer_web_listen_start(const char *ip) {
     for (unsigned i = 0; i < sizeof(routes)/sizeof(routes[0]); ++i)
         if ((rc = httpd_register_uri_handler(s_http, &routes[i])) != ESP_OK) { kp_transfer_web_stop(); return rc; }
     s_ready = true;
-    ESP_LOGI("transfer", "LAN listener ready; catalogs allocated on demand");
+    ESP_LOGI("transfer", "Manual transfer HTTP ready");
     return ESP_OK;
 }
-unsigned kp_transfer_web_peers(void) { kp_transfer_presence_t p; kp_transfer_web_presence(&p); return p.online; }
+esp_err_t kp_transfer_web_start(const char *ip) {
+    if (!ip || !*ip || strlen(ip) >= sizeof(s_ip)) return ESP_ERR_INVALID_ARG;
+    kp_session_view_t session;
+    kp_session_get(&session);
+    if (session.mode != KP_SESSION_TRANSFER) return ESP_ERR_INVALID_STATE;
+    // A failed HTTP initialization, stop, or changed generation must finish
+    // teardown before another instance can acquire its sockets and buffers.
+    if (s_http && (!s_ready || atomic_load(&s_stopping) || s_release_phase ||
+        strcmp(ip, s_ip) || (atomic_load(&s_active) && session.generation != s_session_generation))) {
+        esp_err_t rc = kp_transfer_web_stop();
+        if (rc != ESP_OK) return rc;
+    }
+    esp_err_t rc = http_start(ip);
+    if (rc != ESP_OK) return rc;
+    if (kp_transfer_web_ready() && !atomic_load(&s_control_state)) return ESP_OK;
+    return control(CONTROL_ACTIVATE);
+}
 bool kp_transfer_web_running(void) { return s_http != NULL; }
-bool kp_transfer_web_listening(void) { return s_http && s_ready && !atomic_load(&s_stopping) && atomic_load(&s_link_up); }
-bool kp_transfer_web_ready(void) { return kp_transfer_web_listening() && atomic_load(&s_active) && kp_session_current(KP_SESSION_TRANSFER,s_session_generation); }
+bool kp_transfer_web_ready(void) {
+    return s_http && s_ready && !atomic_load(&s_stopping) && atomic_load(&s_active) &&
+        kp_session_current(KP_SESSION_TRANSFER, s_session_generation);
+}

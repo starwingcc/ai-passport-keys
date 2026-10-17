@@ -48,8 +48,6 @@ bool kp_socket_io_abort(int fd){++aborts;if(abort_fault)return false;fake_shutdo
 esp_err_t httpd_sess_set_send_override(httpd_handle_t h,int fd,httpd_send_func_t fn){assert(h==&handle_value&&fd>0&&fn==send_full);return ESP_OK;}
 #define ASSET(name) const char name##_start[]="asset";const char name##_end[]="";
 ASSET(transfer_html) ASSET(transfer_js) ASSET(transfer_css) ASSET(transfer_protocol)
-const char config_wait_start[] __asm__("_binary_config_wait_html_start")="asset";
-const char config_wait_end[] __asm__("_binary_config_wait_html_end")="";
 int64_t esp_timer_get_time(void){return (int64_t)clock_ms*1000;}
 int fake_close(int fd){(void)fd;return 0;}
 int fake_shutdown(int fd,int how){assert(fd>0&&how==SHUT_RDWR);++shutdowns;shutdown_fd=fd;return 0;}
@@ -83,8 +81,9 @@ static httpd_req_t request(int fd){return (httpd_req_t){.host="192.168.1.11",.or
 static uint32_t first_lease;
 int httpd_req_recv(httpd_req_t *r,char *out,size_t n){size_t left=r->content_len-r->received;if(n>left)n=left;memcpy(out,r->body+r->received,n);r->received+=n;return (int)n;}
 static uint32_t activate(uint64_t now) {
+    kp_session_prepare(KP_SESSION_TRANSFER,now);
     uint32_t gen;first_lease=kp_session_open(KP_SESSION_TRANSFER,now,&gen);assert(first_lease);
-    assert(kp_transfer_web_activate(now)==ESP_OK);kp_session_ready(KP_SESSION_TRANSFER,gen,true);return gen;
+    assert(kp_transfer_web_start("192.168.1.11")==ESP_OK);kp_session_ready(KP_SESSION_TRANSFER,gen,true);return gen;
 }
 static void join(int fd){
     uint32_t gen=s_session_generation,id=first_lease;if(!id)id=kp_session_open(KP_SESSION_TRANSFER,clock_ms,&gen);first_lease=0;assert(id);
@@ -92,56 +91,83 @@ static void join(int fd){
     char hello[128];snprintf(hello,sizeof(hello),"{\"type\":\"hello\",\"name\":\"browser\",\"generation\":%u,\"lease\":%u}",gen,id);
     r.method=HTTP_POST;payload=hello;assert(websocket(&r)==ESP_OK);
 }
+static void share(int fd){
+    httpd_req_t r=request(fd);r.method=HTTP_POST;
+    payload="{\"type\":\"files\",\"files\":[{\"id\":\"x\",\"name\":\"x\",\"size\":0,\"mime\":\"\",\"to\":0}]}";
+    assert(websocket(&r)==ESP_OK);
+}
 static kp_transfer_presence_t presence(void){kp_transfer_presence_t p;kp_transfer_web_presence(&p);return p;}
 int main(void){
     kp_session_reset();
-    sem_fault=true;assert(kp_transfer_web_listen_start("192.168.1.11")==ESP_ERR_NO_MEM);sem_fault=false;
-    start_fault=true;assert(kp_transfer_web_listen_start("192.168.1.11")==ESP_FAIL&&!sem_count);start_fault=false;
-    assert(kp_transfer_web_listen_start("192.168.1.11")==ESP_OK&&routes==10&&registered[9].is_websocket);
-    assert(kp_transfer_web_listening()&&!kp_transfer_web_ready()&&!signal_allocation);
+    assert(kp_transfer_web_start("192.168.1.11")==ESP_ERR_INVALID_STATE&&!kp_transfer_web_running());
+    kp_session_prepare(KP_SESSION_TRANSFER,0);
+    sem_fault=true;assert(kp_transfer_web_start("192.168.1.11")==ESP_ERR_NO_MEM);sem_fault=false;
+    start_fault=true;assert(kp_transfer_web_start("192.168.1.11")==ESP_FAIL&&!sem_count);start_fault=false;
+    alloc_fault=true;assert(kp_transfer_web_start("192.168.1.11")==ESP_ERR_NO_MEM);alloc_fault=false;
+    assert(kp_transfer_web_running()&&!kp_transfer_web_ready()&&!signal_allocation);
+    assert(routes==10&&registered[9].is_websocket);
     httpd_req_t r=request(60);assert(open_session(s_http,60)==ESP_OK);r.uri="/transfer.js";
     assert(asset(&r)==ESP_OK&&client(60)->io.total_ms==30000);
     assert(send_message(NULL,60,"{}",2)&&client(60)->io.total_ms==2000);close_session(s_http,60);
-    r=request(10);r.uri="/";assert(asset(&r)==ESP_OK&&!strcmp(response,"302 Found")&&!signal_allocation);
-    r.uri="/config";assert(asset(&r)==ESP_OK&&!signal_allocation);
-    kp_session_view_t idle;kp_session_get(&idle);assert(idle.mode==KP_SESSION_LISTEN&&!idle.joining);
+    r=request(10);r.uri="/";assert(asset(&r)==ESP_OK&&!strcmp(response,"302 Found"));
+    r.uri="/config";assert(asset(&r)==ESP_OK&&!strcmp(response,"409 Conflict"));
     r.host="invalid.test";assert(asset(&r)==ESP_OK&&!strcmp(response,"403 Forbidden"));r=request(10);
     assert(pre_handshake(&r)==ESP_FAIL&&!strcmp(response,"503 Service Unavailable"));
+    queue_fault=true;assert(kp_transfer_web_start("192.168.1.11")==ESP_FAIL&&!signal_allocation);queue_fault=false;
+    defer=true;timeout=true;assert(kp_transfer_web_start("192.168.1.11")==ESP_ERR_TIMEOUT&&s_prepared);
+    timeout=false;assert(kp_transfer_web_start("192.168.1.11")==ESP_OK);defer=false;
+    unsigned starts=http_starts;assert(kp_transfer_web_start("192.168.1.11")==ESP_OK&&http_starts==starts);
     uint32_t generation;first_lease=kp_session_open(KP_SESSION_TRANSFER,0,&generation);
-    alloc_fault=true;assert(kp_transfer_web_activate(0)==ESP_ERR_NO_MEM);alloc_fault=false;
-    queue_fault=true;assert(kp_transfer_web_activate(0)==ESP_FAIL&&!signal_allocation);queue_fault=false;
-    defer=true;timeout=true;assert(kp_transfer_web_activate(0)==ESP_ERR_TIMEOUT&&s_prepared);
-    timeout=false;assert(kp_transfer_web_activate(0)==ESP_OK);defer=false;
-    clock_ms=29999;assert(kp_transfer_web_deactivate(false)==ESP_ERR_INVALID_STATE);
-    clock_ms=30000;kp_session_poll(clock_ms);assert(kp_transfer_web_deactivate(false)==ESP_OK&&!signal_allocation&&http_starts==1);
+    clock_ms=29999;kp_session_poll(clock_ms);assert(kp_transfer_web_ready());
+    clock_ms=30000;kp_session_poll(clock_ms);assert(kp_transfer_web_ready()&&signal_allocation);first_lease=0;
+    // Documents need no admission or query parameters; joining still does.
+    r=request(10);assert(asset(&r)==ESP_OK);r.uri="/transfer?generation=1&lease=1";assert(asset(&r)==ESP_OK);
     clock_ms=40000;activate(clock_ms);join(10);assert(presence().online==1);
     r=request(10);r.origin="http://evil.test";assert(pre_handshake(&r)==ESP_FAIL);r.origin="http://192.168.1.11";r.method=HTTP_POST;
     payload="{\"type\":\"ping\"}";frame_type=HTTPD_WS_TYPE_BINARY;assert(websocket(&r)==ESP_FAIL);frame_type=HTTPD_WS_TYPE_TEXT;
     final=false;assert(websocket(&r)==ESP_FAIL);final=true;assert(websocket(&r)==ESP_OK);
     clock_ms=159999;kp_session_poll(clock_ms);assert(kp_transfer_web_ready());
-    ++clock_ms;kp_session_poll(clock_ms);poll_work((void *)(uintptr_t)s_generation);assert(!kp_transfer_web_ready());
-    assert(kp_transfer_web_deactivate(false)==ESP_OK&&!signal_allocation);close_session(s_http,10);
+    ++clock_ms;kp_session_poll(clock_ms);poll_work((void *)(uintptr_t)s_generation);assert(kp_transfer_web_ready()&&!presence().online);
+    close_session(s_http,10);assert(signal_allocation);
     clock_ms=200000;activate(clock_ms);join(10);join(11);
     close_session(s_http,10);assert(kp_transfer_web_ready()&&presence().online==1);
-    close_session(s_http,11);assert(!kp_transfer_web_ready());assert(kp_transfer_web_deactivate(false)==ESP_OK&&!signal_allocation);
-    clock_ms=300000;activate(clock_ms);join(10);
+    close_session(s_http,11);assert(kp_transfer_web_ready()&&signal_allocation);
+    clock_ms=250000;activate(clock_ms);join(10);
+    r=request(11);r.uri="/api/session";assert(open_session(s_http,11)==ESP_OK);
+    clock_ms+=4999;poll_work((void *)(uintptr_t)s_generation);assert(!client(11)->aborted);
+    assert(session_api(&r)==ESP_OK);
+    clock_ms+=4999;poll_work((void *)(uintptr_t)s_generation);assert(!client(11)->aborted);
+    ++clock_ms;poll_work((void *)(uintptr_t)s_generation);
+    assert(client(11)->aborted&&!client(10)->aborted&&presence().online==1&&kp_transfer_web_ready());
+    unsigned expired_aborts=aborts;poll_work((void *)(uintptr_t)s_generation);assert(aborts==expired_aborts);
+    close_session(s_http,11);close_session(s_http,10);
+    clock_ms=300000;activate(clock_ms);join(10);share(10);
     for(int fd=11;fd<14;++fd){r=request(fd);assert(open_session(s_http,fd)==ESP_OK&&pre_handshake(&r)==ESP_OK&&websocket(&r)==ESP_OK);}
     r=request(14);assert(pre_handshake(&r)==ESP_FAIL);assert(presence().online==1);
-    unsigned ends=end_count;abort_fault=true;void *owned=signal_allocation;
-    assert(kp_transfer_web_deactivate(true)==ESP_FAIL&&signal_allocation==owned&&!kp_transfer_web_ready());assert(end_count==ends+4);
-    abort_fault=false;assert(kp_transfer_web_deactivate(true)==ESP_OK&&!signal_allocation&&end_count==ends+4);
-    for(int fd=10;fd<14;++fd)close_session(s_http,fd);
+    unsigned ends=end_count;abort_fault=true;void *owned=signal_allocation;char *owned_catalog=s_signal->peers[0].catalog;assert(owned_catalog);
+    assert(kp_transfer_web_stop()==ESP_FAIL&&signal_allocation==owned&&!kp_transfer_web_ready());assert(end_count==ends+4);
+    assert(s_signal->peers[0].catalog==owned_catalog);
+    abort_fault=false;stop_fault=1;assert(kp_transfer_web_stop()==ESP_FAIL&&!signal_allocation&&end_count==ends+4&&sem_count);
+    stop_fault=0;assert(kp_transfer_web_stop()==ESP_OK&&!server_owned&&!sem_count);
     kp_session_end(KP_SESSION_TRANSFER);
-    // Switching generation immediately rejects the old browser, before teardown.
     clock_ms=400000;activate(clock_ms);join(10);
-    uint32_t config_generation;assert(kp_session_open(KP_SESSION_CONFIG,clock_ms,&config_generation));
+    kp_session_prepare(KP_SESSION_CONFIG,clock_ms);
     r=request(10);r.method=HTTP_POST;payload="{\"type\":\"ping\"}";assert(websocket(&r)==ESP_FAIL);
-    assert(kp_transfer_web_deactivate(true)==ESP_OK);close_session(s_http,10);
-    // Repeated catalog cycles retain one listener and balance all allocations.
-    for(unsigned i=0;i<100;++i){clock_ms=500000+i*40000;activate(clock_ms);join(10);close_session(s_http,10);assert(kp_transfer_web_deactivate(false)==ESP_OK);}
-    assert(http_starts==1&&signal_allocs==signal_frees);
-    stop_fault=1;assert(kp_transfer_web_stop()==ESP_FAIL&&kp_transfer_web_running());stop_fault=0;assert(kp_transfer_web_stop()==ESP_OK&&!server_owned&&!sem_count);
-    route_fault=2;assert(kp_transfer_web_listen_start("192.168.1.11")==ESP_FAIL&&!kp_transfer_web_running());route_fault=0;
-    assert(signal_allocs==signal_frees&&!s_prepared&&!s_retired);
-    puts("Transfer HTTP: explicit admission, immediate leave, 120s expiry, stale-generation gate, protocol checks, forced teardown ownership and 100 balanced catalog cycles: PASS");
+    // A pending stop command owns every resource until completion is consumed.
+    defer=true;timeout=true;assert(kp_transfer_web_stop()==ESP_ERR_TIMEOUT&&signal_allocation&&sem_count);
+    timeout=false;assert(kp_transfer_web_stop()==ESP_OK&&!server_owned&&!sem_count);defer=false;
+    starts=http_starts;
+    for(unsigned i=0;i<100;++i){
+        clock_ms=500000+i*40000;activate(clock_ms);join(10);share(10);assert(s_signal->peers[0].catalog);
+        assert(kp_transfer_web_stop()==ESP_OK&&!kp_transfer_web_running()&&!sem_count&&!signal_allocation);
+        kp_session_end(KP_SESSION_TRANSFER);
+    }
+    assert(http_starts==starts+100&&signal_allocs==signal_frees);
+    kp_session_prepare(KP_SESSION_TRANSFER,clock_ms);
+    route_fault=2;stop_fault=1;assert(kp_transfer_web_start("192.168.1.11")==ESP_FAIL&&kp_transfer_web_running());
+    route_fault=stop_fault=0;assert(kp_transfer_web_start("192.168.1.11")==ESP_OK&&kp_transfer_web_ready());
+    queue_fault=true;assert(kp_transfer_web_stop()==ESP_FAIL&&signal_allocation);queue_fault=false;
+    assert(kp_transfer_web_stop()==ESP_OK);
+    assert(signal_allocs==signal_frees&&!s_prepared&&!s_retired&&!sem_count&&!pending_count);
+    puts("Transfer HTTP: direct documents, admission/heartbeat isolation, full lifecycle, failed/queued teardown ownership and 100 balanced start/stop cycles: PASS");
 }

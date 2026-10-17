@@ -219,7 +219,7 @@ int main(int argc,char **argv){
                 ++values;
             }
             if(lv_obj_get_x(o)==156){
-                assert(!strcmp(lv_label_get_text(o),"未联网"));
+                assert(!strcmp(lv_label_get_text(o),"已关闭"));
                 assert(lv_obj_get_width(o)==64&&lv_obj_get_style_text_font(o,0)==&passport_font_16);
                 assert(lv_obj_get_style_text_align(o,0)==LV_TEXT_ALIGN_RIGHT);++values;
             }
@@ -236,15 +236,15 @@ int main(int argc,char **argv){
     // Updating only the session counts refreshes both right-aligned statuses.
     for(unsigned state=0;state<3;state++){
         m.page=KP_SETTINGS;m.selected=KP_SETTING_PASSPORT;
-        m.lan=(kp_lan_view_t){.listening=true,.wifi=true,.online=state==2};
-        m.transfer=(kp_transfer_view_t){.state=KP_TRANSFER_LISTENING,.peers=state==1};
+        m.lan=(kp_lan_view_t){.state=state==2?KP_AP_ACTIVE:KP_AP_OFF,.wifi=true,.online=state==2};
+        m.transfer=(kp_transfer_view_t){.state=state==1?KP_TRANSFER_READY:KP_TRANSFER_OFF,.enabled=state==1,.peers=state==1};
         kp_ui_update(&m,ble,100,"","","",&home,epoch);lv_refr_now(d);screen_layout(&m);menu_layout(4);
         unsigned statuses=0;
         for(unsigned i=0;i<lv_obj_get_child_count(lv_screen_active());i++){
             lv_obj_t *o=lv_obj_get_child(lv_screen_active(),i);
             if(lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)||!lv_obj_check_type(o,&lv_label_class)||lv_obj_get_x(o)!=156)continue;
             bool transfer=lv_obj_get_y(o)==86+(KP_SETTING_TRANSFER-kp_settings_first(m.selected))*42;
-            assert(!strcmp(lv_label_get_text(o),(transfer?state==1:state==2)?"已连接":"监听中"));
+            assert(!strcmp(lv_label_get_text(o),(transfer?state==1:state==2)?"已连接":"已关闭"));
             ++statuses;
         }assert(statuses==2);
         char name[40];snprintf(name,sizeof(name),"settings_sessions_%u",state);save(d,argv[1],name);
@@ -277,23 +277,23 @@ int main(int argc,char **argv){
     m.lan=(kp_lan_view_t){0};
     // Render every real transfer state using the production UI, linked fonts
     // and the same 28 KiB LVGL pool. State updates must invalidate the cache.
-    for (unsigned state = KP_TRANSFER_OFF; state <= KP_TRANSFER_STOPPING; ++state) {
+    for (unsigned state = KP_TRANSFER_OFF; state <= KP_TRANSFER_WAITING; ++state) {
         m.page = KP_TRANSFER; m.selected = state == KP_TRANSFER_OFF ? 0 : 1;
         m.transfer = (kp_transfer_view_t){.state = state, .enabled = state >= KP_TRANSFER_CONNECTING, .peers = 4};
-        if (state == KP_TRANSFER_READY) strcpy(m.transfer.ip, "255.255.255.255");
+        if (state == KP_TRANSFER_READY || state == KP_TRANSFER_WAITING) strcpy(m.transfer.ip, "255.255.255.255");
         kp_ui_update(&m,ble,100,"","","",&home,epoch);lv_refr_now(d);screen_layout(&m);battery_layout();
         char name[40];snprintf(name,sizeof(name),"transfer_%u",state);save(d,argv[1],name);
         bool qr = false;
         for (unsigned i = 0; i < lv_obj_get_child_count(lv_screen_active()); ++i) {
             lv_obj_t *o = lv_obj_get_child(lv_screen_active(),i);
-            if(lv_obj_check_type(o,&lv_qrcode_class)) {qr=true;assert(state==KP_TRANSFER_READY&&lv_obj_get_width(o)==99&&lv_obj_get_x(o)==20&&lv_obj_get_y(o)==164);}
+            if(lv_obj_check_type(o,&lv_qrcode_class)) {qr=true;assert((state==KP_TRANSFER_READY||state==KP_TRANSFER_WAITING)&&lv_obj_get_width(o)==99&&lv_obj_get_x(o)==20&&lv_obj_get_y(o)==164);}
             if(lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)||!lv_obj_check_type(o,&lv_label_class))continue;
             const char *text=lv_label_get_text(o);const lv_font_t *font=lv_obj_get_style_text_font(o,LV_PART_MAIN);
             lv_point_t size;lv_text_get_size(&size,text,font,lv_obj_get_style_text_letter_space(o,0),lv_obj_get_style_text_line_space(o,0),lv_obj_get_width(o),LV_TEXT_FLAG_NONE);
             if(size.y>lv_obj_get_height(o))fprintf(stderr,"Clipped transfer text %s: %d > %d\n",text,(int)size.y,(int)lv_obj_get_height(o));
             assert(size.y<=lv_obj_get_height(o));
         }
-        assert(qr==(state==KP_TRANSFER_READY));
+        assert(qr==(state==KP_TRANSFER_READY||state==KP_TRANSFER_WAITING));
     }
     m.transfer=(kp_transfer_view_t){0};m.page=KP_SETTINGS;m.selected=4;
     kp_ui_update(&m,ble,100,"","","",&home,epoch);lv_refr_now(d);menu_layout(4);screen_layout(&m);save(d,argv[1],"settings_scrolled");

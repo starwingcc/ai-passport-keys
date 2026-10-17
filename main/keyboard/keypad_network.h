@@ -11,7 +11,8 @@ typedef enum {
 // Only the network worker owns Wi-Fi/SNTP lifecycle. Event callbacks just
 // signal it; the HTTP task may read the atomic status. Suspend this service
 // before the configuration hotspot takes ownership of the radio.
-void kp_network_tick(uint32_t now_ms);
+// 64-bit boot uptime: the initial 120-second hold must never restart on wrap.
+void kp_network_tick(uint64_t now_ms);
 esp_err_t kp_network_suspend(void);
 void kp_network_resume(void);
 kp_network_status_t kp_network_status(void);

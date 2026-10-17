@@ -214,9 +214,8 @@
   let pendingImport=null;
   let config,session='',selected=0,gesture=0,editing=0,dirty=false,busy=false,recording=null,lanWifi=false;
   let previewSystem;
-  let presenceId=0,presenceTimer,presenceEnded=false,presenceBusy=false,connectionRequest=0;
-  const entry=new URLSearchParams(location.search||'');
-  let generation=Number(entry.get('generation')),lease=Number(entry.get('lease'));
+  let presenceId=0,presenceTimer,presenceEnded=false,presenceBusy=false,connectionRequest=0,connectionAbort,joining=false;
+  let generation=0,lease=0;
   globalThis.history?.replaceState(null,'','/config');
   let home,homeDirty=false,wifi,wifiDirty=false,wifiNetworks=[],wifiRevision=0,wifiSavedPassword='',wifiKeepAllowed=true;
   const $=id=>document.getElementById(id);
@@ -306,9 +305,9 @@
   $('preview-close').addEventListener('click',()=>$('preview-dialog').close());
   $('add-step').addEventListener('click',()=>{try{cancelRecording(false);addStep(binding());changed();render();}catch(e){status(e.message,true);}});
   function render(){
-    $('editor').disabled=busy||!config;$('forget').disabled=busy||!config;$('wifi-fields').disabled=busy||!wifi;
-    $('save').disabled=busy||!config||!home||!wifi||(lanWifi&&presenceEnded);
-    for(const id of ['defaults','exit','import-file','export-toggle','export-all','export-profile'])$(id).disabled=busy||!config;
+    $('editor').disabled=busy||joining||!config;$('forget').disabled=busy||!config;$('wifi-fields').disabled=busy||joining||!wifi;
+    $('save').disabled=busy||joining||!config||!home||!wifi||(lanWifi&&presenceEnded);
+    for(const id of ['defaults','exit','import-file','export-toggle','export-all','export-profile'])$(id).disabled=busy||joining||!config;
     if(lanWifi&&presenceEnded)for(const id of ['exit','forget','scan-wifi','test-wifi'])$(id).disabled=true;
     if(!config)return;
     metrics();$('profile').replaceChildren(...config.profiles.map((p,i)=>{const o=element('option',p.name+(i===config.active_profile?' · 当前':''));o.value=i;return o;}));$('profile').value=editing;$('profile-name').value=config.profiles[editing].name;
@@ -376,25 +375,25 @@
   async function presenceTick(){
     if(!lanWifi||presenceEnded||presenceBusy)return;
     presenceBusy=true;
-    const tickGeneration=generation,tickSession=session;
+    const tickGeneration=generation,tickSession=session,tickAttempt=connectionRequest;
     try{
       const r=await fetch('/api/presence',{method:'POST',headers:{'X-Session':session,'Content-Type':'application/json'},body:JSON.stringify(presenceId?{action:'ping',id:presenceId}:{action:'join',generation,lease}),signal:AbortSignal.timeout(3000)});
-      if(tickGeneration!==generation||tickSession!==session||presenceEnded)return;
+      if(tickAttempt!==connectionRequest||tickGeneration!==generation||tickSession!==session||presenceEnded)return;
       if(r.status===409){
         const renewed=await fetch('/api/session/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'config',generation}),signal:AbortSignal.timeout(3000)});
-        if(tickGeneration!==generation||tickSession!==session||presenceEnded)return;
+        if(tickAttempt!==connectionRequest||tickGeneration!==generation||tickSession!==session||presenceEnded)return;
         if(renewed.status===409||renewed.status===403||renewed.status===404){presenceStop();status('配置会话已结束，未保存的修改仍保留在此页面。',true);render();return;}
         if(!renewed.ok)throw Error('连接暂不可用');
-        const info=await renewed.json();if(tickGeneration!==generation||tickSession!==session||presenceEnded)return;
+        const info=await renewed.json();if(tickAttempt!==connectionRequest||tickGeneration!==generation||tickSession!==session||presenceEnded)return;
         if(info.generation!==generation)throw Error('连接代次无效');
         presenceId=0;lease=info.lease;return;
       }
       if(r.status===403||r.status===404){
-        presenceStop();status('配置会话已结束。未保存的修改仍保留在此页面，点击重新连接可切换回来。',true);render();return;
+        presenceStop();status('配置会话已结束。未保存的修改仍保留在此页面，请先在设备上开启系统配置，再点击重新连接。',true);render();return;
       }
       if(!r.ok)throw Error(await r.text());
       const info=await r.json();if(!Number.isInteger(info.id)||info.id<=0)throw Error('在线响应无效');
-      if(tickGeneration!==generation||tickSession!==session)return;
+      if(tickAttempt!==connectionRequest||tickGeneration!==generation||tickSession!==session)return;
       if(presenceEnded){presenceLeave(info.id);return;}
       presenceId=info.id;
     }catch(e){
@@ -408,23 +407,20 @@
     if(lanWifi&&id)fetch('/api/presence',{method:'POST',headers:{'X-Session':session,'Content-Type':'application/json'},body:JSON.stringify({action:'leave',id}),keepalive:true}).catch(()=>{});
   }
   function presenceStart(){
+    presenceEnded=false;$('config-reconnect').hidden=true;
     if(!lanWifi)return;
-    presenceEnded=false;$('config-reconnect').hidden=true;presenceTick();presenceTimer=setInterval(presenceTick,10000);
+    presenceTick();presenceTimer=setInterval(presenceTick,10000);
   }
   window.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')presenceTick();});
-  window.addEventListener('pagehide',()=>{++connectionRequest;presenceStop();presenceLeave();presenceId=0;});
+  window.addEventListener('pagehide',()=>{++connectionRequest;connectionAbort?.abort();presenceStop();presenceLeave();presenceId=0;});
   window.addEventListener('pageshow',e=>{if(e.persisted&&session){presenceStop();status('配置会话已结束，请点击重新连接。',true);render();}});
-  async function operation(fn){if(busy||!config||(lanWifi&&presenceEnded))return;const epoch=generation;cancelRecording(false);busy=true;render();try{await fn();}catch(e){if(epoch===generation)status('操作未完成：'+e.message,true);}finally{busy=false;render();}}
+  async function operation(fn){if(busy||joining||!config||(lanWifi&&presenceEnded))return;const epoch=generation;cancelRecording(false);busy=true;render();try{await fn();}catch(e){if(epoch===generation)status('操作未完成：'+e.message,true);}finally{busy=false;render();}}
   function wifiRender(password=''){
     $('wifi-ssid').value=wifi.ssid;$('wifi-password').value=password;
     $('wifi-password').placeholder=wifi.has_password?'密码已保存，留空保持不变':'无密码网络可留空';
     $('wifi-saved').textContent=wifi.ssid?'已保存自动校时网络':'尚未配置自动校时';
-    $('wifi-status').textContent=(wifi.clock_valid?'设备已有有效时间。':'设备尚未校时。')+(lanWifi?'当前通过 WiFi 配置；支持扫描。连接测试会暂时断开页面，完成后恢复原网络；请勿刷新。若地址变化，请按设备显示的新 IP 重新打开。网络修改在退出配置后生效。':'本机热点开启时，自动校时暂停；退出配置后尝试连接。');
+    $('wifi-status').textContent=(wifi.clock_valid?'设备已有有效时间。':'设备尚未校时。')+(lanWifi?'当前通过 WiFi 配置；支持扫描。连接测试会暂时断开页面，完成后恢复原网络；请勿刷新。若地址变化，请按设备显示的新 IP 重新打开。网络修改在退出配置后生效。':'本机热点开启时，自动校时暂停；退出后可通过 WiFi 使用配置或文件流转。');
     $('scan-wifi').disabled=$('test-wifi').disabled=false;
-  }
-  async function wifiLoad(password=''){
-    const r=await fetch('/api/wifi',{headers:{'X-Session':session},signal:AbortSignal.timeout(8000)});
-    if(!r.ok)throw Error('读取 Wi-Fi 设置失败');wifi=await r.json();wifiDirty=false;wifiRender(password);render();
   }
   $('wifi-show-password').addEventListener('change',()=>{
     const visible=$('wifi-show-password').checked;$('wifi-password').type=visible?'text':'password';
@@ -600,7 +596,7 @@
     wifiSavedPassword=settings.wifi.password;wifiKeepAllowed=true;
     wifi={...wifi,ssid:settings.wifi.ssid,has_password:!!settings.wifi.password};
     dirty=homeDirty=wifiDirty=false;$('home-saved').textContent='工牌已保存';wifiRender(password);dirtyStatus();
-    $('wifi-status').textContent=settings.wifi.ssid?'网络已保存，退出配置后开始自动校时。':'自动校时网络已清除。';
+    $('wifi-status').textContent=settings.wifi.ssid?'网络已保存，下次连接使用此网络。':'自动校时网络已清除。';
     status('完整配置已保存。工牌和按键情景已更新；按键配置变化会停止旧宏并释放按键。Wi-Fi 网络将在退出配置后切换。');
   }));
   $('defaults').addEventListener('click',()=>{
@@ -608,39 +604,71 @@
     cancelRecording(false);const settings=settingsDefaults();config=settings.config;home=settings.home;editing=0;
     homeRender();homeChanged();$('wifi-ssid').value='';$('wifi-password').value='';wifiKeepAllowed=false;wifiChanged();changed();render();
   });
-  $('config-reconnect').addEventListener('click',async()=>{
-    if(!config){location.replace('/config');return;}
-    const attempt=++connectionRequest;
-    const button=$('config-reconnect');button.disabled=true;
+  async function joinConfiguration(){
+    const attempt=++connectionRequest,hadDraft=!!config;
+    connectionAbort?.abort();const controller=new AbortController();connectionAbort=controller;
+    const timeout=setTimeout(()=>controller.abort(),30000);
+    const current=()=>attempt===connectionRequest&&!controller.signal.aborted;
+    const read=async(path,options={})=>{
+      const response=await fetch(path,{...options,signal:controller.signal});
+      if(!response.ok)throw Error(await response.text());
+      const value=await response.json();
+      if(!current())throw new DOMException('Aborted','AbortError');
+      return value;
+    };
+    presenceStop();presenceLeave();presenceId=0;joining=true;
+    $('config-reconnect').disabled=true;status('正在连接 Passport…');render();
     try{
-      const opened=await fetch('/api/session/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'config'}),signal:AbortSignal.timeout(8000)});
-      if(!opened.ok)throw Error(await opened.text());const info=await opened.json();if(attempt!==connectionRequest)return;generation=info.generation;lease=info.lease;
-      const deadline=Date.now()+30000;
-      for(;;){
-        if(attempt!==connectionRequest)return;
-        if(Date.now()>=deadline)throw Error('连接超时');
-        try{const r=await fetch('/api/session',{cache:'no-store',signal:AbortSignal.timeout(3000)});if(r.ok){const state=await r.json();if(state.generation!==generation||state.mode!=='config')throw Error('会话已被其他页面切换');if(state.ready)break;}}
-        catch(e){if(e.message.includes('会话已被'))throw e;}
-        await new Promise(resolve=>setTimeout(resolve,250));
+      const info=await read('/api/config');
+      lanWifi=info.connection==='wifi';session=info.session;
+      if(info.system!==0&&info.system!==1)throw Error('读取设备系统失败');
+      if(lanWifi){
+        const opened=await read('/api/session/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'config'})});
+        if(!Number.isInteger(opened.generation)||opened.generation<=0||!Number.isInteger(opened.lease)||opened.lease<=0)throw Error('连接响应无效');
+        generation=opened.generation;lease=opened.lease;
+        for(;;){
+          try{
+            const state=await read('/api/session',{cache:'no-store'});
+            if(state.generation!==generation||state.mode!=='config')throw Error('设备已结束或切换功能');
+            if(state.ready)break;
+          }catch(e){if(!current()||e.message.includes('设备已'))throw e;}
+          await new Promise(resolve=>setTimeout(resolve,250));
+        }
+        // Joining must succeed before editing/saving is enabled. The token
+        // above stays bound to this generation throughout this attempt.
+        const joined=await read('/api/presence',{method:'POST',headers:{'X-Session':session,'Content-Type':'application/json'},body:JSON.stringify({action:'join',generation,lease})});
+        if(joined.id!==lease)throw Error('在线响应无效');
+        presenceId=joined.id;
       }
-      const r=await fetch('/api/config',{signal:AbortSignal.timeout(8000)});if(!r.ok)throw Error('读取会话失败');
-      const current=await r.json();if(attempt!==connectionRequest)return;
-      session=current.session;presenceId=0;presenceStart();render();status('配置已重新连接，编辑区保留了未保存的修改。');
-    }catch(e){if(attempt===connectionRequest){presenceStop();status('重新连接失败：'+e.message,true);}}finally{button.disabled=false;}
-  });
-  $('exit').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存的修改，仍要退出配置？'))return;operation(async()=>{await request('/api/exit');presenceStop();status(lanWifi?'配置正在关闭，已保存 Wi-Fi 网络将在退出后使用。文件流转将恢复监听，再次打开 /config 可自动配置。':'配置正在关闭。设备返回系统配置，长按 OK 返回。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='会话已结束';});});
+      if(!hadDraft){
+        const settings=await read('/api/settings',{headers:{'X-Session':session}});validateSettings(settings,true);
+        const network=await read('/api/wifi',{headers:{'X-Session':session}});
+        // Commit the initial editor state only after every required load has
+        // completed; a failed first connection can retry in this same page.
+        previewSystem=info.system===1?1:2;
+        config=settings.config;home=settings.home;wifiSavedPassword=settings.wifi.password;editing=config.active_profile;
+        wifi=network;wifiDirty=false;homeRender();wifiRender(wifiSavedPassword);dirtyStatus();
+        $('home-saved').textContent='已读取工牌';
+      }
+      presenceStart();status(hadDraft?'配置已重新连接，编辑区保留了未保存的修改。':'配置已连接。');
+    }catch(e){
+      if(attempt===connectionRequest){presenceStop();presenceLeave();presenceId=0;$('config-reconnect').hidden=false;status('重新连接失败：'+(e.name==='AbortError'?'连接超时，请重试。':e.message),true);}
+    }finally{
+      clearTimeout(timeout);
+      if(attempt===connectionRequest){connectionAbort=null;joining=false;$('config-reconnect').disabled=false;render();}
+    }
+    // Resume any bounded scan/test after initial loading, without replacing
+    // editor drafts during reconnect. Existing polling handles network loss.
+    if(current()&&!presenceEnded&&!hadDraft){
+      try{const job=await wifiJobRead();if(!current())return;
+        if(job.kind===1&&job.state===5)wifiScanRender(job);
+        if(job.busy)await operation(()=>wifiJobWait(job.id,wifiRevision));else if(job.kind===2&&job.state!==0)wifiTestRender(job);
+      }catch(e){if(current())status('读取网络任务失败：'+e.message,true);}
+    }
+  }
+  $('config-reconnect').addEventListener('click',joinConfiguration);
+  $('exit').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存的修改，仍要退出配置？'))return;operation(async()=>{await request('/api/exit');presenceStop();status(lanWifi?'配置正在关闭。下次使用时，请先在设备上开启系统配置或文件流转。':'配置正在关闭。设备返回系统配置，长按 OK 返回。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='会话已结束';});});
   $('forget').addEventListener('click',()=>{if((dirty||homeDirty||wifiDirty)&&!confirm('尚有未保存修改，清除配对将结束网页会话，仍要继续？'))return;if(!confirm('设备将退出配置并显示确认页，请在设备上确认清除配对。'))return;operation(async()=>{await request('/api/forget');presenceStop();status('请在 Passport 确认清除配对。配置正在关闭。');config=null;dirty=homeDirty=wifiDirty=false;$('dirty').textContent='请在设备确认';});});
   window.addEventListener('beforeunload',e=>{if(dirty||homeDirty||wifiDirty){e.preventDefault();e.returnValue='';}});
-  fetch('/api/config',{signal:AbortSignal.timeout(8000)}).then(async r=>{
-    if(!r.ok)throw Error('读取设置会话失败');const info=await r.json();session=info.session;lanWifi=info.connection==='wifi';
-    presenceStart();
-    if(info.system!==0&&info.system!==1)throw Error('读取设备系统失败');previewSystem=info.system===1?1:2;
-    const response=await fetch('/api/settings',{headers:{'X-Session':session},signal:AbortSignal.timeout(8000)});
-    if(!response.ok)throw Error('读取完整配置失败');const settings=await response.json();validateSettings(settings,true);
-    config=settings.config;home=settings.home;wifiSavedPassword=settings.wifi.password;editing=config.active_profile;
-    $('dirty').textContent='已读取完整配置';$('home-saved').textContent='已读取工牌';homeRender();
-    await wifiLoad(wifiSavedPassword);dirtyStatus();const job=await wifiJobRead();
-    if(job.kind===1&&job.state===5)wifiScanRender(job);
-    if(job.busy)await operation(()=>wifiJobWait(job.id,wifiRevision));else if(job.kind===2&&job.state!==0)wifiTestRender(job);
-  }).catch(e=>{status('无法读取配置：'+e.message+'。请确认仍连接设备所用的网络，然后刷新。',true);$('dirty').textContent='连接失败';});
+  joinConfiguration();
 })(globalThis);

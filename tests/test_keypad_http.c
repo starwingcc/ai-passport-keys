@@ -45,9 +45,7 @@ __asm__(".data\n"
         ".globl _binary_charset_js_start\n_binary_charset_js_start:\n"
         ".incbin \"main/web/charset.js\"\n.byte 0\n"
         ".globl _binary_charset_js_end\n_binary_charset_js_end:\n"
-        ".globl _binary_config_wait_html_start\n_binary_config_wait_html_start:\n"
-        ".incbin \"main/web/config-wait.html\"\n.byte 0\n"
-        ".globl _binary_config_wait_html_end\n_binary_config_wait_html_end:\n.text\n");
+        ".text\n");
 
 static kp_wifi_job_t setup_job;
 static kp_wifi_config_t tested_wifi;
@@ -68,7 +66,11 @@ static kp_system_t committed_system;
 void kp_store_system_get(kp_system_t *out){*out=committed_system;}
 static kp_home_config_t committed_home; static kp_clock_t test_clock;
 static uint32_t clock_ms=1000,save_delay;
-int64_t esp_timer_get_time(void){return (int64_t)clock_ms*1000;}
+static bool end_on_clock_read;
+int64_t esp_timer_get_time(void){
+    if(end_on_clock_read){end_on_clock_read=false;kp_session_end(KP_SESSION_CONFIG);}
+    return (int64_t)clock_ms*1000;
+}
 void kp_store_home_get(kp_home_config_t *out){*out=committed_home;}
 esp_err_t kp_store_home_save(const kp_home_config_t *home){if(fail_alloc)return ESP_FAIL;committed_home=*home;return ESP_OK;}
 bool kp_store_time_sync(uint64_t epoch,uint64_t now){return kp_clock_sync(&test_clock,epoch,now);}
@@ -244,8 +246,8 @@ esp_err_t esp_wifi_set_config(int mode, const wifi_config_t *c) {
 }
 uint32_t esp_random(void) { static uint32_t next; return ++next; }
 esp_err_t esp_read_mac(uint8_t *out, int mode) { assert(mode==ESP_MAC_WIFI_SOFTAP); memset(out,0,6); return ESP_OK; }
-size_t heap_caps_get_free_size(unsigned caps) { (void)caps; return 1000; }
-size_t heap_caps_get_largest_free_block(unsigned caps) { (void)caps; return 512; }
+size_t heap_caps_get_free_size(unsigned caps) { (void)caps; return 20000; }
+size_t heap_caps_get_largest_free_block(unsigned caps) { (void)caps; return 8000; }
 
 static unsigned idle_exits;
 static void idle_exit(bool forget) { assert(!forget); ++idle_exits; }
@@ -258,6 +260,7 @@ static esp_err_t page_request(const char *body, const char *token) {
 static uint32_t initial_lease;
 static void start_config(const char *ip,kp_web_request_t callback) {
     kp_session_end(KP_SESSION_CONFIG);kp_session_end(KP_SESSION_TRANSFER);
+    kp_session_prepare(KP_SESSION_CONFIG,clock_ms);
     uint32_t generation;initial_lease=kp_session_open(KP_SESSION_CONFIG,clock_ms,&generation);assert(initial_lease);
     assert(kp_web_start_wifi(ip,callback)==ESP_OK);kp_session_ready(KP_SESSION_CONFIG,generation,true);
 }
@@ -278,20 +281,21 @@ static void configuration_presence(void) {
     assert(page_request("{\"action\":\"join\"}","wrong")==ESP_OK&&!strcmp(status,"403 Forbidden"));
     const char *bad[]={"{}","[]","{\"action\":\"ping\",\"id\":1.5}","{\"action\":\"join\",\"id\":1}","{\"action\":\"other\",\"id\":1}","{\"action\":\"join\"} trailing"};
     for(unsigned i=0;i<sizeof(bad)/sizeof(*bad);++i)assert(page_request(bad[i],s_session)==ESP_OK&&!strcmp(status,"400 Bad Request")&&!s_presence.online);
-    httpd_req_t req={.uri="/transfer",.fd=10};reset_response();assert(static_file(&req)==ESP_OK&&strstr(response,"/api/session/open"));
-    char path[80];snprintf(path,sizeof(path),"/config?generation=%u&lease=%u",s_generation,initial_lease);
-    req.uri=path;reset_response();assert(static_file(&req)==ESP_OK&&response_size==(size_t)(index_end-index_start-1));
+    httpd_req_t req={.uri="/transfer",.fd=10};reset_response();assert(static_file(&req)==ESP_OK&&!strcmp(status,"409 Conflict"));
+    req.uri="/config";reset_response();assert(static_file(&req)==ESP_OK&&response_size==(size_t)(index_end-index_start-1));
+    req.uri="/config?generation=1&lease=1";reset_response();assert(static_file(&req)==ESP_OK&&response_size==(size_t)(index_end-index_start-1));
     uint32_t ids[4];for(unsigned i=0;i<4;++i)ids[i]=join_page();
     uint32_t g;assert(!kp_session_open(KP_SESSION_CONFIG,clock_ms,&g));
     clock_ms+=2001;kp_web_poll(clock_ms);run_work();assert(s_presence.online==4&&!atomic_load(&s_stopping));
     for(unsigned i=0;i<3;++i)leave_page(ids[i]);assert(s_presence.online==1);
-    leave_page(ids[3]);kp_session_view_t state;kp_session_get(&state);assert(state.mode==KP_SESSION_LISTEN);
-    kp_web_poll(clock_ms);run_work();assert(atomic_load(&s_stopping)&&!idle_exits);
+    leave_page(ids[3]);kp_session_view_t state;kp_session_get(&state);assert(state.mode==KP_SESSION_CONFIG&&!state.online);
+    kp_web_poll(clock_ms);run_work();assert(!atomic_load(&s_stopping)&&!idle_exits);
     assert(kp_web_stop()==ESP_OK);start_config("192.168.1.11",idle_exit);
     (void)join_page();uint32_t zero=clock_ms;
     clock_ms=zero+119999;kp_session_poll(clock_ms);kp_web_poll(clock_ms);run_work();assert(!atomic_load(&s_stopping));
-    ++clock_ms;kp_session_poll(clock_ms);kp_web_poll(clock_ms);run_work();assert(atomic_load(&s_stopping));assert(kp_web_stop()==ESP_OK);
+    ++clock_ms;kp_session_poll(clock_ms);kp_web_poll(clock_ms);run_work();assert(!atomic_load(&s_stopping)&&!s_presence.online);assert(kp_web_stop()==ESP_OK);
     start_config("192.168.1.11",idle_exit);(void)join_page();
+    kp_session_prepare(KP_SESSION_TRANSFER,clock_ms);
     uint32_t generation,lease=kp_session_open(KP_SESSION_TRANSFER,clock_ms,&generation);assert(lease);
     assert(page_request("{\"action\":\"ping\",\"id\":1}",s_session)==ESP_OK&&!strcmp(status,"403 Forbidden"));
     assert(kp_web_stop()==ESP_OK);
@@ -300,12 +304,13 @@ static void configuration_presence(void) {
 static void session_endpoints(void) {
     assert(kp_web_start_wifi("192.168.1.11",NULL)==ESP_OK);kp_session_reset();clock_ms=7000;
     httpd_req_t req={.uri="/api/session",.method=HTTP_GET,.host="192.168.1.11"};
-    reset_response();assert(api(&req)==ESP_OK&&strstr(response,"listening"));
+    reset_response();assert(api(&req)==ESP_OK&&strstr(response,"off"));
     req.uri="/api/session/open";req.method=HTTP_POST;req.body="{\"mode\":\"transfer\"}";req.content_len=strlen(req.body);
     reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"403 Forbidden"));
     req.origin="http://foreign.test";reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"403 Forbidden"));
     req.origin="http://192.168.1.11";req.host="foreign.test";reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"403 Forbidden"));
-    req.host="192.168.1.11";req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK"));
+    req.host="192.168.1.11";req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"409 Conflict"));
+    kp_session_prepare(KP_SESSION_TRANSFER,clock_ms);req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK"));
     kp_session_view_t view;kp_session_get(&view);uint32_t first=view.generation;
     assert(view.mode==KP_SESSION_TRANSFER&&view.online==0&&view.joining==1);
     req.uri="/api/session";req.method=HTTP_GET;reset_response();assert(api(&req)==ESP_OK);
@@ -317,6 +322,8 @@ static void session_endpoints(void) {
         assert(api(&req)==ESP_OK&&!strcmp(status,"400 Bad Request"));
     }
     req.body="{\"mode\":\"config\"}";req.content_len=strlen(req.body);req.received=0;reset_response();
+    assert(api(&req)==ESP_OK&&!strcmp(status,"409 Conflict"));
+    kp_session_prepare(KP_SESSION_CONFIG,clock_ms);req.received=0;reset_response();
     assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK"));kp_session_get(&view);
     assert(view.mode==KP_SESSION_CONFIG&&view.generation!=first&&view.joining==1);
     char body[100];snprintf(body,sizeof(body),"{\"mode\":\"transfer\",\"generation\":%u}",first);
@@ -326,8 +333,16 @@ static void session_endpoints(void) {
     req.content_len=strlen(body);req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK"));
     for(unsigned n=0;n<2;n++){req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK"));}
     req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"503 Service Unavailable"));
-    clock_ms+=30000;req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"409 Conflict"));
-    kp_session_get(&view);assert(view.mode==KP_SESSION_LISTEN);
+    clock_ms+=30000;req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"200 OK"));
+    kp_session_get(&view);assert(view.mode==KP_SESSION_CONFIG&&view.joining==1);
+    kp_session_end(KP_SESSION_CONFIG);req.received=0;reset_response();assert(api(&req)==ESP_OK&&!strcmp(status,"409 Conflict"));
+    // Device exit between the mode check and slot allocation is a conflict,
+    // not a full page pool. Exercise the real HTTP admission path.
+    kp_session_prepare(KP_SESSION_CONFIG,clock_ms);
+    req.uri="/api/session/open";req.body="{\"mode\":\"config\"}";req.content_len=strlen(req.body);req.received=0;
+    reset_response();end_on_clock_read=true;
+    assert(kp_session_http(&req,"192.168.1.11")==ESP_OK&&!strcmp(status,"409 Conflict"));
+    assert(!end_on_clock_read);
     assert(kp_web_stop()==ESP_OK);kp_session_reset();
 }
 int main(void) {

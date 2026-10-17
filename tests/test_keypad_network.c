@@ -9,7 +9,7 @@ static time_t test_time(time_t *out);
 esp_event_base_t WIFI_EVENT = "wifi", IP_EVENT = "ip";
 static kp_wifi_config_t settings;
 static kp_clock_t clock_value;
-static uint32_t test_now;
+static uint64_t test_now;
 static time_t utc;
 static unsigned fault, stop_fault, initialized, running, interfaces, handlers, sntp, connects;
 static esp_netif_t netif;
@@ -81,9 +81,10 @@ esp_err_t esp_netif_sntp_init(const esp_sntp_config_t *cfg) {
 }
 void esp_netif_sntp_deinit(void) { assert(sntp); --sntp; sync_cb = NULL; }
 esp_err_t esp_netif_get_ip_info(esp_netif_t *n,esp_netif_ip_info_t *out){assert(n==&netif);*out=address;return ESP_OK;}
-static void tick(uint32_t now) { test_now = now; kp_network_tick(now); }
+static void tick(uint64_t now) { test_now = now; kp_network_tick(now); }
 static void fresh(void) {
     fault = stop_fault = address_fault = 0; kp_network_keep_online(false); assert(kp_network_suspend() == ESP_OK);
+    s_boot_complete = true; s_release_pending = s_connect_requested = s_scheduled = false;
     kp_network_resume(); kp_wifi_defaults(&settings);
     strcpy(settings.ssid, "test-network"); strcpy(settings.password, "test-pass");
     connects = 0; clock_value = (kp_clock_t){0}; utc = 1791167040;
@@ -174,5 +175,47 @@ int main(void) {
     assert(kp_network_suspend()==ESP_OK);
     fresh();kp_network_keep_online(true);connected(0);address.ip.addr=0x3201a8c0U;assert(!kp_network_ip(ip)&&!ip[0]);
     assert(kp_network_suspend()==ESP_OK);
+    // Startup holds the associated radio, but stops SNTP as soon as it finishes.
+    fresh();s_boot_complete=false;connected(0);tv.tv_sec=utc;sync_cb(&tv);tick(5);
+    assert(running&&!sntp);tick(119999);assert(running);tick(120000);assert(!running);
+    tick(120001);assert(!running);tick(5+REFRESH_MS-1);assert(!running);
+    tick(5+REFRESH_MS);assert(running);assert(kp_network_suspend()==ESP_OK);
+    fresh();s_boot_complete=false;connected(0);tick(ATTEMPT_MS);
+    assert(running&&!sntp&&kp_network_status()==KP_NET_FAILED);tick(119999);assert(running);
+    tick(120000);assert(!running);tick(120001);assert(!running);
+    // New foreground requests win over simultaneous sync completion/deadlines.
+    for(unsigned failed=0;failed<2;++failed) {
+        fresh();s_boot_complete=false;connected(0);kp_network_keep_online(true);
+        if(!failed){tv.tv_sec=utc;sync_cb(&tv);}tick(failed?ATTEMPT_MS:5);
+        assert(running&&!sntp);tick(120000);assert(running&&kp_network_ip(ip));
+        tick(180000);assert(running);kp_network_keep_online(false);tick(180001);
+        assert(!running);tick(180002);assert(!running);
+    }
+    fresh();s_boot_complete=false;connected(0);tv.tv_sec=utc;sync_cb(&tv);
+    kp_network_keep_online(true);tick(120000);assert(running&&clock_value.epoch==(uint64_t)utc);
+    kp_network_keep_online(false);tick(120001);assert(!running);tick(120002);assert(!running);
+    fresh();s_boot_complete=false;connected(0);kp_network_keep_online(true);
+    tv.tv_sec=utc;sync_cb(&tv);tick(5);kp_network_keep_online(false);tick(1000);
+    assert(running);tick(119999);assert(running);tick(120000);assert(!running);
+    // A periodic refresh while a manual function runs still has an SNTP
+    // deadline, and neither success nor timeout relinquishes the radio.
+    fresh();kp_network_keep_online(true);connected(0);tv.tv_sec=utc;sync_cb(&tv);tick(5);
+    tick(5+REFRESH_MS);assert(running&&sntp);
+    tick(5+REFRESH_MS+ATTEMPT_MS);assert(running&&!sntp&&kp_network_status()==KP_NET_FAILED);
+    kp_network_keep_online(false);tick(6+REFRESH_MS+ATTEMPT_MS);assert(!running);
+    // Failed automatic teardown must finish before reconnecting: callbacks
+    // and the old interface remain owned while cleanup is retried.
+    fresh();kp_network_keep_online(true);connected(0);
+    wifi_cb(NULL,WIFI_EVENT,WIFI_EVENT_STA_DISCONNECTED,NULL);tick(10);
+    stop_fault=1;tick(10+ATTEMPT_MS);assert(s_cleanup_pending&&running);
+    unsigned cleanup_connects=connects;tick(11+ATTEMPT_MS);assert(connects==cleanup_connects&&s_cleanup_pending);
+    stop_fault=0;tick(12+ATTEMPT_MS);assert(!s_cleanup_pending&&!running);
+    tick(10+ATTEMPT_MS+15000);assert(running);
+    kp_network_keep_online(false);tick(11+ATTEMPT_MS+15000);assert(!running);
+    // First timer boundary also caps a still-connecting startup attempt.
+    fresh();s_boot_complete=false;tick(119000);assert(running);tick(120000);assert(!running);
+    tick(120001);assert(!running);
+    // Monotonic 64-bit uptime never grants a second boot window after 32-bit wrap.
+    fresh();s_boot_complete=false;tick(UINT64_C(1)<<32);assert(!running&&s_boot_complete);
     puts("Network time: cold boot, valid SNTP, strict DNS API, DHCP/static restoration, retry/refresh, wrap, AP handoff and fault cleanup: PASS");
 }

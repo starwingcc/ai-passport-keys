@@ -274,20 +274,20 @@ void app_main(void) {
         if (network.lan.state != previous_ap) {
             if (network.lan.state == KP_AP_OFF && previous_ap != KP_AP_OFF) {
                 s_ap_active = false;
-                if (!network.lan.automatic) message("配置已关闭");
-                if (s_model.page == KP_HOTSPOT && !network.lan.automatic) { s_model.page = KP_LAN; s_model.selected = network.lan.wifi ? 1 : 0; }
+                message("配置已关闭");
+                if (s_model.page == KP_HOTSPOT) { s_model.page = KP_LAN; s_model.selected = network.lan.wifi ? 1 : 0; }
                 if (network.forget_requested) { s_model.page = KP_FORGET; s_model.selected = 0; }
-            } else if (network.lan.state == KP_AP_STARTING) { s_ap_active = false; if (!network.lan.automatic) message("正在开启配置"); }
-            else if (network.lan.state == KP_AP_ACTIVE) { s_ap_active = true; if (!network.lan.automatic) message("配置完成后长按 OK 返回"); }
-            else if (network.lan.state == KP_AP_STOPPING) { s_ap_active = false; if (!network.lan.automatic) message("正在关闭配置"); }
+            } else if (network.lan.state == KP_AP_STARTING) { s_ap_active = false; message("正在开启配置"); }
+            else if (network.lan.state == KP_AP_ACTIVE) { s_ap_active = true; message("配置完成后长按 OK 返回"); }
+            else if (network.lan.state == KP_AP_STOPPING) { s_ap_active = false; message("正在关闭配置"); }
             else if (network.lan.state == KP_AP_FAILED || network.lan.state == KP_AP_NO_WIFI) {
                 s_ap_active = false;
-                if (!network.lan.automatic) { s_model.page = KP_HOTSPOT; message("配置未开启，长按返回"); }
+                { s_model.page = KP_HOTSPOT; message("配置未开启，长按返回"); }
             }
             previous_ap = network.lan.state;
             // Saved settings already synchronize on each main-task tick.
-            // Background entry/exit preserves keyboard input and navigation.
-            if (!network.lan.automatic) resync_input();
+            // Manual entry/exit synchronizes the held physical buttons.
+            resync_input();
         }
         if (s_forget) {
             s_forget = false; resync_input();

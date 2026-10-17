@@ -2,15 +2,6 @@ const assert=require('node:assert/strict');
 require('../main/web/charset.js');require('../main/web/app.js');
 const K=globalThis.Keypad;
 const {capture,keys,validate}=K;
-// The listener embeds its bootstrap script and pins its CSP hash. Changing
-// either side must fail the ordinary host gate, before device/browser testing.
-{
-  const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
-  const page=fs.readFileSync(path.join(__dirname,'../main/web/config-wait.html'),'utf8');
-  const script=page.split('<script>')[1].split('</script>')[0];
-  const hash=crypto.createHash('sha256').update(script).digest('base64');
-  assert(fs.readFileSync(path.join(__dirname,'../main/keyboard/keypad_session_http.c'),'utf8').includes('sha256-'+hash));
-}
 // Editor/import tests use a stable fixture independent of first-use defaults.
 function editorFixture(){
   const bindings=Array.from({length:11},()=>({title:'',steps:[]}));

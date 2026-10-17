@@ -6,7 +6,7 @@ idf_component_register(
          "keyboard/keypad_home.c" "keyboard/keypad_home_ui.c"
          "keyboard/keypad_wifi.c" "keyboard/keypad_network.c"
          "keyboard/keypad_session.c" "keyboard/keypad_session_http.c"
-         "keyboard/keypad_network_service.c" "keyboard/keypad_transfer_lifecycle.c"
+         "keyboard/keypad_network_service.c"
          "keyboard/keypad_transfer_signal.c"
          "keyboard/keypad_transfer_web.c" "keyboard/keypad_socket_io.c"
          "keyboard/keypad_transfer_diag.c"
@@ -16,6 +16,6 @@ idf_component_register(
     INCLUDE_DIRS "." "keyboard"
     REQUIRES bsp bt esp_hid esp_event esp_netif esp_timer esp_wifi nvs_flash
              esp_http_server json esp_hw_support lwip
-    EMBED_TXTFILES "web/index.html" "web/app.js" "web/app.css" "web/charset.js" "web/config-wait.html"
+    EMBED_TXTFILES "web/index.html" "web/app.js" "web/app.css" "web/charset.js"
                    "web/transfer.html" "web/transfer.js" "web/transfer.css" "web/transfer-protocol.js"
 )

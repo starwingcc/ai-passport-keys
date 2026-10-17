@@ -8,9 +8,8 @@
   const memoryLimitLabel=(memoryLimit/1024**2)+' MB';
   let ws, self=0, online=false, connecting=false, ended=false, heartbeat, retryTimer, connectDeadline, retries=0, rendering=false, sendingText=false;
   let noticeMessage='', noticeKind='action';
-  let wakeRequest=0, wakeAbort;
-  const entry=new URLSearchParams(location.search||'');
-  let generation=Number(entry.get('generation')),lease=Number(entry.get('lease'));
+  let connectionRequest=0, connectionAbort;
+  let generation=0,lease=0;
   globalThis.history?.replaceState(null,'','/transfer');
   let pendingReceive=0;
   const rtcHint='当前浏览器未提供 WebRTC，无法直传。请检查 WebRTC 扩展是否放行当前地址，或用其他浏览器重试；无需开启摄像头或麦克风。';
@@ -35,7 +34,7 @@
     $('connection').textContent=online?'局域网已连接':ended?'流转已关闭':connecting?'正在连接':'连接已中断';
     $('reconnect').hidden=online;
     $('reconnect').disabled=connecting;
-    const text=noticeMessage||(online?'局域网已连接，可以发送文字与共享文件。':ended?'流转已结束，点击重新连接即可自动开启。':connecting?'正在连接 Passport，请保持网页打开。':'连接已中断，请重新连接。');
+    const text=noticeMessage||(online?'局域网已连接，可以发送文字与共享文件。':ended?'流转已结束，请先在设备上开启文件流转，再点击重新连接。':connecting?'正在连接 Passport，请保持网页打开。':'连接已中断，请重新连接。');
     const tone=noticeMessage?'error':online?'connected':'connecting';
     $('notice').dataset.tone=tone;
     $('notice').replaceChildren(icon(tone==='connected'?'check':'info'),el('span',text));
@@ -278,15 +277,15 @@
   }
   async function connect(automatic=false){
     if(automatic){
-      const attempt=wakeRequest,epoch=generation;
+      const attempt=connectionRequest,epoch=generation;
       const previous=ws;ws=null;previous?.close();
       try{
         const r=await fetch('/api/session/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'transfer',generation}),signal:AbortSignal.timeout(3000)});
-        if(attempt!==wakeRequest||epoch!==generation||ended)return;
-        if(!r.ok){if(r.status===409||r.status===404||r.status===403){ended=true;clearTimeout(retryTimer);shutdown('会话已结束');notice('流转会话已结束，点击重新连接即可切换回来。');return;}throw Error('连接暂不可用');}
-        const info=await r.json();if(attempt!==wakeRequest||epoch!==generation||ended)return;
+        if(attempt!==connectionRequest||epoch!==generation||ended)return;
+        if(!r.ok){if(r.status===409||r.status===404||r.status===403){ended=true;clearTimeout(retryTimer);shutdown('会话已结束');notice('流转会话已结束，请确认设备已开启文件流转，再点击重新连接。');return;}throw Error('连接暂不可用');}
+        const info=await r.json();if(attempt!==connectionRequest||epoch!==generation||ended)return;
         if(info.generation!==generation||!Number.isInteger(info.lease))throw Error('连接响应无效');lease=info.lease;
-      }catch(e){if(attempt!==wakeRequest||epoch!==generation||ended)return;if(retries<5)retryTimer=setTimeout(()=>connect(true),Math.min(1000*2**retries++,15000));else notice('请点击重新连接。','connection');return;}
+      }catch(e){if(attempt!==connectionRequest||epoch!==generation||ended)return;if(retries<5)retryTimer=setTimeout(()=>connect(true),Math.min(1000*2**retries++,15000));else notice('请点击重新连接。','connection');return;}
     }
     clearTimeout(retryTimer);ended=false;if(!automatic)retries=0;const previous=ws;ws=null;previous?.close();shutdown('会话重新连接');
     connecting=true;notice('','connection');
@@ -297,7 +296,7 @@
       else if(m.type==='peers'){const next=new Map(m.peers.map(x=>[x.id,x.name]));rtcPeers.clear();for(const p of m.peers)rtcPeers.set(p.id,p.rtc!==false);for(const link of [...links.values()])if(!next.has(link.id)||rtcPeers.get(link.id)===false)closeLink(link,'对端已离线或无法直传');for(const id of catalogs.keys())if(!next.has(id))catalogs.delete(id);peers.clear();for(const [id,name] of next)peers.set(id,name);for(const item of files.values())if(item.to&&!peers.has(item.to)){files.delete(item.meta.id);notice('指定接收端已离线，该文件已取消共享。');}update();}
       else if(m.type==='files'&&m.from!==self&&peers.has(m.from)){if(!Array.isArray(m.files)||m.files.length>P.MAX_FILES||m.files.some(f=>!P.validFile(f)))throw Error('文件列表格式无效');catalogs.set(m.from,m.files);update();}
       else if(m.type==='signal')handleSignal(m).catch(e=>{const link=links.get(m.from);if(link)closeLink(link,e.message);notice(e.message);});
-      else if(m.type==='end'){ended=true;shutdown('Passport 已结束共享');notice('流转已结束，点击重新连接即可自动开启。');socket.close();}
+      else if(m.type==='end'){ended=true;shutdown('Passport 已结束共享');notice('流转已结束，请先在设备上开启文件流转，再点击重新连接。');socket.close();}
       else if(m.type==='error'){const reason=m.code==='peer-offline'?'接收端已离线，请重新选择设备':m.message||'协商消息无效，请重试';const link=links.get(m.to);if(link)closeLink(link,reason);notice(reason);}
     }catch(e){notice(e.message);}};
     ws.onclose=event=>disconnected(socket,event.code);ws.onerror=()=>{if(ws===socket)notice('无法连接 Passport，请确认处于同一网络。','connection');};update();
@@ -366,28 +365,30 @@
     catch(e){if(sink)await sink.abort().catch(()=>{});if(t)cancelTransfer(t,e.message);throw e;}finally{pendingReceive-=reservation;}
   }
   $('rename').onclick=()=>{try{rename();}catch(e){notice(e.message);}};
-  $('reconnect').onclick=async()=>{
-    const request=++wakeRequest;
-    wakeAbort?.abort();const controller=new AbortController();wakeAbort=controller;
+  async function joinTransfer(){
+    const request=++connectionRequest;
+    connectionAbort?.abort();const controller=new AbortController();connectionAbort=controller;
     clearTimeout(retryTimer);ended=false;connecting=true;update();
     const timeout=setTimeout(()=>controller.abort(),30000);
     try{
       const response=await fetch('/api/session/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'transfer'}),signal:controller.signal});
       if(!response.ok)throw Error(await response.text());
-      const info=await response.json();if(request!==wakeRequest)return;
+      const info=await response.json();if(request!==connectionRequest)return;
+      if(!Number.isInteger(info.generation)||info.generation<=0||!Number.isInteger(info.lease)||info.lease<=0)throw Error('连接响应无效');
       generation=info.generation;lease=info.lease;
       for(;;){
-        if(request!==wakeRequest||controller.signal.aborted)throw new DOMException('Aborted','AbortError');
+        if(request!==connectionRequest||controller.signal.aborted)throw new DOMException('Aborted','AbortError');
         try{
           const r=await fetch('/api/session',{cache:'no-store',signal:controller.signal});
-          if(r.ok){const state=await r.json();if(request!==wakeRequest)return;if(state.generation!==generation||state.mode!=='transfer')throw Error('会话已被其他页面切换，请重新连接。');if(state.ready)break;}
-        }catch(e){if(e.name==='AbortError'||e.message.includes('会话已被'))throw e;}
+          if(r.ok){const state=await r.json();if(request!==connectionRequest)return;if(state.generation!==generation||state.mode!=='transfer')throw Error('设备已结束或切换功能，请重新连接。');if(state.ready)break;}
+        }catch(e){if(e.name==='AbortError'||e.message.includes('设备已'))throw e;}
         await new Promise(resolve=>setTimeout(resolve,250));
       }
-      if(request===wakeRequest)connect();
-    }catch(e){if(request===wakeRequest){connecting=false;notice(e.name==='AbortError'?'无法访问 Passport，请检查网络后重新连接。':e.message,'connection');update();}}
-    finally{clearTimeout(timeout);if(wakeAbort===controller)wakeAbort=null;}
-  };
+      if(request===connectionRequest)connect();
+    }catch(e){if(request===connectionRequest){connecting=false;notice(e.name==='AbortError'?'无法访问 Passport，请检查网络后重新连接。':e.message,'connection');update();}}
+    finally{clearTimeout(timeout);if(connectionAbort===controller)connectionAbort=null;}
+  }
+  $('reconnect').onclick=joinTransfer;
   async function sendText(){
     if(sendingText||!online)return;
     const value=$('text').value;
@@ -431,8 +432,8 @@
   try{$('name').value=localStorage.getItem('passport-transfer-name')||(mobile?'手机':'电脑');}catch{$('name').value=mobile?'手机':'电脑';}
   setInterval(()=>{for(const link of links.values()){const t=link.rx;if(t&&!t.done&&Date.now()-t.last>(t.url?180000:45000))cancelTransfer(t,t.url?'保存等待超时，请重新接收':'接收超时，请重试');}},5000);
   addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&online)ping(ws);});
-  addEventListener('pagehide',()=>{++wakeRequest;wakeAbort?.abort();clearTimeout(retryTimer);ended=true;shutdown('页面已退出');ws?.close();});
-  connect();
+  addEventListener('pagehide',()=>{++connectionRequest;connectionAbort?.abort();clearTimeout(retryTimer);ended=true;shutdown('页面已退出');ws?.close();});
+  joinTransfer();
   // Exposed only as an application API, also used by the real-browser acceptance harness.
   globalThis.PassportTransfer={receive,files,links,history,texts,get self(){return self;},get peers(){return peers;}};
 })();

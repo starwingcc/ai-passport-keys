@@ -112,10 +112,11 @@ async function main(){
     for(const s of sessions.values())send(s,{type:'end'});for(const page of [a,b])await page.waitForFunction(()=>PassportTransfer.links.size===0&&document.getElementById('connection').textContent==='流转已关闭');
     await a.locator('#reconnect').click();await b.locator('#reconnect').click();
     for(const page of [a,b])await page.waitForFunction(()=>PassportTransfer.peers.size===2);
+    await a.waitForFunction(()=>!document.getElementById('send-text').disabled);
     await composer.fill('重新连接后回车发送');await composer.press('Enter');
     await b.waitForFunction(()=>PassportTransfer.texts.some(t=>t.text==='重新连接后回车发送'));
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({result:'PASS',browser:browser.version(),url,secureContext:secure,bytes:100*1024*1024,sha256:await hash(filePath),save:'browser download and file-picker sink',testResolvedMdns:!!process.env.KP_RTC_RESOLVE_MDNS,checks:['root and transfer pages','four-session capacity and released slot','Enter sends / Shift+Enter newline / IME confirmation','Chinese/newline/emoji','direct copy','100 MiB saved hash','inline cancel/save','save releases budget','cancel','single broadcast record','specified recipient','zero-byte saved file','file-picker sink hash','refresh removes source','shutdown closes RTC','page wake reconnect']}));
+    console.log(JSON.stringify({result:'PASS',browser:browser.version(),url,secureContext:secure,bytes:100*1024*1024,sha256:await hash(filePath),save:'browser download and file-picker sink',testResolvedMdns:!!process.env.KP_RTC_RESOLVE_MDNS,checks:['root and transfer pages','four-session capacity and released slot','Enter sends / Shift+Enter newline / IME confirmation','Chinese/newline/emoji','direct copy','100 MiB saved hash','inline cancel/save','save releases budget','cancel','single broadcast record','specified recipient','zero-byte saved file','file-picker sink hash','refresh removes source','shutdown closes RTC','page reconnect']}));
   }finally{
     try{await browser?.close();}
     finally{

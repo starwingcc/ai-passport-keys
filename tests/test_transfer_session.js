@@ -1,6 +1,6 @@
 /* Deterministic browser-session/UI regressions; saved-byte integrity is tested in a browser. */
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-function page(rtc,closeEvent=true,navigator={}){
+async function page(rtc,closeEvent=true,navigator={}){
   let now=0,nextTimer=1,nextNonce=0;
   const timers=new Map(),sockets=[],events={},nodes=new Map(),clipboard=[],fetches=[];
   let generation=1,lease=1;
@@ -42,13 +42,14 @@ function page(rtc,closeEvent=true,navigator={}){
     addEventListener:(name,fn)=>events[name]=fn
   });
   for(const name of ['transfer-protocol.js','transfer.js'])vm.runInContext(fs.readFileSync(`main/web/${name}`,'utf8'),context);
+  await new Promise(setImmediate);
   const welcome=(socket=sockets.at(-1))=>{socket.receive({type:'welcome',id:1});socket.receive({type:'peers',peers:[{id:1,name:'本机',rtc:!!rtc},{id:2,name:'电脑',rtc:true}]});advance(100);};
   const find=(root,predicate)=>predicate(root)?root:root.children.map(c=>find(c,predicate)).find(Boolean);
   const advanceAsync=async ms=>{for(let at=0;at<ms;at+=1000){advance(Math.min(1000,ms-at));await new Promise(setImmediate);}};
   return {context,node,sockets,events,welcome,advance,advanceAsync,clipboard,find,fetches,setFetch:fn=>fetchImpl=fn};
 }
 async function receiveBudget(navigator,limit){
-  const p=page(function(){},true,navigator);p.welcome();
+  const p=await page(function(){},true,navigator);p.welcome();
   p.sockets[0].receive({type:'peers',peers:[1,2,3,4].map(id=>({id,name:String(id),rtc:true}))});
   const app=p.context.PassportTransfer,sent=[];
   for(const id of [2,3,4])app.links.set(id,{
@@ -80,7 +81,7 @@ async function receiveBudget(navigator,limit){
 async function uiRegressions(){
   // Insecure LAN pages and denied Clipboard API access both copy immediately.
   for(const navigator of [{},{clipboard:{writeText:async()=>{throw Error('denied');}}}]){
-    const p=page(function(){},true,navigator);p.welcome();
+    const p=await page(function(){},true,navigator);p.welcome();
     const text='中文\nemoji 😀\n<script>纯文本</script>';
     p.context.PassportTransfer.texts.unshift({name:'手机',text,status:'已收到'});
     p.sockets[0].receive({type:'peers',peers:[{id:1,name:'本机'},{id:2,name:'手机'}]});p.advance(100);
@@ -89,7 +90,7 @@ async function uiRegressions(){
     assert.equal(p.node('body').children.length,0); // fallback field is removed
     p.context.document.execCommand=()=>false;await copy.onclick();assert.match(p.node('notice').textContent,/复制失败/);
   }
-  const p=page(function(){});p.welcome();
+  const p=await page(function(){});p.welcome();
   p.sockets[0].receive({type:'peers',peers:[{id:1,name:'本机'},{id:2,name:'手机'},{id:3,name:'电脑'}]});
   const app=p.context.PassportTransfer,sent=[];
   for(const id of [2,3])app.links.set(id,{id,ready:Promise.resolve(),pc:{close(){}},dc:{readyState:'open',send:data=>sent.push({peer:id,...JSON.parse(data)}),close(){}}});
@@ -104,7 +105,7 @@ async function uiRegressions(){
   assert.equal(app.texts.length,2);assert.equal(app.texts[0].recipients[1].state,'failed');
   assert.match(p.node('texts').children[0].textContent,/等待手机接收；电脑未接收/);
 
-  const q=page(function(){});q.welcome();const target=q.context.PassportTransfer,frames=[];
+  const q=await page(function(){});q.welcome();const target=q.context.PassportTransfer,frames=[];
   target.links.set(2,{id:2,ready:Promise.resolve(),pc:{close(){}},dc:{readyState:'open',send:data=>frames.push(JSON.parse(data)),close(){}}});
   const file={id:'large',name:'large.bin',mime:'application/octet-stream',size:1024*1024**2};
   await target.receive(2,file);const transfer=target.history[0];transfer.offset=file.size;transfer.status='接收中';q.advance(100);
@@ -129,7 +130,7 @@ async function canceledStream(){
     async setLocalDescription(value){this.localDescription={toJSON:()=>value};}
     close(){}
   }
-  const p=page(RTC);p.welcome();const app=p.context.PassportTransfer;
+  const p=await page(RTC);p.welcome();const app=p.context.PassportTransfer;
   p.node('text').value='建立连接';const sending=p.node('send-text').onclick();channel.onopen();await sending;
   const incoming=async data=>{channel.onmessage({data});await new Promise(setImmediate);};
   const file={id:'retry',name:'retry.bin',mime:'application/octet-stream',size:3};
@@ -158,18 +159,18 @@ async function main(){
   for(const navigator of [{userAgent:'Android'},{userAgent:'iPhone'},{userAgent:'iPad'},{platform:'MacIntel',maxTouchPoints:5}])
     await receiveBudget(navigator,1024*1024**2);
   await receiveBudget({},1024*1024**2);
-  const blocked=page(undefined);blocked.welcome();
+  const blocked=await page(undefined);blocked.welcome();
   assert(blocked.node('send-text').disabled&&blocked.node('files').disabled);
   assert.match(blocked.node('notice').textContent,/WebRTC/);
   assert.equal(blocked.sockets[0].sent.find(m=>m.type==='hello').rtc,false);
   blocked.advance(60000);assert.equal(blocked.sockets.length,1);assert.equal(blocked.sockets[0].readyState,1);
   assert(blocked.sockets[0].sent.some(m=>m.type==='ping'));
   // An extension can replace the constructor with a nonconstructible function.
-  const broken=page(()=>{});broken.welcome();broken.node('text').value='中文';
+  const broken=await page(()=>{});broken.welcome();broken.node('text').value='中文';
   await broken.node('send-text').onclick();broken.advance(100);
   assert.match(broken.node('notice').textContent,/WebRTC/);assert(broken.node('send-text').disabled);
   assert.equal(broken.sockets[0].readyState,1);
-  const active=page(function(){});active.welcome();
+  const active=await page(function(){});active.welcome();
   active.sockets[0].receive({type:'pong'});active.advance(60000);
   assert.equal(active.sockets.length,1); // A one-minute background pause is valid.
   active.events.visibilitychange();assert.equal(active.sockets[0].sent.at(-1).type,'ping');
@@ -182,19 +183,19 @@ async function main(){
   assert.equal(active.context.PassportTransfer.peers.size,2); // Stale callbacks cannot erase a new session.
   active.sockets[1].receive({type:'end'});active.advance(30000);assert.equal(active.sockets.length,2);
   assert.equal(active.node('connection').textContent,'流转已关闭');
-  const failing=page(function(){});await failing.advanceAsync(120000);
+  const failing=await page(function(){});await failing.advanceAsync(120000);
   assert.equal(failing.sockets.length,6);assert(failing.sockets.every(s=>s.readyState===3));
   await failing.node('reconnect').onclick();assert.equal(failing.sockets.length,7);
-  assert.equal(failing.fetches.filter(r=>r.url==='/api/session/open').length,1);assert.equal(failing.fetches.at(-1).url,'/api/session');assert.equal(failing.fetches.at(-1).options.cache,'no-store');
+  assert.equal(failing.fetches.filter(r=>r.url==='/api/session/open').length,2);assert.equal(failing.fetches.at(-1).url,'/api/session');assert.equal(failing.fetches.at(-1).options.cache,'no-store');
   failing.events.pagehide();failing.advance(60000);assert.equal(failing.sockets.length,7);
-  const silent=page(function(){},false);await silent.advanceAsync(120000);
+  const silent=await page(function(){},false);await silent.advanceAsync(120000);
   assert.equal(silent.sockets.length,6); // missing onclose cannot strand connecting forever
   silent.sockets[0].receive({type:'welcome',id:99});silent.advance(100);
   assert.equal(silent.context.PassportTransfer.peers.size,0); // even a late welcome is retired
-  const congested=page(function(){},false);congested.welcome();
+  const congested=await page(function(){},false);congested.welcome();
   congested.sockets[0].bufferedAmount=20000;await congested.advanceAsync(11000);
   assert.equal(congested.sockets.length,2); // throwing ping cannot bypass liveness checks
-  const keys=page(function(){});keys.welcome();const sent=[];
+  const keys=await page(function(){});keys.welcome();const sent=[];
   keys.context.PassportTransfer.links.set(2,{id:2,ready:Promise.resolve(),pc:{close(){}},dc:{readyState:'open',send:data=>sent.push(JSON.parse(data)),close(){}}});
   let prevented=0;
   const enter=extra=>({key:'Enter',shiftKey:false,isComposing:false,keyCode:13,repeat:false,preventDefault(){++prevented;},...extra});
@@ -205,10 +206,10 @@ async function main(){
   keys.node('text').value='第一行\n第二行';await keys.node('text').onkeydown(enter());
   assert.equal(sent.filter(m=>m.type==='text').length,1);assert.equal(sent[0].text,'第一行\n第二行');assert.equal(keys.node('text').value,'');
   keys.advance(100);keys.node('send-text').disabled=true;keys.node('text').value='离线不发送';await keys.node('text').onkeydown(enter());assert.equal(sent.length,1);
-  // A pending page wake must not resurrect a page after pagehide.
-  const waking=page(function(){});let respond;waking.setFetch(()=>new Promise(resolve=>{respond=resolve;}));
-  const pendingWake=waking.node('reconnect').onclick();waking.events.pagehide();respond({ok:true});await pendingWake;assert.equal(waking.sockets.length,1);
-  const rejected=page(function(){});rejected.setFetch(async()=>({ok:false,text:async()=>'无法恢复'}));await rejected.node('reconnect').onclick();assert.equal(rejected.sockets.length,1);assert.match(rejected.node('notice').textContent,/恢复/);
+  // A pending page connection must not resurrect a page after pagehide.
+  const joining=await page(function(){});let respond;joining.setFetch(()=>new Promise(resolve=>{respond=resolve;}));
+  const pendingJoin=joining.node('reconnect').onclick();joining.events.pagehide();respond({ok:true});await pendingJoin;assert.equal(joining.sockets.length,1);
+  const rejected=await page(function(){});rejected.setFetch(async()=>({ok:false,text:async()=>'无法恢复'}));await rejected.node('reconnect').onclick();assert.equal(rejected.sockets.length,1);assert.match(rejected.node('notice').textContent,/恢复/);
   console.log('Transfer sessions: mobile/desktop aggregate receive budgets, pending reservations, cancellation, RTC capability, heartbeat, bounded reconnect, stale callbacks and explicit shutdown: PASS');
 }
 main().catch(e=>{console.error(e);process.exit(1);});

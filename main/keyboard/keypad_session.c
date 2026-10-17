@@ -18,7 +18,7 @@ static uint64_t time_ms(const kp_session_state_t *s, uint64_t now) {
     return (s->paused ? s->paused_at : now) - s->offset;
 }
 
-static void change(kp_session_state_t *s, kp_session_mode_t mode) {
+void kp_session_state_select(kp_session_state_t *s, kp_session_mode_t mode) {
     s->mode = mode;
     if (!++s->generation) ++s->generation;
     memset(s->pages, 0, sizeof(s->pages));
@@ -47,23 +47,17 @@ void kp_session_state_poll(kp_session_state_t *s, uint64_t now) {
             elapsed >= (s->pages[i].joined ? KP_SESSION_HEARTBEAT_MS : KP_SESSION_START_MS))
             s->pages[i].id = 0;
     }
-    kp_session_view_t v;
-    kp_session_state_view(s, &v);
-    if (s->mode != KP_SESSION_LISTEN && !v.online && !v.joining) change(s, KP_SESSION_LISTEN);
 }
 
 uint32_t kp_session_state_open(kp_session_state_t *s, kp_session_mode_t mode, uint64_t now) {
     if (mode != KP_SESSION_TRANSFER && mode != KP_SESSION_CONFIG) return 0;
     kp_session_state_poll(s, now);
-    if (s->mode != mode) change(s, mode);
-    // A real page takes over the device menu's startup reservation. Keeping
-    // that unused reservation would delay cleanup after the page's last leave.
-    for (unsigned i = 0; i < KP_SESSION_PAGES; ++i) if (s->pages[i].prepared) s->pages[i].id = 0;
+    if (s->mode != mode) return 0;
     for (unsigned i = 0; i < KP_SESSION_PAGES; ++i) if (!s->pages[i].id) {
         if (!++s->next_id) ++s->next_id;
         s->pages[i].id = s->next_id;
         s->pages[i].at = now;
-        s->pages[i].joined = s->pages[i].prepared = false;
+        s->pages[i].joined = false;
         return s->next_id;
     }
     return 0;
@@ -132,11 +126,7 @@ uint32_t kp_session_open(kp_session_mode_t mode, uint64_t now, uint32_t *generat
 void kp_session_prepare(kp_session_mode_t mode, uint64_t now) {
     LOCK();
     kp_session_state_poll(&s_runtime, now);
-    if (s_runtime.mode != mode) {
-        uint32_t id = kp_session_state_open(&s_runtime, mode, now);
-        for (unsigned i = 0; id && i < KP_SESSION_PAGES; ++i) if (s_runtime.pages[i].id == id)
-            s_runtime.pages[i].prepared = true;
-    }
+    if (s_runtime.mode != mode) kp_session_state_select(&s_runtime, mode);
     UNLOCK();
 }
 
@@ -153,16 +143,6 @@ uint32_t kp_session_reserve(kp_session_mode_t mode, uint32_t generation, uint64_
 bool kp_session_current(kp_session_mode_t mode, uint32_t generation) {
     LOCK();
     bool ok = s_runtime.mode == mode && s_runtime.generation == generation;
-    UNLOCK();
-    return ok;
-}
-
-bool kp_session_admitted(kp_session_mode_t mode, uint32_t generation, uint32_t id) {
-    LOCK();
-    bool ok = false;
-    if (s_runtime.mode == mode && s_runtime.generation == generation && id)
-        for (unsigned i = 0; i < KP_SESSION_PAGES; ++i) if (s_runtime.pages[i].id == id && !s_runtime.pages[i].joined)
-            ok = true;
     UNLOCK();
     return ok;
 }
@@ -195,7 +175,7 @@ void kp_session_ready(kp_session_mode_t mode, uint32_t generation, bool ready) {
 
 void kp_session_end(kp_session_mode_t mode) {
     LOCK();
-    if (s_runtime.mode == mode) change(&s_runtime, KP_SESSION_LISTEN);
+    if (s_runtime.mode == mode) kp_session_state_select(&s_runtime, KP_SESSION_OFF);
     UNLOCK();
 }
 
